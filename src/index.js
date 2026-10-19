@@ -1,7 +1,3 @@
---3d4cfcd1fdc091bfb6dcf817b8f4f46119a646bcd6b474391049219cb5fa
-Content-Disposition: form-data; name="wrapper.js"; filename="wrapper.js"
-Content-Type: application/javascript+module
-
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -10651,6 +10647,3 @@ export {
   YjsClientDO,
   wrapper_default as default
 };
-//# sourceMappingURL=wrapper.js.map
-
---3d4cfcd1fdc091bfb6dcf817b8f4f46119a646bcd6b474391049219cb5fa--
