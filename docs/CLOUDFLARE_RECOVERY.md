@@ -26,7 +26,17 @@ Secret binding names observed (values intentionally not exported): `API_TOKEN`, 
 
 ## Durable Object migration history
 
-Version metadata shows migration tags changing from `v1` to `v2`, `v3`, `v4`, and `v5`. The class `YjsClientDO` and binding `YJS_CLIENT` appear in the deployment metadata, but Cloudflare's version metadata does not provide the original Wrangler migration declarations. Do not guess these declarations or deploy a reconstructed configuration until the migration history has been recovered.
+Version metadata gives this observed tag timeline (UTC, 2026-10-18):
+
+| Worker version | Migration tag | Created |
+| ---: | --- | --- |
+| 26 | `v1` | 13:56:09 |
+| 30 | `v2` | 14:32:59 |
+| 31–32 | `v3` | 14:33:19–14:37:37 |
+| 33 | `v4` | 14:48:01 |
+| 34 onward | `v5` | 14:48:24 onward |
+
+This is evidence of when the tags were deployed, not what each migration did. The class `YjsClientDO` and binding `YJS_CLIENT` appear in deployment metadata, but Cloudflare's version metadata does not provide the original Wrangler migration declarations. The source tree also does not contain the old `src/yjsClientDO.ts` variants. Do not guess these declarations or deploy a reconstructed configuration until the migration history has been recovered.
 
 ## D1 migration history
 
