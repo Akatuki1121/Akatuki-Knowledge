@@ -112,7 +112,7 @@ var worker_default = {
     const url = new URL(request.url);
     if (url.pathname === "/telegram/webhook" && request.method === "POST") {
       try {
-        return await telegramWebhook(request, env);
+        return await telegramWebhook(request, env, ctx);
       } catch (error) {
         console.error("telegram webhook failed");
         return json({ error: "Webhook processing failed" }, 500);
@@ -130,9 +130,9 @@ var worker_default = {
         if (request.method === "GET" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/related")) return listRelatedNotes(url, env);
         if (request.method === "GET" && url.pathname === "/api/telegram/history") return listTelegramHistory(url, env);
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/ai-permission")) return setAiPermission(request, url, env);
-        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) return restoreNote(url, env);
-        if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) return deleteNote(url, env);
-        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) return correctNote(request, url, env);
+        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
+        if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
+        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) { const response = await correctNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
         if (request.method === "POST" && url.pathname === "/api/ai-preview") return previewAiRequest(request, env);
         if (request.method === "POST" && url.pathname === "/api/sync") return syncNotes(request, env);
         if (request.method === "GET" && url.pathname === "/api/search") return searchNotes(url, env);
@@ -154,7 +154,58 @@ var worker_default = {
     ctx.waitUntil(runScheduledMaintenance(env));
   }
 };
+async function enqueueSyncJob(env, entityType, entityId, operation) {
+  if (!env.DB || !["notes", "telegram_notes"].includes(entityType) || !["upsert", "delete"].includes(operation)) return;
+  try {
+    const row = await env.DB.prepare("SELECT id, path, title, content, deleted_at FROM " + entityType + " WHERE id = ?").bind(entityId).first();
+    if (!row) return;
+    const now = new Date().toISOString();
+    const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", deletedAt: row.deleted_at ?? null };
+    await env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)")
+      .bind(crypto.randomUUID(), entityType, entityId, operation, JSON.stringify(payload), now, now, now).run();
+  } catch {
+    console.error("sync outbox enqueue failed");
+  }
+}
+__name(enqueueSyncJob, "enqueueSyncJob");
+async function drainSyncOutbox(env, limit = 5) {
+  if (!env.DB || !env.YJS_CLIENT) return { ok: false, skipped: "missing_binding" };
+  const now = new Date().toISOString();
+  let jobs;
+  try {
+    jobs = (await env.DB.prepare("SELECT job_id, entity_type, entity_id, operation, payload_json, attempts FROM yaos_sync_jobs WHERE (status = 'pending' AND next_attempt_at <= ?) OR (status = 'processing' AND lease_expires_at <= ?) ORDER BY created_at, job_id LIMIT ?").bind(now, now, Math.max(1, Math.min(20, limit))).all()).results;
+  } catch {
+    return { ok: false, skipped: "outbox_not_migrated" };
+  }
+  let sent = 0, failed = 0;
+  for (const job of jobs) {
+    const lease = new Date(Date.now() + 120000).toISOString();
+    const claim = await env.DB.prepare("UPDATE yaos_sync_jobs SET status = 'processing', lease_expires_at = ?, attempts = attempts + 1, updated_at = ? WHERE job_id = ? AND ((status = 'pending' AND next_attempt_at <= ?) OR (status = 'processing' AND lease_expires_at <= ?))").bind(lease, now, job.job_id, now, now).run();
+    if (!claim.meta?.changes) continue;
+    try {
+      const response = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/knowledge-sync", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entityType: job.entity_type, entityId: job.entity_id, operation: job.operation, payload: JSON.parse(job.payload_json) })
+      }));
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok !== true || result.verified !== true) throw new Error(result.error || ("yaos_sync_status_" + response.status));
+      const finishedAt = new Date().toISOString();
+      await env.DB.prepare("UPDATE yaos_sync_jobs SET status = 'sent', sent_at = ?, updated_at = ?, lease_expires_at = NULL, last_error = NULL WHERE job_id = ? AND status = 'processing'").bind(finishedAt, finishedAt, job.job_id).run();
+      sent++;
+    } catch (error) {
+      const attempts = Number(job.attempts || 0) + 1;
+      const dead = attempts >= 8;
+      const next = new Date(Date.now() + Math.min(3600000, 1000 * (2 ** Math.min(attempts, 12)))).toISOString();
+      const finishedAt = new Date().toISOString();
+      await env.DB.prepare("UPDATE yaos_sync_jobs SET status = ?, next_attempt_at = ?, updated_at = ?, lease_expires_at = NULL, last_error = ? WHERE job_id = ? AND status = 'processing'").bind(dead ? "dead" : "pending", next, finishedAt, String(error).slice(0, 500), job.job_id).run();
+      failed++;
+    }
+  }
+  return { ok: failed === 0, processed: jobs.length, sent, failed };
+}
+__name(drainSyncOutbox, "drainSyncOutbox");
 async function runScheduledMaintenance(env) {
+  await drainSyncOutbox(env, 10);
   if (!env.GEMINI_API_KEY) {
     await enqueueBotAlert(env, "configuration");
   } else {
@@ -186,7 +237,7 @@ function constantTimeEqual(a, b) {
   return mismatch === 0;
 }
 __name(constantTimeEqual, "constantTimeEqual");
-async function telegramWebhook(request, env) {
+async function telegramWebhook(request, env, ctx) {
   if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_ALLOWED_CHAT_ID || !env.DB) return json({ error: "Telegram webhook is not configured" }, 503);
   const suppliedSecret = request.headers.get("x-telegram-bot-api-secret-token") || "";
   if (!constantTimeEqual(suppliedSecret, env.TELEGRAM_WEBHOOK_SECRET)) return json({ error: "Unauthorized" }, 401);
@@ -256,6 +307,7 @@ async function telegramWebhook(request, env) {
     await env.DB.prepare("INSERT OR IGNORE INTO telegram_messages (message_id, chat_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)").bind(replyMessageId, chatId, reply, (/* @__PURE__ */ new Date()).toISOString()).run();
     await env.DB.prepare("UPDATE telegram_updates SET result_code = 'processed' WHERE update_id = ?").bind(update.update_id).run();
     await flushBotAlerts(env, chatId, 2);
+    if (ctx?.waitUntil) ctx.waitUntil(drainSyncOutbox(env, 3));
     return json({ ok: true });
   } catch (error) {
     await env.DB.prepare("UPDATE telegram_updates SET result_code = 'retry' WHERE update_id = ?").bind(update.update_id).run();
@@ -643,6 +695,7 @@ async function storeTelegramNote(env, chatId, messageId, content, now) {
   const contentHash = await sha256(content);
   const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO telegram_notes (id, chat_id, message_id, title, content, content_hash, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id2, chatId, String(messageId), title, content, contentHash, now, now, tags, hasCredential ? 0 : 1, hasCredential ? "credentials" : "unknown", state).run();
   if (inserted.meta?.changes) {
+    await enqueueSyncJob(env, "telegram_notes", id2, "upsert");
     await env.DB.prepare("INSERT OR IGNORE INTO telegram_note_actions (chat_id, source_message_id, note_id, action_type, after_hash, created_at) VALUES (?, ?, ?, 'create', ?, ?)").bind(chatId, String(messageId), id2, contentHash, now).run();
   }
   if (hasCredential) return "\u30CE\u30FC\u30C8\u306F\u4FDD\u5B58\u3057\u307E\u3057\u305F\u304C\u3001\u8A8D\u8A3C\u60C5\u5831\u3092\u691C\u51FA\u3057\u305F\u305F\u3081AI\u6574\u7406\u3092\u30D6\u30ED\u30C3\u30AF\u3057\u307E\u3057\u305F\u3002\u8A8D\u8A3C\u60C5\u5831\u3092\u524A\u9664\u3057\u3066\u767B\u9332\u3057\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
@@ -654,6 +707,7 @@ async function storeTelegramNote(env, chatId, messageId, content, now) {
     await enqueueBotAlert(env, classifyOperationalFailure(error));
     return { failed: 1 };
   });
+  await enqueueSyncJob(env, "telegram_notes", id2, "upsert");
   if (organization.failed) return "\u30CE\u30FC\u30C8\u3092\u4FDD\u5B58\u3057\u305F\u3088\u3002AI\u6574\u7406\u3067\u30A8\u30E9\u30FC\u304C\u51FA\u305F\u305F\u3081\u3001\u6B21\u56DE\u306E\u5B9A\u671F\u518D\u8A66\u884C\u306B\u767B\u9332\u3057\u305F\u3088\u3002";
   if (organization.organized) return "\u30CE\u30FC\u30C8\u3092\u4FDD\u5B58\u3057\u3066\u3001AI\u6574\u7406\u3082\u5B8C\u4E86\u3057\u305F\u3088\u3002";
   return "\u30CE\u30FC\u30C8\u3092\u4FDD\u5B58\u3057\u305F\u3088\u3002AI\u6574\u7406\u306E\u72B6\u614B\u3092\u6B21\u56DE\u306E\u5B9A\u671F\u78BA\u8A8D\u3067\u8ABF\u3079\u308B\u306D\u3002";
@@ -938,6 +992,7 @@ async function deleteNote(url, env) {
   if (!old) return json({ error: "Note not found" }, 404);
   await env.DB.prepare("INSERT INTO note_archive_events (note_id, source, previous_ai_allowed, previous_review_state, archived_at) VALUES (?, ?, ?, ?, ?)").bind(id2, table === "notes" ? "obsidian" : "telegram", Number(old.ai_allowed || 0), old.review_state || "ready", (/* @__PURE__ */ new Date()).toISOString()).run();
   const result = await env.DB.prepare(`UPDATE ${table} SET deleted_at = ?, ai_allowed = 0, review_state = 'deleted' WHERE id = ? AND deleted_at IS NULL`).bind((/* @__PURE__ */ new Date()).toISOString(), id2).run();
+  if (result.meta?.changes) await enqueueSyncJob(env, table, id2, "delete");
   return json({ ok: true, id: id2, deleted: Boolean(result.meta?.changes) });
 }
 __name(deleteNote, "deleteNote");
@@ -956,6 +1011,7 @@ async function restoreNote(url, env) {
   const restored = await env.DB.prepare(`UPDATE ${table} SET deleted_at = NULL, ai_allowed = ?, review_state = ?, updated_at = ?, next_retry_at = NULL WHERE id = ? AND deleted_at = ?`).bind(aiAllowed, reviewState, now, id2, archived.deleted_at).run();
   if (!restored.meta?.changes) return json({ error: "Archive changed while restoring" }, 409);
   await env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE archive_event_id = ? AND restored_at IS NULL").bind(now, event.archive_event_id).run();
+  await enqueueSyncJob(env, table, id2, "upsert");
   return json({ ok: true, id: id2, restored: true, aiAllowed: Boolean(aiAllowed), reviewState });
 }
 __name(restoreNote, "restoreNote");
@@ -989,6 +1045,7 @@ async function correctNote(request, url, env) {
     await env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = ?, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, aiAllowed, id2).run();
   }
   await env.DB.prepare("DELETE FROM note_relations WHERE source_note_id = ? OR target_note_id = ?").bind(id2, id2).run();
+  await enqueueSyncJob(env, table, id2, "upsert");
   return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(aiAllowed) });
 }
 __name(correctNote, "correctNote");
@@ -10505,9 +10562,93 @@ var YjsClientDO = class extends DurableObject {
     }
     return { ...base, applied: created.size > 0, createdCount: created.size, verified, unverified, rejected };
   }
+  async applyKnowledgeSyncJob(job) {
+    if (!job || !["notes", "telegram_notes"].includes(job.entityType) || !["upsert", "delete"].includes(job.operation)) return { ok: false, verified: false, error: "invalid_job" };
+    const payload = job.payload;
+    if (!payload || typeof payload.id !== "string" || typeof payload.content !== "string") return { ok: false, verified: false, error: "invalid_payload" };
+    const telegram = job.entityType === "telegram_notes";
+    const hash16 = telegram ? (await sha256Hex(payload.id)).slice(0, 16) : null;
+    const slug = (payload.title || "Telegram note").normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[-. ]+|[-. ]+$/g, "").slice(0, 64) || "Telegram-note";
+    const desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + "-" + hash16 + ".md" : norm(payload.path || "");
+    if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
+    let desiredContent = payload.content;
+    if (telegram) {
+      const digest = (await sha256Hex(payload.id)).slice(0, 32).split("");
+      digest[12] = "5";
+      digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
+      const uuid = digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
+      const fm = desiredContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (fm) {
+        if (!/^id:\s*["']?[0-9A-Za-z-]+["']?\s*$/m.test(fm[1])) desiredContent = desiredContent.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
+      } else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
+    }
+    const locate = (doc) => {
+      let active = null, tombstone = null;
+      doc.getMap("meta").forEach((value, fileId) => {
+        const path = value instanceof YMap ? value.get("path") : value?.path;
+        if (typeof path !== "string") return;
+        const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+        const matches = telegram ? path.startsWith(RESERVED_ROOT + "/Telegram/") && path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16 : norm(path) === desiredPath;
+        if (!matches) return;
+        const item = { fileId, value, path, deleted };
+        if (deleted) tombstone ??= item; else active ??= item;
+      });
+      return active || tombstone;
+    };
+    let changedCount = 0;
+    await this.pullVault((doc) => {
+      const meta = doc.getMap("meta"), idToText = doc.getMap("idToText"), current = locate(doc);
+      if (job.operation === "delete") {
+        if (!current || current.deleted) return 0;
+        const now = Date.now();
+        if (current.value instanceof YMap) {
+          current.value.set("deletedAt", now); current.value.set("deleted", true); current.value.set("mtime", now); current.value.set("device", WORKER_DEVICE);
+        } else meta.set(current.fileId, { ...current.value, deletedAt: now, deleted: true, mtime: now, device: WORKER_DEVICE });
+        changedCount = 1;
+        return 1;
+      }
+      let fileId = current?.fileId, textValue = fileId ? idToText.get(fileId) : null;
+      if (!fileId) {
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes); fileId = [...bytes].map((b) => alphabet[b & 63]).join("");
+        textValue = new YText(); if (desiredContent) textValue.insert(0, desiredContent); idToText.set(fileId, textValue);
+        const entry = new YMap(); entry.set("path", desiredPath); entry.set("mtime", Date.now()); entry.set("device", WORKER_DEVICE); meta.set(fileId, entry);
+        changedCount = 1; return 1;
+      }
+      if (current.value instanceof YMap) {
+        current.value.set("path", desiredPath); current.value.set("mtime", Date.now()); current.value.set("device", WORKER_DEVICE);
+        current.value.delete("deleted"); current.value.delete("deletedAt");
+      } else {
+        const next = new YMap(); next.set("path", desiredPath); next.set("mtime", Date.now()); next.set("device", WORKER_DEVICE); meta.set(fileId, next);
+      }
+      if (!(textValue instanceof YText)) { textValue = new YText(); idToText.set(fileId, textValue); }
+      if (textValue.toString() === desiredContent) { changedCount = current.deleted ? 1 : 0; return changedCount; }
+      if (textValue.length) textValue.delete(0, textValue.length);
+      if (desiredContent) textValue.insert(0, desiredContent);
+      changedCount = 1; return 1;
+    });
+    const verifiedDoc = await this.pullVault(), verifiedItem = locate(verifiedDoc);
+    if (job.operation === "delete") {
+      const verified = !verifiedItem || verifiedItem.deleted;
+      return { ok: verified, verified, applied: changedCount > 0, id: payload.id, path: desiredPath };
+    }
+    const verifiedText = verifiedItem ? verifiedDoc.getMap("idToText").get(verifiedItem.fileId) : null;
+    const verified = Boolean(verifiedItem && !verifiedItem.deleted && norm(verifiedItem.path) === norm(desiredPath) && verifiedText instanceof YText && verifiedText.toString() === desiredContent);
+    return { ok: verified, verified, applied: changedCount > 0, id: payload.id, path: desiredPath, error: verified ? undefined : "verification_failed" };
+  }
   async fetch(request) {
     const reqUrl = new URL(request.url);
     const action = reqUrl.pathname.slice(1);
+    if (action === "knowledge-sync") {
+      try {
+        const body = await request.json(), result = await this.applyKnowledgeSyncJob(body);
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, verified: false, error: this.lastError.slice(0, 300) }, { status: 502 });
+      }
+    }
+
     if (action === "telegram") {
       try {
         const apply = reqUrl.searchParams.get("apply") === "1";
@@ -10564,7 +10705,7 @@ var YjsClientDO = class extends DurableObject {
 };
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
-var PULL_CRON = "*/5 * * * *";
+var PULL_CRON = "0 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -10633,12 +10774,13 @@ var wrapper_default = {
   async scheduled(event, env, ctx) {
     if (event.cron === PULL_CRON) {
       try {
+        await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
         if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, error: result.error } }));
       } catch (error) {
         console.log(JSON.stringify({ pull: { ok: false, error: String(error).slice(0, 200) } }));
       }
-      return;
+      return worker_default.scheduled(event, env, ctx);
     }
     return worker_default.scheduled(event, env, ctx);
   }
