@@ -24,3 +24,5 @@ jobs:
       - run: npm run check
       - name: Validate reconstructed baseline in empty SQLite database
         run: python3 scripts/test_reconstructed_baseline.py
+      - name: Compile Worker SQL against captured D1 schema
+        run: python3 scripts/test_worker_sql_compatibility.py
