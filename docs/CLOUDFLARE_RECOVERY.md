@@ -86,6 +86,8 @@ The repository includes a real local Worker integration suite:
 - The suite exercises the local Worker, Durable Object/WebSocket sync, snapshots, admission protocol, and reconnect behavior. It does not require writing to the production YAOS vault.
 - The repository's `test:ci` script runs regression tests plus this local Worker integration suite.
 
-This gives us an isolated way to validate YAOS itself before considering any separate Cloudflare staging deployment. It does **not** by itself exercise the Akatuki Knowledge outbox against YAOS end to end. The next integration step is to establish a reproducible, local service-binding path between the recovery-branch Worker and this isolated YAOS Worker, then test create/update/rename/delete/restore, conflict refusal, retry, and read-back verification. Do not point these tests at the production service binding.
+The recovery branch now includes `scripts/test_yaos_worker_integration.mjs`, which establishes the local service-binding path between the recovery-branch Knowledge Worker and this isolated YAOS Worker. GitHub Actions run [39339277481](https://github.com/Akatuki1121/Akatuki-Knowledge/actions/runs/39339277481) passed the end-to-end scenarios: create, update, rename, delete, restore, retry after a temporary auth failure, and refusal to overwrite an independent Vault edit. The test uses disposable local D1/DO state, a random test vault ID and token, and does not point at the production service binding.
+
+This closes the local integration-test gap, but does not substitute for a separate Cloudflare staging deployment or prove remote Durable Object migration reconciliation. Keep production rollout blocked until staging and migration review are complete.
 
 No YAOS repository, Worker, or Cloudflare resource was changed as part of this source discovery.
