@@ -19,7 +19,7 @@ EXPECTED = [
     "0006_bot_alerts.sql",
     "0007_failure_stage.sql",
 ]
-IGNORED_TABLES = {"_cf_KV", "d1_migrations", "sqlite_sequence"}
+IGNORED_TABLES = {"_cf_KV", "d1_migrations", "d1_migrations_legacy_backup", "sqlite_sequence"}
 
 def schema(sql_files):
     db = sqlite3.connect(":memory:")
