@@ -87,4 +87,26 @@ const independentEdit = `---\nid: "${uuid}"\n---\n\nindependent Obsidian edit`;
   assert.equal(paths.has("notes/example.md"), false);
 }
 
+
+{
+  const { instance, value, texts } = setup(independentEdit, "notes/example.md", true);
+  const result = await instance.applyKnowledgeSyncJob({
+    entityType: "notes", entityId: "note-1", operation: "upsert",
+    payload: { id: "note-1", path: "notes/example.md", title: "Example", content: desired, syncUuid: uuid, deletedAt: null, expectedPreviousContent: baseline }
+  });
+  assert.equal(result.error, "vault_content_conflict", "A normal upsert must not resurrect a Vault tombstone");
+  assert.equal(value.get("deleted"), true);
+  assert.equal(texts.get("file-id").toString(), independentEdit);
+}
+
+{
+  const { instance, value, texts } = setup(baseline, "notes/example.md", true);
+  const result = await instance.applyKnowledgeSyncJob({
+    entityType: "notes", entityId: "note-1", operation: "upsert",
+    payload: { id: "note-1", path: "notes/example.md", title: "Example", content: desired, syncUuid: uuid, deletedAt: null, expectedPreviousContent: baseline, allowRestore: true }
+  });
+  assert.equal(result.ok, true, "Only an explicit restore may revive a Vault tombstone");
+  assert.equal(value.get("deleted"), undefined);
+  assert.equal(texts.get("file-id").toString(), desired);
+}
 console.log("Sync conflict behavior tests passed.");
