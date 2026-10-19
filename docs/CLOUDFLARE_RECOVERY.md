@@ -52,3 +52,10 @@ The previous `migrations/0001_initial.sql` was an evolved schema snapshot, inclu
 4. Validate clean-database migrations and a staging deployment before any production deploy.
 
 No Cloudflare settings, secrets, Worker code, or D1 data were changed during this capture.
+
+## Follow-up validation (2026-10-19)
+
+- Added `scripts/test_worker_sql_compatibility.py`, which compiles extracted SQL statements against the captured schema with SQLite `EXPLAIN`. The latest successful run at the time of this note is [GitHub Actions run 39215278853](https://github.com/Akatuki1121/Akatuki-Knowledge/actions/runs/39215278853): 110 SQL statement variants compiled; the clean-schema test and Worker syntax check passed.
+- The SQL test found two queries that selected `path` from `telegram_notes`, where that column does not exist. The recovery branch now selects `NULL AS path` for Telegram notes. This is a targeted bug fix relative to the deployed source, kept off `main` pending review.
+- Read-only Cloudflare Worker version metadata confirms migration tags `v1`–`v5` and shows namespace IDs changing between the recorded v1, v3, and v5 versions. It does not include the original Wrangler migration operation arrays. See [Durable Object version evidence](DURABLE_OBJECT_VERSION_EVIDENCE.md).
+- These checks are static/local-schema checks only. They are not a staging deployment or a Cloudflare D1 integration test. No production Worker, D1, or Durable Object instances were changed by this follow-up.
