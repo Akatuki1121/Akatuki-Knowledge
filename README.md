@@ -24,6 +24,6 @@ npm ci
 npm run check
 ```
 
-The check verifies JavaScript syntax only. It does not validate Cloudflare bindings, Durable Object migration state, or database migrations.
+The check verifies JavaScript syntax and static sync-contract expectations. It does not validate Cloudflare bindings, Durable Object migration state, D1 migration application, or end-to-end Vault behavior.
 
 **Do not deploy this recovery branch to production yet.** Recover the missing migration history and verify a fresh-database bootstrap plus a staging deployment first.
