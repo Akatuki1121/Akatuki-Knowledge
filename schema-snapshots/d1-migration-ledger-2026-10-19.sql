@@ -1,0 +1,16 @@
+-- D1 migration ledger captured 2026-10-19.
+-- This is documentary data, not a migration. It is not intended to be executed.
+-- id | name | applied_at
+-- 1 | 0001_initial.sql | 1792230000
+-- 2 | 0002_ai_privacy.sql | 1792230001
+-- 3 | 0003_telegram_workflow.sql | 1792325000
+-- 4 | 0004_sensitive_content_policy.sql | 1792325001
+-- 5 | 0005_conversation_memory.sql | 2026-10-18 08:41:04
+-- 6 | 0006_bot_alerts.sql | 2026-10-18 08:53:48
+-- 7 | 0007_failure_stage.sql | 2026-10-18 09:33:30
+
+-- Legacy backup table:
+-- 0001_initial.sql | 1792230000
+-- 0002_ai_privacy.sql | 1792230001
+-- 0003_telegram_workflow.sql | 1792325000
+-- 0004_sensitive_content_policy.sql | 1792325001
