@@ -64,7 +64,10 @@ for match in CALL_RE.finditer(source):
             continue
         seen.add(normalized)
         try:
-            db.execute("EXPLAIN " + candidate, (None,) * candidate.count("?")).fetchall()
+            parameter_tokens = re.findall(r"\?(\d*)", candidate)
+            numbered = [int(token) for token in parameter_tokens if token]
+            parameter_count = max(numbered) if numbered else len(parameter_tokens)
+            db.execute("EXPLAIN " + candidate, (None,) * parameter_count).fetchall()
             checked += 1
         except sqlite3.Error as exc:
             failures.append((str(exc), normalized[:260]))
