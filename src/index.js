@@ -154,7 +154,7 @@ var worker_default = {
     ctx.waitUntil(runScheduledMaintenance(env));
   }
 };
-async function enqueueSyncJob(env, entityType, entityId, operation) {
+async function enqueueSyncJob(env, entityType, entityId, operation, options = {}) {
   if (!env.DB || !["notes", "telegram_notes"].includes(entityType) || !["upsert", "delete"].includes(operation)) return;
   try {
     const row = entityType === "notes"
@@ -173,7 +173,7 @@ async function enqueueSyncJob(env, entityType, entityId, operation) {
     const previousRevision = entityType === "notes"
       ? await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(entityId).first()
       : await env.DB.prepare("SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(entityId).first();
-    const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", contentHash: row.content_hash ?? null, syncUuid, deletedAt: row.deleted_at ?? null, expectedPreviousContent: previousRevision?.content ?? null };
+    const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", contentHash: row.content_hash ?? null, syncUuid, deletedAt: row.deleted_at ?? null, expectedPreviousContent: previousRevision?.content ?? null, allowRestore: options.allowRestore === true };
     // Archive state is authoritative; preserve each event's baseline so updates can be conflict-checked in order.
     const effectiveOperation = row.deleted_at ? "delete" : operation;
     await env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)").bind(crypto.randomUUID(), entityType, entityId, effectiveOperation, JSON.stringify(payload), now, now, now).run();
@@ -1083,7 +1083,7 @@ async function restoreNote(url, env) {
   const restored = await env.DB.prepare(`UPDATE ${table} SET deleted_at = NULL, ai_allowed = ?, review_state = ?, updated_at = ?, next_retry_at = NULL WHERE id = ? AND deleted_at = ?`).bind(aiAllowed, reviewState, now, id2, archived.deleted_at).run();
   if (!restored.meta?.changes) return json({ error: "Archive changed while restoring" }, 409);
   await env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE archive_event_id = ? AND restored_at IS NULL").bind(now, event.archive_event_id).run();
-  await enqueueSyncJob(env, table, id2, "upsert");
+  await enqueueSyncJob(env, table, id2, "upsert", { allowRestore: true });
   return json({ ok: true, id: id2, restored: true, aiAllowed: Boolean(aiAllowed), reviewState });
 }
 __name(restoreNote, "restoreNote");
@@ -10675,6 +10675,10 @@ var YjsClientDO = class extends DurableObject {
     let changedCount = 0, contentConflict = false;
     await this.pullVault((doc) => {
       const meta = doc.getMap("meta"), idToText = doc.getMap("idToText"), pathToId = doc.getMap("pathToId"), current = locate(doc);
+      if (job.operation !== "delete" && !payload.deletedAt && current?.deleted && !payload.allowRestore) {
+        contentConflict = true;
+        return 0;
+      }
       if (job.operation !== "delete" && !payload.deletedAt && current && !current.deleted) {
         const currentText = idToText.get(current.fileId);
         const currentContent = currentText instanceof YText ? currentText.toString() : "";
