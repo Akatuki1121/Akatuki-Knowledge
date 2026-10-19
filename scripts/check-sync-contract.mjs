@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const migration = await readFile(new URL("../migrations/pending/0008_yaos_sync_jobs.sql", import.meta.url), "utf8");
+const migration = await readFile(new URL("../migrations/pending/0009_yaos_sync_jobs.sql", import.meta.url), "utf8");
 const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.url), "utf8");
 
 for (const contract of [
