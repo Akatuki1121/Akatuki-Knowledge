@@ -8,6 +8,8 @@ const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.ur
 for (const contract of [
   "async function enqueueSyncJob",
   "async function drainSyncOutbox",
+  'entityType === "notes"',
+  'SELECT id, title, content, deleted_at FROM telegram_notes WHERE id = ?',
   'action === "knowledge-sync"',
   "async applyKnowledgeSyncJob(job)",
   'var PULL_CRON = "0 * * * *";',
@@ -19,6 +21,8 @@ for (const contract of [
 ]) {
   assert.ok(source.includes(contract), "Missing source contract: " + contract);
 }
+
+assert.ok(!source.includes('SELECT id, path, title, content, deleted_at FROM " + entityType'), "Telegram notes do not have a path column");
 
 for (const contract of [
   "CREATE TABLE yaos_sync_jobs",
