@@ -171,6 +171,7 @@ async function enqueueSyncJob(env, entityType, entityId, operation) {
     }
   } catch {
     console.error("sync outbox enqueue failed");
+    throw new Error("sync_outbox_enqueue_failed");
   }
 }
 __name(enqueueSyncJob, "enqueueSyncJob");
