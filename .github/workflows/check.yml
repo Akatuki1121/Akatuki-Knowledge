@@ -33,9 +33,12 @@ jobs:
       - name: Compile Worker SQL against captured D1 schema
         run: python3 scripts/test_worker_sql_compatibility.py
 
-
   yaos-worker-integration:
+    # PRs exercise the proposed changes; on pushes, keep this job for main only
+    # so the same branch commit does not run the costly integration twice.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
