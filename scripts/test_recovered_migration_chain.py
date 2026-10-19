@@ -41,7 +41,8 @@ def schema(sql_files):
     db.close()
     return tables, columns
 
-paths = [MIGRATIONS / name for name in EXPECTED]\npaths.append(MIGRATIONS / "pending" / "0008_folders_schema_reconstructed.sql")
+paths = [MIGRATIONS / name for name in EXPECTED]
+paths.append(MIGRATIONS / "pending" / "0008_folders_schema_reconstructed.sql")
 missing_files = [path.name for path in paths if not path.is_file()]
 if missing_files:
     raise SystemExit(f"Recovered migration files missing: {missing_files}")
@@ -62,15 +63,15 @@ unexpected_columns = {
     if migrated_columns[table] - live_columns.get(table, set())
 }
 
-# This is the known drift observed in the captured live database. Fail if any other
-# table/column discrepancy appears, or if this known discrepancy changes unexpectedly.
-expected_missing_tables = {"folders"}
-expected_missing_columns = {"notes": {"folder_id"}}
+# The pending forward migration should bring the reconstructed chain to the same
+# table/column shape as the live capture. Production ledger reconciliation is separate.
+expected_missing_tables = set()
+expected_missing_columns = {}
 assert missing_tables == expected_missing_tables, (
-    f"Live-only tables differ from the documented drift: {missing_tables}"
+    f"Live-only tables differ from the captured schema: {missing_tables}"
 )
 assert missing_columns == expected_missing_columns, (
-    f"Live-only columns differ from the documented drift: {missing_columns}"
+    f"Live-only columns differ from the captured schema: {missing_columns}"
 )
 assert not unexpected_tables, f"Migration-only tables not in live capture: {unexpected_tables}"
 assert not unexpected_columns, f"Migration-only columns not in live capture: {unexpected_columns}"
