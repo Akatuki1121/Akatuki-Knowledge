@@ -9,7 +9,8 @@ Captured 2026-10-19 from the live Cloudflare Worker `akatuki-knowledge` and its 
 - Usage model: `standard`
 - Scheduled trigger: `0 * * * *` (hourly)
 - Current deployed Durable Object migration tag: `v5`
-- Latest observed deployment: 2026-10-18 17:58:28 UTC, version 49
+- Latest observed deployment during the original capture: 2026-10-18 17:58:28 UTC, version 49; a later read observed version 51 on 2026-10-19.
+- The recovered `wrangler.toml` points to `src/index.js`, the recovered repository entrypoint, rather than the older local `src/index.ts` or alternate `dist/wrapper.js` paths.
 
 ## Bindings
 
@@ -26,7 +27,17 @@ Secret binding names observed (values intentionally not exported): `API_TOKEN`, 
 
 ## Durable Object migration history
 
-Version metadata shows migration tags changing from `v1` to `v2`, `v3`, `v4`, and `v5`. The class `YjsClientDO` and binding `YJS_CLIENT` appear in the deployment metadata, but Cloudflare's version metadata does not provide the original Wrangler migration declarations. Do not guess these declarations or deploy a reconstructed configuration until the migration history has been recovered.
+The recovered local Wrangler configuration contains these declarations, and the live Worker version metadata independently confirms that the applied migration tag reached `v5`:
+
+| Tag | Wrangler operation |
+| --- | --- |
+| `v1` | `new_sqlite_classes = ["YjsClientDO"]` |
+| `v2` | `deleted_classes = ["YjsClientDO"]` |
+| `v3` | `new_sqlite_classes = ["YjsClientDO"]` |
+| `v4` | `deleted_classes = ["YjsClientDO"]` |
+| `v5` | `new_sqlite_classes = ["YjsClientDO"]` |
+
+The live version API does not expose the original migration arrays. The local file is the recovered source for the operation declarations; it has not been independently proven against each historical deployment artifact. Preserve the declarations in order and do not rewrite, collapse, or reorder them. In particular, the repeated delete/recreate operations are not a reason to create a new namespace manually.
 
 ## D1 migration history
 
@@ -35,7 +46,7 @@ Live `d1_migrations` records:
 - 1. `0001_initial.sql` — applied_at `1792230000`
 - 2. `0002_ai_privacy.sql` — applied_at `1792230001`
 - 3. `0003_telegram_workflow.sql` — applied_at `1792325000`
-- 4. `0004_sensitive_content_policy.sql` — applied_at `1792325001`
+- 4. `0004_telegram_workflow.sql` — applied_at `1792325001`
 - 5. `0005_conversation_memory.sql` — applied_at `2026-10-18 08:41:04`
 - 6. `0006_bot_alerts.sql` — applied_at `2026-10-18 08:53:48`
 - 7. `0007_failure_stage.sql` — applied_at `2026-10-18 09:33:30`
@@ -47,12 +58,11 @@ The previous `migrations/0001_initial.sql` was an evolved schema snapshot, inclu
 ## Remaining recovery work
 
 1. Compare the live Worker bundle with the repository source and keep any compatibility fixes isolated until reviewed. See [live-vs-repository comparison](CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md).
-2. Recover the exact Wrangler Durable Object migration declarations for tags `v1`–`v5` before any production deployment.
-3. Add a verified Wrangler config and package/tooling setup only after the binding and migration declarations are grounded in evidence.
-4. Recover original D1 migration SQL `0001`–`0007` from source history/backups if possible. This is for disaster recovery or a separate clean database; it is not a reason to recreate or modify the current production D1.
-5. A staging deployment is a later pre-deployment validation step, not part of the read-only source comparison.
+2. Validate the reconstructed Wrangler config with the installed Wrangler version, without deploying it to production.
+3. Recover original D1 migration SQL `0001`–`0007` from source history/backups if possible. This is for disaster recovery or a separate clean database; it is not a reason to recreate or modify the current production D1.
+4. A staging deployment is a later pre-deployment validation step, not part of the read-only source comparison.
 
-No Cloudflare settings, secrets, Worker code, or D1 data were changed during this capture.
+No Cloudflare settings, secrets, Worker code, or D1 data were changed during this recovery step. The new Wrangler config is only in the GitHub recovery branch and has not been deployed.
 
 ## Follow-up validation (2026-10-19)
 
