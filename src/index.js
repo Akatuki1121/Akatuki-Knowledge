@@ -10606,13 +10606,14 @@ var YjsClientDO = class extends DurableObject {
     };
     let changedCount = 0;
     await this.pullVault((doc) => {
-      const meta = doc.getMap("meta"), idToText = doc.getMap("idToText"), current = locate(doc);
+      const meta = doc.getMap("meta"), idToText = doc.getMap("idToText"), pathToId = doc.getMap("pathToId"), current = locate(doc);
       if (job.operation === "delete") {
         if (!current || current.deleted) return 0;
         const now = Date.now();
         if (current.value instanceof YMap) {
           current.value.set("deletedAt", now); current.value.set("deleted", true); current.value.set("mtime", now); current.value.set("device", WORKER_DEVICE);
         } else meta.set(current.fileId, { ...current.value, deletedAt: now, deleted: true, mtime: now, device: WORKER_DEVICE });
+        if (pathToId.get(current.path) === current.fileId) pathToId.delete(current.path);
         changedCount = 1;
         return 1;
       }
@@ -10622,8 +10623,11 @@ var YjsClientDO = class extends DurableObject {
         crypto.getRandomValues(bytes); fileId = [...bytes].map((b) => alphabet[b & 63]).join("");
         textValue = new YText(); if (desiredContent) textValue.insert(0, desiredContent); idToText.set(fileId, textValue);
         const entry = new YMap(); entry.set("path", desiredPath); entry.set("mtime", Date.now()); entry.set("device", WORKER_DEVICE); meta.set(fileId, entry);
+        pathToId.set(desiredPath, fileId);
         changedCount = 1; return 1;
       }
+      if (norm(current.path) !== norm(desiredPath) && pathToId.get(current.path) === fileId) pathToId.delete(current.path);
+      pathToId.set(desiredPath, fileId);
       if (current.value instanceof YMap) {
         current.value.set("path", desiredPath); current.value.set("mtime", Date.now()); current.value.set("device", WORKER_DEVICE);
         current.value.delete("deleted"); current.value.delete("deletedAt");
