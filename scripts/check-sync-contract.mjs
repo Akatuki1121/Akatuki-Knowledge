@@ -20,6 +20,7 @@ for (const contract of [
   'const uuidSeed = telegram ? payload.id : "notes:" + payload.id;',
   'const desiredUuid = readUuid(desiredContent);',
   'readUuid(textValue.toString()) === desiredUuid',
+  'if (found.length > 1) throw new Error("ambiguous_sync_identity")',
   'const hasUuid = fm && /^id:\\s*',
   'pathToId = doc.getMap("pathToId")',
   'pathToId.set(desiredPath, fileId)',
