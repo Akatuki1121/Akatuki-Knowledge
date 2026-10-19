@@ -158,11 +158,19 @@ async function enqueueSyncJob(env, entityType, entityId, operation) {
   if (!env.DB || !["notes", "telegram_notes"].includes(entityType) || !["upsert", "delete"].includes(operation)) return;
   try {
     const row = entityType === "notes"
-      ? await env.DB.prepare("SELECT id, path, title, content, deleted_at FROM notes WHERE id = ?").bind(entityId).first()
-      : await env.DB.prepare("SELECT id, title, content, deleted_at FROM telegram_notes WHERE id = ?").bind(entityId).first();
+      ? await env.DB.prepare("SELECT id, path, title, content, content_hash, deleted_at, sync_uuid FROM notes WHERE id = ?").bind(entityId).first()
+      : await env.DB.prepare("SELECT id, title, content, content_hash, deleted_at FROM telegram_notes WHERE id = ?").bind(entityId).first();
     if (!row) return;
     const now = new Date().toISOString();
-    const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", deletedAt: row.deleted_at ?? null };
+    let syncUuid = null;
+    if (entityType === "notes") {
+      const contentUuid = readUuid(row.content);
+      syncUuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(row.sync_uuid) ? row.sync_uuid : await deterministicUuid("notes:" + row.id));
+      if (row.sync_uuid !== syncUuid) await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(syncUuid, row.id).run();
+    } else {
+      syncUuid = await deterministicUuid(row.id);
+    }
+    const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", contentHash: row.content_hash ?? null, syncUuid, deletedAt: row.deleted_at ?? null };
     const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = ? AND entity_id = ? AND status = 'pending' ORDER BY job_id DESC LIMIT 1").bind(entityType, entityId).first();
     if (pending) {
       await env.DB.prepare("UPDATE yaos_sync_jobs SET operation = ?, payload_json = ?, next_attempt_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ? AND status = 'pending'").bind(operation, JSON.stringify(payload), now, now, pending.job_id).run();
