@@ -8,6 +8,7 @@ const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.ur
 for (const contract of [
   "async function enqueueSyncJob",
   "async function drainSyncOutbox",
+  'throw new Error("sync_outbox_enqueue_failed")',
   'entityType === "notes"',
   'SELECT id, title, content, deleted_at FROM telegram_notes WHERE id = ?',
   'action === "knowledge-sync"',
