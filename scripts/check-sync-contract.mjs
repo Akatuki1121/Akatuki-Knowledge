@@ -12,7 +12,7 @@ for (const contract of [
   'SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1',
   'expectedPreviousContent: previousRevision?.content ?? null',
   "AND NOT EXISTS (SELECT 1 FROM yaos_sync_jobs earlier",
-  "earlier.status IN ('pending', 'processing', 'dead')",
+  "earlier.status IN ('pending', 'processing')",
   "const comparableContent = (value)",
   "let changedCount = 0, contentConflict = false",
   'error: "vault_content_conflict"',
