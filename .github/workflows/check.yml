@@ -5,9 +5,12 @@ on:
   push:
     branches:
       - main
-      - recovery/bootstrap-schema-validation
-      - recovery/restore-wrangler-do-history
-      - recovery/catch-up-existing-event-sync
+
+# Feature branches are tested by pull_request only. Avoid running the same
+# commit once for push and again for pull_request.
+concurrency:
+  group: check-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -15,6 +18,7 @@ permissions:
 jobs:
   syntax-and-contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,11 +38,10 @@ jobs:
         run: python3 scripts/test_worker_sql_compatibility.py
 
   yaos-worker-integration:
-    # PRs exercise the proposed changes; on pushes, keep this job for main only
-    # so the same branch commit does not run the costly integration twice.
+    # Run the expensive end-to-end test for PRs and on main only.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -56,4 +59,4 @@ jobs:
       - name: Exercise isolated local D1 and both Workers
         env:
           YAOS_REPO_PATH: ${{ github.workspace }}/yaos
-        run: node scripts/test_yaos_worker_integration.mjs
+        run: timeout --signal=TERM --kill-after=10s 8m node scripts/test_yaos_worker_integration.mjs
