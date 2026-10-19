@@ -12,6 +12,8 @@ for (const contract of [
   'SELECT id, title, content, deleted_at FROM telegram_notes WHERE id = ?',
   'action === "knowledge-sync"',
   "async applyKnowledgeSyncJob(job)",
+  'const uuidSeed = telegram ? payload.id : "notes:" + payload.id;',
+  'const hasUuid = fm && /^id:\\s*',
   'pathToId = doc.getMap("pathToId")',
   'pathToId.set(desiredPath, fileId)',
   'pathToId.delete(current.path)',
