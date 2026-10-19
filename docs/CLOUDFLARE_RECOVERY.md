@@ -53,14 +53,17 @@ Live `d1_migrations` records:
 
 Legacy backup table records only `0001` through `0004` and their timestamps; it does not preserve the SQL text.
 
-The previous `migrations/0001_initial.sql` was an evolved schema snapshot, including the `d1_migrations` table itself, not a verified clean-database bootstrap migration. It has been preserved as `schema-snapshots/legacy-0001-initial-evolved-schema.sql` and removed from the executable migrations directory. The live schema is preserved separately at `schema-snapshots/live-d1-schema-2026-10-19.sql`. Both files are reference snapshots only and must not be run as migrations.
+The earlier repository file named `migrations/0001_initial.sql` was an evolved schema snapshot, including the `d1_migrations` table itself. It has been preserved as `schema-snapshots/legacy-0001-initial-evolved-schema.sql`. A separate set of SQL files `migrations/0001_initial.sql` through `0007_failure_stage.sql` has since been restored from a local backup and is now in the recovery branch. These files apply in order to an empty SQLite database, but they have not been independently proven byte-for-byte identical to the SQL originally applied in production.
+
+The recovered chain does not create the live `folders` table or add `notes.folder_id`, even though both exist in the captured live schema. The origin of this drift is unknown. CI now checks that this is the only table/column difference between the recovered chain and the live schema capture. Do not apply a guessed folder migration or run the recovered chain against production: the production database already has these objects, while its recorded ledger does not explain them.
+
+The live schema at `schema-snapshots/live-d1-schema-2026-10-19.sql` is a reference snapshot only and must not be run as a migration.
 
 ## Remaining recovery work
 
-1. Compare the live Worker bundle with the repository source and keep any compatibility fixes isolated until reviewed. See [live-vs-repository comparison](CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md).
-2. Validate the reconstructed Wrangler config with the installed Wrangler version, without deploying it to production.
-3. Recover original D1 migration SQL `0001`–`0007` from source history/backups if possible. This is for disaster recovery or a separate clean database; it is not a reason to recreate or modify the current production D1.
-4. A staging deployment is a later pre-deployment validation step, not part of the read-only source comparison.
+1. Reconcile the out-of-ledger `folders` / `notes.folder_id` schema with the production migration ledger using a reviewed, non-destructive procedure.
+2. Keep the recovered `0001`–`0007` chain as a candidate for clean-database recovery, while treating its exact historical provenance as unverified.
+3. Complete a staging deployment and YAOS Durable Object/WebSocket end-to-end tests before considering production rollout.
 
 No Cloudflare settings, secrets, Worker code, or D1 data were changed during this recovery step. The new Wrangler config is only in the GitHub recovery branch and has not been deployed.
 
