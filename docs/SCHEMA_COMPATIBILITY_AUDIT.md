@@ -1,18 +1,17 @@
 # D1 schema compatibility audit (static source check)
 
-Date: 2026-10-19. Source under review: recovered `main/src/index.js`; schema under review: `schema-snapshots/live-d1-schema-2026-10-19.sql`.
+Date: 2026-10-19. Baseline: recovered Worker source and captured D1 schema from before 2026-10-19 10:00 JST. Validation changes are isolated to `recovery/bootstrap-schema-validation`; `main` and production are unchanged.
 
 ## Results
 
 - The captured schema declares 18 tables, including Cloudflare's internal `_cf_KV` and the Wrangler ledger tables.
-- A static scan extracted 101 SQL string literals from calls to `prepare`, `exec`, and `batch`.
-- Of these, 81 did not use a dynamic `${...}` interpolation in the SQL literal; 20 included interpolation and need additional review.
-- For static INSERT column lists and UPDATE assignment targets whose table was recognized, no referenced column was absent from the captured table definition.
-- Dynamic table-name paths were separately checked for `notes` and `telegram_notes`; the INSERT/UPDATE columns in those paths are present in both table definitions.
-- The baseline bootstrap test passed on GitHub Actions run https://github.com/Akatuki1121/Akatuki-Knowledge/actions/runs/39210424724.
+- The first source scan found 101 SQL string literals. The CI SQL compiler now tests extracted SQL statements against the captured schema using SQLite `EXPLAIN`, with representative substitutions for dynamic table names.
+- That check exposed two real SQL compatibility errors: two queries selected `path` from `telegram_notes`, whose captured schema has no `path` column. The recovery branch now selects `NULL AS path` for Telegram notes and keeps `path` for Obsidian notes. This is a targeted bug fix to the recovered source, not an exact byte-for-byte copy of the deployed Worker.
+- The SQL compiler test also handles numbered SQLite parameters (for example `?1`) separately from anonymous `?` parameters to avoid false failures.
+- The baseline bootstrap test validates a reconstructed clean SQLite schema; it is not a production migration and must not be applied to the live D1 database.
 
 ## Limits
 
-This is a targeted static check, not a full SQL parser or runtime integration test. It does not establish correctness of every SELECT expression, JOIN, conflict clause, dynamically assembled SQL statement, data invariant, or Cloudflare D1 behavior. It does not test a staging Worker or a live request. No production D1 or Worker changes were made for this audit.
+This is a static compatibility check, not a complete JavaScript parser or Cloudflare D1 integration test. Dynamically assembled statements not extracted by the test, data-dependent constraints, request-path behavior, and actual Cloudflare runtime behavior still require additional validation. It does not test a staging Worker or a live request. No production D1 or Worker changes were made.
 
 Event-sync schema proposals such as `notes.sync_uuid` and `yaos_sync_jobs` remain excluded because they are absent from the captured live schema.
