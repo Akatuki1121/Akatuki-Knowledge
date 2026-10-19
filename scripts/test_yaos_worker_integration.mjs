@@ -401,7 +401,7 @@ SYNC_TOKEN = "${TOKEN}"
     const deadBeforeConflict = await currentDeadCount();
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
-    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, conflict refusal.");
+    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
   } finally {
     if (worker && worker.exitCode === null) {
       const current = worker;
