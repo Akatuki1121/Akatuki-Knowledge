@@ -10564,7 +10564,7 @@ var YjsClientDO = class extends DurableObject {
 };
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
-var PULL_CRON = "*/5 * * * *";
+var PULL_CRON = "0 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
