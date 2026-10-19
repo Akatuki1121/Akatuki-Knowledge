@@ -1,0 +1,9 @@
+{
+  "name": "akatuki-knowledge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloudflare Worker and D1-backed knowledge service",
+  "scripts": {
+    "check": "node --check src/index.js"
+  }
+}
