@@ -191,9 +191,9 @@ SYNC_TOKEN = "${TOKEN}"
     // against any remote database.
     const snapshot = await readFile(join(ROOT, "schema-snapshots/live-d1-schema-2026-10-19.sql"), "utf8");
     const seedSql = snapshot
-      .replace(/CREATE TABLE _cf_KV\\s*\\([\\s\\S]*?\\);\\s*/i, "")
-      .replace(/CREATE TABLE ["']?d1_migrations["']?\\s*\\([\\s\\S]*?\\);\\s*/i, "")
-      .replace(/CREATE TABLE d1_migrations_legacy_backup\\s*\\([\\s\\S]*?\\);\\s*/i, "");
+      .replace(/CREATE TABLE _cf_KV\s*\([\s\S]*?\);\s*/i, "")
+      .replace(/CREATE TABLE ["']?d1_migrations["']?\s*\([\s\S]*?\);\s*/i, "")
+      .replace(/CREATE TABLE d1_migrations_legacy_backup\s*\([\s\S]*?\);\s*/i, "");
     const seedPath = join(stateDir, "schema-local.sql");
     await writeFile(seedPath, seedSql);
     // --local and --persist-to are mandatory on every D1 command.
