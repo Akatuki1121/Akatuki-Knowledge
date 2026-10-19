@@ -10631,7 +10631,9 @@ var YjsClientDO = class extends DurableObject {
         pathToId.set(desiredPath, fileId);
         changedCount = 1; return 1;
       }
-      if (norm(current.path) !== norm(desiredPath) && pathToId.get(current.path) === fileId) pathToId.delete(current.path);
+      const pathChanged = norm(current.path) !== norm(desiredPath);
+      const indexChanged = pathToId.get(desiredPath) !== fileId || (pathChanged && pathToId.get(current.path) === fileId);
+      if (pathChanged && pathToId.get(current.path) === fileId) pathToId.delete(current.path);
       pathToId.set(desiredPath, fileId);
       if (current.value instanceof YMap) {
         current.value.set("path", desiredPath); current.value.set("mtime", Date.now()); current.value.set("device", WORKER_DEVICE);
@@ -10640,7 +10642,7 @@ var YjsClientDO = class extends DurableObject {
         const next = new YMap(); next.set("path", desiredPath); next.set("mtime", Date.now()); next.set("device", WORKER_DEVICE); meta.set(fileId, next);
       }
       if (!(textValue instanceof YText)) { textValue = new YText(); idToText.set(fileId, textValue); }
-      if (textValue.toString() === desiredContent) { changedCount = current.deleted ? 1 : 0; return changedCount; }
+      if (textValue.toString() === desiredContent) { changedCount = current.deleted || pathChanged || indexChanged ? 1 : 0; return changedCount; }
       if (textValue.length) textValue.delete(0, textValue.length);
       if (desiredContent) textValue.insert(0, desiredContent);
       changedCount = 1; return 1;
