@@ -74,3 +74,18 @@ No Cloudflare settings, secrets, Worker code, or D1 data were changed during thi
 - The live-vs-repository comparison confirms that `main/src/index.js` matches the deployed module content; the backup branch copy is wrapped in a multipart envelope and must be extracted before use. The same comparison found a config/code mismatch: the live cron is hourly (`0 * * * *`), while the code only starts the scheduled pull for `*/5 * * * *`. This indicates a likely scheduled-sync gap; it has not been changed in production. Details: [live-vs-repository comparison](CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md).
 - Read-only Cloudflare Worker version metadata confirms migration tags `v1`–`v5` and shows namespace IDs changing between the recorded v1, v3, and v5 versions. It does not include the original Wrangler migration operation arrays. See [Durable Object version evidence](DURABLE_OBJECT_VERSION_EVIDENCE.md).
 - These checks are static/local-schema checks only. They are not a staging deployment or a Cloudflare D1 integration test. No production Worker, D1, or Durable Object instances were changed by this follow-up.
+
+
+## YAOS source and isolated test harness found (2026-10-19)
+
+A public YAOS source candidate has now been located: [kavinsood/yaos](https://github.com/kavinsood/yaos). Its current `server/src/server.ts` contains the `VaultSyncServer extends YServer<Env>` implementation, matching the class name seen in the recovered deployment context. This is a strong source lead, **not proof** that the current deployed `yaos` Worker was built from the current `main` commit; deployed artifact provenance still needs verification.
+
+The repository includes a real local Worker integration suite:
+- `npm run test:integration:worker` runs `tests/live/run-live.ts`.
+- The harness starts `wrangler dev` bound to `127.0.0.1:8787`, uses a randomly generated test vault ID and auth token, and passes a temporary `--persist-to` directory.
+- The suite exercises the local Worker, Durable Object/WebSocket sync, snapshots, admission protocol, and reconnect behavior. It does not require writing to the production YAOS vault.
+- The repository's `test:ci` script runs regression tests plus this local Worker integration suite.
+
+This gives us an isolated way to validate YAOS itself before considering any separate Cloudflare staging deployment. It does **not** by itself exercise the Akatuki Knowledge outbox against YAOS end to end. The next integration step is to establish a reproducible, local service-binding path between the recovery-branch Worker and this isolated YAOS Worker, then test create/update/rename/delete/restore, conflict refusal, retry, and read-back verification. Do not point these tests at the production service binding.
+
+No YAOS repository, Worker, or Cloudflare resource was changed as part of this source discovery.
