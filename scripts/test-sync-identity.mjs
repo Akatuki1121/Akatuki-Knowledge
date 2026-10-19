@@ -121,7 +121,7 @@ const oldRow = { id: "old/path.md", path: "old/path.md", sync_uuid: syncUuid, ti
   assert.equal(result.created, 0, "A path move must not create a duplicate note");
   assert.equal(result.updated, 1, "A path move must be reported as an update");
   assert.equal(db.notes.length, 1);
-  assert.equal(db.notes[0].id, "new/path.md", "The D1 ID follows the existing path-derived ID contract");
+  assert.equal(db.notes[0].id, "old/path.md", "A path move preserves the stable D1 row ID");
   assert.equal(db.notes[0].path, "new/path.md");
   assert.equal(db.notes[0].sync_uuid, syncUuid, "The UUID remains stable across the path move");
   assert.equal(db.notes[0].content, movedContent);
