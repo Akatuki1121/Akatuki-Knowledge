@@ -10637,11 +10637,8 @@ var YjsClientDO = class extends DurableObject {
     const desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + "-" + hash16 + ".md" : norm(payload.path || "");
     if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
     let desiredContent = payload.content;
-    const uuidSeed = telegram ? payload.id : "notes:" + payload.id;
-    const digest = (await sha256Hex(uuidSeed)).slice(0, 32).split("");
-    digest[12] = "5";
-    digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
-    const uuid = digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
+    const contentUuid = readUuid(desiredContent);
+    const uuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : await deterministicUuid(telegram ? payload.id : "notes:" + payload.id));
     const fm = desiredContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     const hasUuid = fm && /^id:\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}["']?\s*$/im.test(fm[1]);
     if (!hasUuid) {
