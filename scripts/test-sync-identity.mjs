@@ -59,23 +59,18 @@ function makeDb(initialNotes = []) {
         },
         async run() {
           const v = this.values;
-          if (sql.startsWith("UPDATE notes SET id = ?, path = ?, sync_uuid = ?, source_modified_at")) {
-            const row = notes.find((n) => n.id === v[5]);
-            if (row) Object.assign(row, { id: v[0], path: v[1], sync_uuid: v[2], source_modified_at: v[3], imported_at: v[4], deleted_at: null });
+          if (sql.startsWith("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at")) {
+            const row = notes.find((n) => n.id === v[4]);
+            if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], source_modified_at: v[2], imported_at: v[3], deleted_at: null });
             return { meta: { changes: row ? 1 : 0 } };
           }
-          if (sql.startsWith("UPDATE notes SET sync_uuid = ?, source_modified_at")) {
-            const row = notes.find((n) => n.id === v[2]);
-            if (row) Object.assign(row, { sync_uuid: v[0], source_modified_at: v[1], imported_at: v[2], deleted_at: null });
-            return { meta: { changes: row ? 1 : 0 } };
-          }
-          if (sql.startsWith("INSERT INTO note_revisions")) {
+                    if (sql.startsWith("INSERT INTO note_revisions")) {
             revisions.push({ note_id: v[0], path: v[1], title: v[2], content: v[3], content_hash: v[4], saved_at: v[5] });
             return { meta: { changes: 1 } };
           }
-          if (sql.startsWith("UPDATE notes SET id = ?, path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?")) {
-            const row = notes.find((n) => n.id === v[10]);
-            if (row) Object.assign(row, { id: v[0], path: v[1], sync_uuid: v[2], title: v[3], content: v[4], content_hash: v[5], source_modified_at: v[6], imported_at: v[7], updated_at: v[8], tags_json: v[9], summary: null, ai_tags_json: "[]", related_json: "[]", organized_hash: null, organization_failures: 0, last_failure_stage: null, next_retry_at: null, review_state: "ready", deleted_at: null });
+          if (sql.startsWith("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?")) {
+            const row = notes.find((n) => n.id === v[9]);
+            if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], title: v[2], content: v[3], content_hash: v[4], source_modified_at: v[5], imported_at: v[6], updated_at: v[7], tags_json: v[8], summary: null, ai_tags_json: "[]", related_json: "[]", organized_hash: null, organization_failures: 0, last_failure_stage: null, next_retry_at: null, review_state: "ready", deleted_at: null });
             return { meta: { changes: row ? 1 : 0 } };
           }
           if (sql.startsWith("INSERT INTO notes")) {
