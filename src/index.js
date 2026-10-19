@@ -730,7 +730,7 @@ async function syncNotes(request, env) {
     return json({ error: `notes must be an array of at most ${MAX_NOTES_PER_SYNC} items` }, 400);
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  let created = 0, updated = 0, unchanged = 0;
+  let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0;
   for (const input of body.notes) {
     if (!input || typeof input.path !== "string" || !input.path.trim() || typeof input.content !== "string") continue;
     const path = stableId(input.path.trim());
@@ -739,24 +739,29 @@ async function syncNotes(request, env) {
     const title = titleFrom(path, input.title);
     const content = input.content;
     const contentHash = await sha256(content);
-    const previous = await env.DB.prepare("SELECT id, content_hash, title, content FROM notes WHERE path = ?").bind(path).first();
+    const previous = await env.DB.prepare("SELECT id, content_hash, title, content, deleted_at FROM notes WHERE path = ?").bind(path).first();
+    if (previous?.deleted_at) {
+      archivedSkipped++;
+      continue;
+    }
     const tags = JSON.stringify(extractTags(content, input.tags));
     if (previous && previous.content_hash === contentHash && previous.title === title) {
-      await env.DB.prepare("UPDATE notes SET source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE path = ?").bind(typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, path).run();
+      await env.DB.prepare("UPDATE notes SET source_modified_at = ?, imported_at = ? WHERE path = ? AND deleted_at IS NULL").bind(typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, path).run();
       unchanged++;
       continue;
     }
     const id2 = path;
     if (previous) {
       await env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, path, previous.title, previous.content, previous.content_hash, now).run();
-      await env.DB.prepare(`UPDATE notes SET title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE path = ?`).bind(title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, path).run();
-      updated++;
+      const result = await env.DB.prepare(`UPDATE notes SET title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready' WHERE path = ? AND deleted_at IS NULL`).bind(title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, path).run();
+      if (result.meta?.changes) updated++;
+      else archivedSkipped++;
     } else {
       await env.DB.prepare(`INSERT INTO notes (id, path, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id2, path, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags).run();
       created++;
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, note: "Sync never deletes note records. Missing Vault files are not automatically propagated as deletions." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, archivedSkipped, note: "Sync never deletes note records or reactivates archived notes. Missing Vault files are not automatically propagated as deletions." });
 }
 __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
