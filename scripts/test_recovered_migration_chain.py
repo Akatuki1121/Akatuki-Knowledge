@@ -41,7 +41,7 @@ def schema(sql_files):
     db.close()
     return tables, columns
 
-paths = [MIGRATIONS / name for name in EXPECTED]
+paths = [MIGRATIONS / name for name in EXPECTED]\npaths.append(MIGRATIONS / "pending" / "0008_folders_schema_reconstructed.sql")
 missing_files = [path.name for path in paths if not path.is_file()]
 if missing_files:
     raise SystemExit(f"Recovered migration files missing: {missing_files}")
@@ -76,8 +76,8 @@ assert not unexpected_tables, f"Migration-only tables not in live capture: {unex
 assert not unexpected_columns, f"Migration-only columns not in live capture: {unexpected_columns}"
 
 print(
-    "PASS: migrations 0001-0007 apply in order to empty SQLite and match the captured "
-    "live schema shape except for the known out-of-ledger folders table and notes.folder_id."
+    "PASS: migrations 0001-0007 plus pending folder migration apply in order to empty SQLite and match the captured "
+    "live schema shape after applying the pending reconstructed folder-schema migration."
 )
 print(
     "NOTE: this proves structural compatibility only; it does not prove the recovered SQL "
