@@ -701,7 +701,9 @@ async function applyTelegramCapture(env, chatId, messageId, now, capture, matche
     return `\u300C${title}\u300D\u306B\u8A18\u9332\u3057\u305F\u3088\u3002`;
   }
   const table = target.source === "telegram" ? "telegram_notes" : "notes";
-  const old = await env.DB.prepare(`SELECT id, path, title, content, content_hash FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(target.id).first();
+  const old = table === "notes"
+    ? await env.DB.prepare("SELECT id, path, title, content, content_hash FROM notes WHERE id = ? AND deleted_at IS NULL").bind(target.id).first()
+    : await env.DB.prepare("SELECT id, NULL AS path, title, content, content_hash FROM telegram_notes WHERE id = ? AND deleted_at IS NULL").bind(target.id).first();
   if (!old || inspectWholeContent(old.content, env).credentials) return null;
   const nowDate = now.slice(0, 10);
   const updatedContent = `${old.content.trim()}
