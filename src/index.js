@@ -10844,7 +10844,18 @@ var wrapper_default = {
     const url = new URL(request.url);
     if (url.pathname === "/sync/status" && request.method === "GET") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
-      return doFetch(env, "status");
+      const response = await doFetch(env, "status");
+      const status = await response.json().catch(() => ({ ok: false, error: "invalid_status_response" }));
+      let outbox = { ok: false, skipped: "outbox_not_migrated" };
+      try {
+        const result = await env.DB.prepare("SELECT status, COUNT(*) AS count FROM yaos_sync_jobs GROUP BY status").all();
+        const counts = { pending: 0, processing: 0, sent: 0, dead: 0 };
+        for (const row of result.results || []) if (Object.hasOwn(counts, row.status)) counts[row.status] = Number(row.count || 0);
+        outbox = { ok: true, ...counts };
+      } catch {
+        // The pending migration has not necessarily been applied in every environment.
+      }
+      return Response.json({ ...status, outbox }, { status: response.status, headers: JSON_HEADERS2 });
     }
     if (url.pathname.startsWith("/sync/")) {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
