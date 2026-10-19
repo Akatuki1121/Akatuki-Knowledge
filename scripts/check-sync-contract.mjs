@@ -25,6 +25,7 @@ for (const contract of [
   'pathToId = doc.getMap("pathToId")',
   'pathToId.set(desiredPath, fileId)',
   'pathToId.delete(current.path)',
+  'current.deleted || pathChanged || indexChanged ? 1 : 0',
   'var PULL_CRON = "0 * * * *";',
   'await enqueueSyncJob(env, "telegram_notes", id2, "upsert")',
   'await enqueueSyncJob(env, table, id2, "delete")',
