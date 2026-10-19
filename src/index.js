@@ -803,17 +803,32 @@ async function syncNotes(request, env) {
     const title = titleFrom(path, input.title);
     const content = input.content;
     const contentHash = await sha256(content);
-    const previous = await env.DB.prepare("SELECT id, content_hash, title, content FROM notes WHERE path = ?").bind(path).first();
+    let previous = await env.DB.prepare("SELECT id, path, content_hash, title, content FROM notes WHERE path = ?").bind(path).first();
+    const incomingUuid = readUuid(content);
+    const isSyncUuid = typeof incomingUuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(incomingUuid);
+    let uuidPathChanged = false;
+    if (isSyncUuid) {
+      const allNotes = await env.DB.prepare("SELECT id, path, content_hash, title, content FROM notes WHERE deleted_at IS NULL").all();
+      const matches = (allNotes.results || []).filter((note) => readUuid(note.content) === incomingUuid);
+      if (matches.length > 1 || (previous && matches.some((note) => note.id !== previous.id))) {
+        return json({ error: "ambiguous_sync_uuid", path, conflicts: matches.map((note) => note.path) }, 409);
+      }
+      if (!previous && matches.length === 1) {
+        previous = matches[0];
+        uuidPathChanged = previous.path !== path;
+      }
+    }
     const tags = JSON.stringify(extractTags(content, input.tags));
     if (previous && previous.content_hash === contentHash && previous.title === title) {
-      await env.DB.prepare("UPDATE notes SET source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE path = ?").bind(typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, path).run();
-      unchanged++;
+      await env.DB.prepare("UPDATE notes SET path = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(path, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id).run();
+      if (uuidPathChanged || previous.path !== path) updated++;
+      else unchanged++;
       continue;
     }
     const id2 = path;
     if (previous) {
-      await env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, path, previous.title, previous.content, previous.content_hash, now).run();
-      await env.DB.prepare(`UPDATE notes SET title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE path = ?`).bind(title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, path).run();
+      await env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now).run();
+      await env.DB.prepare(`UPDATE notes SET path = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE id = ?`).bind(path, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id).run();
       updated++;
     } else {
       await env.DB.prepare(`INSERT INTO notes (id, path, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id2, path, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags).run();
