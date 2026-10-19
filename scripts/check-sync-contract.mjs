@@ -8,6 +8,13 @@ const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.ur
 for (const contract of [
   "async function enqueueSyncJob",
   "async function drainSyncOutbox",
+  'const incomingUuid = readUuid(content)',
+  'SELECT id, path, content_hash, title, content, deleted_at FROM notes',
+  'matches.some((note) => note.id !== previous.id)',
+  'if (!previous && matches.length === 1)',
+  'UPDATE notes SET path = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?',
+  'UPDATE notes SET path = ?, title = ?, content = ?, content_hash = ?',
+  'error: "ambiguous_sync_uuid"',
   'throw new Error("sync_outbox_enqueue_failed")',
   'entityType === "notes"',
   'SELECT id, title, content, deleted_at FROM telegram_notes WHERE id = ?',
