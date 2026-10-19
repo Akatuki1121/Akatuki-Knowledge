@@ -16,8 +16,8 @@ Keep the existing YAOS Worker and its Durable Object protocol unchanged. Akatuki
 
 - Existing Obsidian notes continue to use their path as the D1 identity; the current YAOS reader recognizes the YAML `id:` frontmatter field.
 - Telegram notes retain their stable D1 ID. Their Vault path is derived from the title plus a 16-character hash of that ID, so a title change updates the same Vault note instead of creating a duplicate.
-- Telegram notes without an existing `id:` frontmatter field receive a deterministic UUID in that property when first written to the Vault.
-- Deletions are represented as YAOS metadata tombstones. They are not implemented by removing CRDT records outright.
+- Every note written by the event path receives a deterministic UUID in YAML `id:` frontmatter if it does not already contain a valid UUID. Telegram IDs and Obsidian-note IDs use separate seeds. Existing valid UUIDs are preserved; a non-UUID `id:` value is replaced because this field is reserved for sync identity.
+- Create, rename, delete, and restore operations maintain YAOS `meta`, `idToText`, and `pathToId`. Deletions are represented as YAOS metadata tombstones, not by removing CRDT records outright.
 - Every successful delivery is followed by a read-back verification. A job is marked `sent` only after verification succeeds.
 
 ## Migration safety
