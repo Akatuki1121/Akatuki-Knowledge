@@ -25,7 +25,7 @@ The live Cloudflare Cron is `0 * * * *`, but the recovered production bundle che
 - Create, rename, delete, and restore operations maintain YAOS `meta`, `idToText`, and `pathToId`. Deletions are represented as YAOS metadata tombstones, not by removing CRDT records outright. A row with `deleted_at` set is always enqueued as a delete, and the Durable Object treats any archived payload as a tombstone even if a stale caller labels it an upsert.
 - Before overwriting an existing live Vault note, the worker compares its content with the desired content and the expected previous revision. If the Vault has an independent edit, the job fails closed as `vault_content_conflict` instead of overwriting it. The sync UUID frontmatter line is ignored for this comparison. Every successful delivery is followed by a read-back verification. A job is marked `sent` only after verification succeeds.
 
-## Migration safety
+## Monitoring\n\nThe authenticated `GET /sync/status` response includes pending, processing, sent, and dead-letter outbox counts. If the pending migration is not present, the response reports that the outbox table is not migrated rather than failing the entire status request.\n\n## Migration safety
 
 The D1 outbox migration is intentionally stored under `migrations/pending/`, not the executable migrations directory. The original migration SQL for 0001-0007 is missing from the recovered repository. Do not deploy this Worker version until the outbox table has been applied to the live D1 database and the migration chain has been validated. This feature branch does not change production Worker code, D1 data, secrets, or YAOS.
 
