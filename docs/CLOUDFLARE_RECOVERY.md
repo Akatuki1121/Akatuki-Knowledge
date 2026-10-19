@@ -37,7 +37,7 @@ The recovered local Wrangler configuration contains these declarations, and the 
 | `v4` | `deleted_classes = ["YjsClientDO"]` |
 | `v5` | `new_sqlite_classes = ["YjsClientDO"]` |
 
-The live version API does not expose the original migration arrays. The local file is the recovered source for the operation declarations; it has not been independently proven against each historical deployment artifact. Preserve the declarations in order and do not rewrite, collapse, or reorder them. In particular, the repeated delete/recreate operations are not a reason to create a new namespace manually.
+The live version API does not expose the original migration arrays. The local file is the recovered source for the operation declarations; it has not been independently proven against each historical deployment artifact. Preserve the declarations in order and do not rewrite, collapse, or reorder them. Cloudflare's legacy migration documentation states that `deleted_classes` deletes all Durable Objects for that class, including stored data. If this recovered history reflects the operations applied, `v2` and `v4` were destructive transitions; do not assume data from the earlier namespaces survived. The live Worker currently uses the `v5` namespace. The successful local dry-run does not verify remote migration reconciliation or prove a production deployment safe. In particular, do not create a new namespace manually or deploy this recovery config to production until that reconciliation behavior is independently reviewed.
 
 ## D1 migration history
 
