@@ -100,6 +100,56 @@ async function currentSentCount() {
   return status.outbox.sent;
 }
 
+async function currentDeadCount() {
+  const status = await request("/sync/status");
+  assert.equal(status.outbox?.ok, true, "outbox migration is active in local D1");
+  return status.outbox.dead || 0;
+}
+
+async function mutateYaosNote(path, suffix, clientPath) {
+  // Use YAOS's own installed Yjs provider and schema to make a genuine
+  // remote-side edit, rather than faking the verification response.
+  const client = `
+import * as Y from "yjs";
+import YSyncProvider from "y-partyserver/provider";
+import WebSocket from "ws";
+const host = "http://127.0.0.1:8787";
+const doc = new Y.Doc();
+const pathToId = doc.getMap("pathToId");
+const idToText = doc.getMap("idToText");
+const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
+  prefix: `/vault/sync/${encodeURIComponent(${JSON.stringify(VAULT_ID)})}`,
+  params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
+  WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
+  connect: true,
+});
+let finished = false;
+function done(code) {
+  if (finished) return;
+  finished = true;
+  provider.destroy();
+  doc.destroy();
+  process.exitCode = code;
+}
+const timeout = setTimeout(() => { console.error("YAOS edit client timed out"); done(1); }, 10000);
+provider.on("sync", synced => {
+  if (!synced || finished) return;
+  const id = pathToId.get(${JSON.stringify(path)});
+  const text = id && idToText.get(id);
+  if (!text) {
+    console.error("YAOS note not found at path " + ${JSON.stringify(path)});
+    clearTimeout(timeout);
+    done(1);
+    return;
+  }
+  text.insert(text.length, ${JSON.stringify(suffix)});
+  setTimeout(() => { clearTimeout(timeout); done(0); }, 500);
+});
+`;
+  await writeFile(clientPath, client);
+  await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
+}
+
 async function importNote(path, content, title) {
   // /api/sync is the inbound YAOS -> D1 path and intentionally does not enqueue
   // outbound work. Use it only to seed the local D1 row, then exercise the
@@ -135,6 +185,7 @@ async function main() {
   const stateDir = await mkdtemp(join(tmpdir(), "knowledge-yaos-e2e-"));
   let worker;
   let workerOutput = "";
+  const clientPath = join(YAOS_SERVER, `.knowledge-integration-client-${UUID}.mjs`);
   const originalKnowledge = await readFile(join(ROOT, "wrangler.toml"), "utf8");
   const originalYaos = await readFile(YAOS_WRANGLER, "utf8");
 
@@ -294,7 +345,15 @@ SYNC_TOKEN = "${TOKEN}"
 
     notes = await getNotes();
     assert.ok(notes.some(item => item.id === noteId && item.path === RENAMED_PATH), "restored note remains under renamed path");
-    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore.");
+
+    // Simulate a real independent YAOS edit after the last verified write.
+    // The next Knowledge correction must be rejected as a permanent conflict,
+    // not overwrite the remote document or mark the job as sent.
+    await mutateYaosNote(RENAMED_PATH, "\\n\\nexternal YAOS edit", clientPath);
+    const deadBeforeConflict = await currentDeadCount();
+    await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
+    await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
+    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, conflict refusal.");
   } finally {
     if (worker && worker.exitCode === null) {
       worker.kill("SIGTERM");
@@ -302,6 +361,7 @@ SYNC_TOKEN = "${TOKEN}"
     }
     await rm(KNOWLEDGE_CONFIG, { force: true });
     await rm(YAOS_CONFIG, { force: true });
+    await rm(clientPath, { force: true });
     await rm(stateDir, { recursive: true, force: true });
   }
 }
