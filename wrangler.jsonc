@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "akatuki-knowledge",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-17",
+  "workers_dev": true,
+  "keep_vars": true,
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "Akatuki-knowledge",
+      "database_id": "e8c57dbe-0175-43d8-9c16-0501e0c1d5a6"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "YJS_CLIENT",
+        "class_name": "YjsClientDO"
+      }
+    ]
+  },
+  "services": [
+    {
+      "binding": "YAOS",
+      "service": "yaos",
+      "environment": "production"
+    }
+  ],
+  "vars": {
+    "GEMINI_LIGHT_MODEL": "gemini-3.1-flash-lite",
+    "GEMINI_MODEL": "gemini-3.5-flash-lite",
+    "ORGANIZE_PER_RUN": "2"
+  }
+}
