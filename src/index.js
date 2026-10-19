@@ -808,7 +808,7 @@ async function syncNotes(request, env) {
     const isSyncUuid = typeof incomingUuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(incomingUuid);
     let uuidPathChanged = false;
     if (isSyncUuid) {
-      const allNotes = await env.DB.prepare("SELECT id, path, content_hash, title, content FROM notes WHERE deleted_at IS NULL").all();
+      const allNotes = await env.DB.prepare("SELECT id, path, content_hash, title, content, deleted_at FROM notes").all();
       const matches = (allNotes.results || []).filter((note) => readUuid(note.content) === incomingUuid);
       if (matches.length > 1 || (previous && matches.some((note) => note.id !== previous.id))) {
         return json({ error: "ambiguous_sync_uuid", path, conflicts: matches.map((note) => note.path) }, 409);
