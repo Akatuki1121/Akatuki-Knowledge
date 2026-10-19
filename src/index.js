@@ -10595,7 +10595,7 @@ var YjsClientDO = class extends DurableObject {
     }
     const desiredUuid = readUuid(desiredContent);
     const locate = (doc) => {
-      let active = null, tombstone = null;
+      const found = [];
       const idToText = doc.getMap("idToText");
       doc.getMap("meta").forEach((value, fileId) => {
         const path = value instanceof YMap ? value.get("path") : value?.path;
@@ -10604,11 +10604,10 @@ var YjsClientDO = class extends DurableObject {
         const textValue = idToText.get(fileId);
         const sameUuid = !telegram && desiredUuid && textValue instanceof YText && readUuid(textValue.toString()) === desiredUuid;
         const matches = telegram ? path.startsWith(RESERVED_ROOT + "/Telegram/") && path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16 : sameUuid || norm(path) === desiredPath;
-        if (!matches) return;
-        const item = { fileId, value, path, deleted };
-        if (deleted) tombstone ??= item; else active ??= item;
+        if (matches) found.push({ fileId, value, path, deleted });
       });
-      return active || tombstone;
+      if (found.length > 1) throw new Error("ambiguous_sync_identity");
+      return found[0] || null;
     };
     let changedCount = 0;
     await this.pullVault((doc) => {
