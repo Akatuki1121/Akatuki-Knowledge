@@ -254,6 +254,7 @@ function noteContent(text) {
 async function main() {
   const stateDir = await mkdtemp(join(tmpdir(), "knowledge-yaos-e2e-"));
   let worker;
+  let yaosWorker;
   let workerOutput = "";
   const clientPath = join(YAOS_SERVER, `.knowledge-integration-client-${UUID}.mjs`);
   const originalKnowledge = await readFile(join(ROOT, "wrangler.toml"), "utf8");
@@ -386,6 +387,49 @@ SYNC_TOKEN = "${TOKEN}"
       worker = null;
     }
 
+    async function startYaosWorker() {
+      let output = "";
+      yaosWorker = spawn("npx", [
+        ...WRANGLER, "dev",
+        "--config", YAOS_CONFIG,
+        "--ip", "127.0.0.1",
+        "--port", "8787",
+        "--local",
+        "--persist-to", stateDir,
+        "--log-level", "error",
+      ], {
+        cwd: YAOS_SERVER,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
+          CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false",
+        },
+      });
+      const collect = chunk => {
+        output += chunk.toString();
+        if (output.length > 6000) output = output.slice(-6000);
+      };
+      yaosWorker.stdout.on("data", collect);
+      yaosWorker.stderr.on("data", collect);
+      try {
+        await waitFor(async () => {
+          try {
+            const response = await fetch(HOST + "/");
+            return response.status < 500;
+          } catch { return false; }
+        }, "direct local YAOS Worker startup");
+      } catch (error) {
+        throw new Error(`${error.message}\n${output}`);
+      }
+    }
+
+    async function stopYaosWorker() {
+      await stopProcessTree(yaosWorker);
+      yaosWorker = null;
+    }
+
     await startWorker();
 
     // Create -> update -> rename with stable UUID. A job counts as successful
@@ -462,21 +506,27 @@ SYNC_TOKEN = "${TOKEN}"
       throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}`);
     });
 
-    // Simulate a real independent YAOS edit after the last verified write.
-    // The next Knowledge correction must be rejected as a permanent conflict,
-    // not overwrite the remote document or mark the job as sent.
+    // Connect the independent Yjs client directly to the YAOS Worker. The
+    // Knowledge Worker exposes only its own routes on the public local port;
+    // its YAOS service binding is internal and cannot be reached by a Node
+    // WebSocket client at 127.0.0.1:8787. Stop Knowledge first, expose YAOS on
+    // that port with the same disposable persistence directory, edit the DO,
+    // then restart Knowledge and verify its conflict handling.
+    await stopWorker();
+    await startYaosWorker();
     try {
       await mutateYaosNote(RENAMED_PATH, "\\n\\nexternal YAOS edit", clientPath);
-    } catch (error) {
-      console.error("Knowledge Worker logs around independent YAOS edit:\\n" + workerOutput);
-      throw error;
+    } finally {
+      await stopYaosWorker();
     }
+    await startWorker();
     const deadBeforeConflict = await currentDeadCount();
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
     console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
   } finally {
     await stopProcessTree(worker);
+    await stopProcessTree(yaosWorker);
     await rm(KNOWLEDGE_CONFIG, { force: true });
     await rm(YAOS_CONFIG, { force: true });
     await rm(clientPath, { force: true });
