@@ -2,6 +2,10 @@
 -- Do not move into the executable migrations directory until the original
 -- applied migrations 0001-0007 and a clean-database migration chain are restored.
 
+-- UUID index used to reconcile Obsidian path moves without changing the stable D1 row ID.
+ALTER TABLE notes ADD COLUMN sync_uuid TEXT;
+CREATE INDEX idx_notes_sync_uuid ON notes(sync_uuid);
+
 CREATE TABLE yaos_sync_jobs (
     job_id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
