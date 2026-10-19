@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
@@ -13,12 +14,28 @@ function readUuid(content) {
   if (!fm) return null;
   return fm[1].match(/^id:\s*["']?([0-9A-Za-z-]+)["']?\s*$/m)?.[1] ?? null;
 }
+function isValidSyncUuid(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+async function deterministicUuid(seed) {
+  const digest = createHash("sha256").update(seed).digest("hex").slice(0, 32).split("");
+  digest[12] = "5";
+  digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
+  return digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
+}
 function makeDb(initialNotes = []) {
   const notes = structuredClone(initialNotes);
   const revisions = [];
-  return {
-    notes,
-    revisions,
+  const relations = [];
+  const archiveEvents = [];
+  const telegramActions = [];
+  const db = {
+    notes, revisions, relations, archiveEvents, telegramActions,
+    async batch(statements) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    },
     prepare(sql) {
       const statement = {
         values: [],
@@ -31,35 +48,53 @@ function makeDb(initialNotes = []) {
           throw new Error("Unexpected first SQL: " + sql);
         },
         async all() {
+          if (sql.includes("FROM notes WHERE sync_uuid = ?")) {
+            const [uuid] = this.values;
+            return { results: notes.filter((n) => n.sync_uuid === uuid).map((n) => ({ ...n })) };
+          }
           if (sql.includes("FROM notes")) return { results: notes.map((n) => ({ ...n })) };
           throw new Error("Unexpected all SQL: " + sql);
         },
         async run() {
           const v = this.values;
-          if (sql.startsWith("UPDATE notes SET path = ?, source_modified_at")) {
-            const row = notes.find((n) => n.id === v[3]);
-            if (row) { row.path = v[0]; row.source_modified_at = v[1]; row.imported_at = v[2]; row.deleted_at = null; }
+          if (sql.startsWith("UPDATE notes SET id = ?, path = ?, sync_uuid = ?, source_modified_at")) {
+            const row = notes.find((n) => n.id === v[5]);
+            if (row) Object.assign(row, { id: v[0], path: v[1], sync_uuid: v[2], source_modified_at: v[3], imported_at: v[4], deleted_at: null });
+            return { meta: { changes: row ? 1 : 0 } };
+          }
+          if (sql.startsWith("UPDATE notes SET sync_uuid = ?, source_modified_at")) {
+            const row = notes.find((n) => n.id === v[2]);
+            if (row) Object.assign(row, { sync_uuid: v[0], source_modified_at: v[1], imported_at: v[2], deleted_at: null });
             return { meta: { changes: row ? 1 : 0 } };
           }
           if (sql.startsWith("INSERT INTO note_revisions")) {
             revisions.push({ note_id: v[0], path: v[1], title: v[2], content: v[3], content_hash: v[4], saved_at: v[5] });
             return { meta: { changes: 1 } };
           }
-          if (sql.startsWith("UPDATE notes SET path = ?, title = ?, content = ?, content_hash = ?")) {
-            const row = notes.find((n) => n.id === v[8]);
-            if (row) Object.assign(row, { path: v[0], title: v[1], content: v[2], content_hash: v[3], source_modified_at: v[4], imported_at: v[5], updated_at: v[6], tags_json: v[7], summary: null, ai_tags_json: "[]", related_json: "[]", organized_hash: null, organization_failures: 0, last_failure_stage: null, next_retry_at: null, review_state: "ready", deleted_at: null });
+          if (sql.startsWith("UPDATE notes SET id = ?, path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?")) {
+            const row = notes.find((n) => n.id === v[10]);
+            if (row) Object.assign(row, { id: v[0], path: v[1], sync_uuid: v[2], title: v[3], content: v[4], content_hash: v[5], source_modified_at: v[6], imported_at: v[7], updated_at: v[8], tags_json: v[9], summary: null, ai_tags_json: "[]", related_json: "[]", organized_hash: null, organization_failures: 0, last_failure_stage: null, next_retry_at: null, review_state: "ready", deleted_at: null });
             return { meta: { changes: row ? 1 : 0 } };
           }
           if (sql.startsWith("INSERT INTO notes")) {
-            notes.push({ id: v[0], path: v[1], title: v[2], content: v[3], content_hash: v[4], source_modified_at: v[5], imported_at: v[6], updated_at: v[7], tags_json: v[8], deleted_at: null });
+            notes.push({ id: v[0], path: v[1], sync_uuid: v[2], title: v[3], content: v[4], content_hash: v[5], source_modified_at: v[6], imported_at: v[7], updated_at: v[8], tags_json: v[9], deleted_at: null });
             return { meta: { changes: 1 } };
           }
+          if (sql.startsWith("UPDATE note_revisions SET note_id = ?")) {
+            for (const row of revisions) if (row.note_id === v[1]) row.note_id = v[0];
+            return { meta: { changes: 1 } };
+          }
+          if (sql.startsWith("UPDATE note_relations SET source_note_id = ?")) return { meta: { changes: 1 } };
+          if (sql.startsWith("UPDATE note_relations SET target_note_id = ?")) return { meta: { changes: 1 } };
+          if (sql.startsWith("UPDATE note_archive_events SET note_id = ?")) return { meta: { changes: 1 } };
+          if (sql.startsWith("UPDATE telegram_note_actions SET note_id = ?")) return { meta: { changes: 1 } };
           throw new Error("Unexpected run SQL: " + sql);
         }
       };
       return statement;
     }
   };
+  return db;
 }
 const deps = {
   readJson: (request) => request.json(),
@@ -69,31 +104,36 @@ const deps = {
   sha256: async (text) => "hash:" + text,
   extractTags: (_content, tags) => tags || [],
   readUuid,
+  isValidSyncUuid,
+  deterministicUuid,
   MAX_NOTES_PER_SYNC: 500,
   MAX_NOTE_CHARS: 200000
 };
 const syncNotes = new Function(...Object.keys(deps), "return (" + syncNotesSource + ");")(...Object.values(deps));
-const uuid = "a1b2c3d4-e5f6-4a7b-8c9d-0123456789ab";
-const originalContent = `---\nid: "${uuid}"\n---\n\nA note`;
-const oldRow = { id: "old/path.md", path: "old/path.md", title: "Note", content: originalContent, content_hash: "hash:" + originalContent, source_modified_at: null, imported_at: "old", updated_at: "old", tags_json: "[]", deleted_at: null };
+const syncUuid = await deterministicUuid("notes:old/path.md");
+const originalContent = "Legacy note without an id property";
+const movedContent = `---\nid: "${syncUuid}"\n---\n\nLegacy note without an id property`;
+const oldRow = { id: "old/path.md", path: "old/path.md", sync_uuid: syncUuid, title: "Note", content: originalContent, content_hash: "hash:" + originalContent, source_modified_at: null, imported_at: "old", updated_at: "old", tags_json: "[]", deleted_at: null };
 
 {
   const db = makeDb([oldRow]);
-  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "new/path.md", title: "Note", content: originalContent }] }) });
+  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "new/path.md", title: "Note", content: movedContent }] }) });
   const response = await syncNotes(request, { DB: db });
   const result = await response.json();
   assert.equal(response.status, 200);
   assert.equal(result.created, 0, "A path move must not create a duplicate note");
   assert.equal(result.updated, 1, "A path move must be reported as an update");
   assert.equal(db.notes.length, 1);
-  assert.equal(db.notes[0].id, "old/path.md", "The stable D1 ID must survive a path move");
+  assert.equal(db.notes[0].id, "new/path.md", "The D1 ID follows the existing path-derived ID contract");
   assert.equal(db.notes[0].path, "new/path.md");
+  assert.equal(db.notes[0].sync_uuid, syncUuid, "The UUID remains stable across the path move");
+  assert.equal(db.notes[0].content, movedContent);
 }
 
 {
   const duplicate = { ...oldRow, id: "another.md", path: "another.md" };
   const db = makeDb([oldRow, duplicate]);
-  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "new/path.md", title: "Note", content: originalContent }] }) });
+  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "new/path.md", title: "Note", content: movedContent }] }) });
   const response = await syncNotes(request, { DB: db });
   const result = await response.json();
   assert.equal(response.status, 409, "Duplicate UUIDs must fail closed");
