@@ -80,7 +80,7 @@ async function waitFor(predicate, label, timeoutMs = 20000) {
 }
 
 async function stopProcessTree(child) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
 
   const signalTree = signal => {
     try {
@@ -92,13 +92,13 @@ async function stopProcessTree(child) {
   };
 
   const waitForExit = () => new Promise(resolvePromise => {
-    if (child.exitCode !== null) return resolvePromise();
+    if (child.exitCode !== null || child.signalCode !== null) return resolvePromise();
     child.once("exit", resolvePromise);
   });
 
   signalTree("SIGTERM");
   await Promise.race([waitForExit(), delay(3000)]);
-  if (child.exitCode === null) {
+  if (child.exitCode === null && child.signalCode === null) {
     signalTree("SIGKILL");
     await Promise.race([waitForExit(), delay(3000)]);
   }
