@@ -8,7 +8,7 @@ Captured read-only from Cloudflare APIs on 2026-10-19. This is an evidence recor
 - Deployment ID: `9fb82e9a-c350-4ef4-8efe-9a44fa58c4ff`, created `2026-10-18T17:58:28.075243Z` (2026-10-19 02:58:28 JST).
 - Current settings: compatibility date `2026-10-17`, standard usage model.
 - Live bindings observed: D1 `DB` → `e8c57dbe-0175-43d8-9c16-0501e0c1d5a6`; service binding `YAOS` → `yaos` production; Durable Object binding `YJS_CLIENT` → class `YjsClientDO`, namespace `e84bbcb28ff0482a9b7b9a1cce2e28e5`; text/secret bindings are recorded by name only, never by secret value.
-- The current script-content endpoint returns the deployed bundle. The bundle's `wrapper.js` code matches `main/src/index.js` apart from the trailing newline observed in the earlier comparison. The bundle is authoritative for the deployed behavior, but it is bundled output rather than the original project/build inputs.
+- The current script-content endpoint returns the deployed bundle. A byte-level comparison of the extracted live `wrapper.js` and GitHub `main/src/index.js` shows that the entire GitHub file matches the start of the deployed module exactly; the deployed payload only appends `//# sourceMappingURL=wrapper.js.map\n`. The bundle is authoritative for the deployed behavior, but it is bundled output rather than the original project/build inputs.
 - Cloudflare deployment history lists versions from 2026-10-17 onward, with upload/deployment trigger annotations. Version metadata exposes tags and bindings, but not the complete original Wrangler migration operation arrays.
 
 ## `yaos` Worker
@@ -22,7 +22,7 @@ Captured read-only from Cloudflare APIs on 2026-10-19. This is an evidence recor
 
 - Cloudflare database `Akatuki-knowledge`, ID `e8c57dbe-0175-43d8-9c16-0501e0c1d5a6`, created `2026-10-17T11:59:42.464Z`, currently reports 18 tables.
 - The D1 schema snapshot and `d1_migrations` ledger in the recovery branch are derived from the live database. The ledger records which migration names ran, not the missing original SQL file contents.
-- D1 exposes query/export and Time Travel APIs. Do not use a restore, import, or mutating query as part of this recovery without a separate explicit decision. The read-only bookmark endpoint returned a bookmark during this inspection; it was not used to restore anything.
+- D1 exposes query/export and Time Travel APIs. The current production D1 is to be preserved and reused; no rebuild, migration replay, import, restore, or mutating query is part of this source-recovery task. The read-only bookmark endpoint returned a bookmark during inspection; it was not used to restore anything. The captured schema is reference material for compatibility checks only.
 
 ## Recovery rule
 
