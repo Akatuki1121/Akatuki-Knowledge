@@ -46,10 +46,11 @@ The previous `migrations/0001_initial.sql` was an evolved schema snapshot, inclu
 
 ## Remaining recovery work
 
-1. Recover original D1 migration SQL `0001`–`0007` from source history/backups; do not reverse-engineer and label guessed SQL as original.
-2. Recover the exact Wrangler Durable Object migration declarations for tags `v1`–`v5`.
-3. Add a verified Wrangler config and package/tooling setup.
-4. Validate clean-database migrations and a staging deployment before any production deploy.
+1. Compare the live Worker bundle with the repository source and keep any compatibility fixes isolated until reviewed. See [live-vs-repository comparison](CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md).
+2. Recover the exact Wrangler Durable Object migration declarations for tags `v1`–`v5` before any production deployment.
+3. Add a verified Wrangler config and package/tooling setup only after the binding and migration declarations are grounded in evidence.
+4. Recover original D1 migration SQL `0001`–`0007` from source history/backups if possible. This is for disaster recovery or a separate clean database; it is not a reason to recreate or modify the current production D1.
+5. A staging deployment is a later pre-deployment validation step, not part of the read-only source comparison.
 
 No Cloudflare settings, secrets, Worker code, or D1 data were changed during this capture.
 
