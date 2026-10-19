@@ -15,7 +15,7 @@ Cloudflare Worker and D1-backed knowledge service.
 - A local Wrangler configuration was recovered with Durable Object migration declarations for `v1`–`v5`. A reconstruction is preserved in `wrangler.toml` on this recovery branch, with the current recovered source entrypoint and observed live bindings/settings. Review the file and run Wrangler's configuration validation before any deployment.
 - The migration declarations are grounded in the recovered local configuration and the live Worker’s observed `v5` tag. The version API does not expose the original migration arrays, so this is a strong recovery artifact, not independent proof of every historical deployment operation.
 - The original D1 migration SQL `0001`–`0007` is still missing. This is a disaster-recovery gap, not a reason to rebuild the current database. The old `migrations/0001_initial.sql` snapshot has been moved out of the executable migrations directory.
-- `migrations/0008_yaos_sync_jobs.sql` exists only on the backup branch and is not applied to live D1. It is not included in this recovery branch.
+- Recovered migrations `0001`–`0007` are present, with exact historical provenance still unverified. The reconstructed folder-schema migration `migrations/pending/0008_folders_schema_reconstructed.sql` and YAOS outbox migration `migrations/pending/0009_yaos_sync_jobs.sql` remain pending while production schema/ledger reconciliation and staging tests are outstanding.
 - R2 is intentionally not configured; its removal was previously confirmed as intentional.
 
 ## Development
