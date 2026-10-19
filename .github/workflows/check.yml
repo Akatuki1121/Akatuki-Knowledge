@@ -14,8 +14,31 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changed-files:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      integration: ${{ steps.filter.outputs.integration }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            integration:
+              - 'src/**'
+              - 'scripts/test_yaos_worker_integration.mjs'
+              - 'scripts/test_reconstructed_baseline.py'
+              - 'scripts/test_worker_sql_compatibility.py'
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/check.yml'
+
   syntax-and-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -31,15 +54,15 @@ jobs:
       - name: Validate recovered migration chain and full schema shape
         run: python3 scripts/test_recovered_migration_chain.py
       - name: Validate Wrangler config and build without deploying
-        run: npx --yes wrangler@4 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
+        run: npx --yes wrangler@4.69.0 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
       - name: Validate reconstructed baseline in empty SQLite database
         run: python3 scripts/test_reconstructed_baseline.py
       - name: Compile Worker SQL against captured D1 schema
         run: python3 scripts/test_worker_sql_compatibility.py
 
   yaos-worker-integration:
-    # Run the expensive end-to-end test for PRs and on main only.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: changed-files
+    if: needs.changed-files.outputs.integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -53,6 +76,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: yaos/server/package-lock.json
       - name: Install YAOS Worker dependencies
         working-directory: yaos/server
         run: npm ci
