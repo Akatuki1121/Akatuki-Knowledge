@@ -54,11 +54,18 @@ Legacy backup table records only `0001` through `0004` and their timestamps; it 
 
 The previous `migrations/0001_initial.sql` was an evolved schema snapshot, including the `d1_migrations` table itself, not a verified clean-database bootstrap migration. It has been preserved as `schema-snapshots/legacy-0001-initial-evolved-schema.sql` and removed from the executable migrations directory. The live schema is preserved separately at `schema-snapshots/live-d1-schema-2026-10-19.sql`. Both files are reference snapshots only and must not be run as migrations.
 
+## Source/configuration comparison and synchronization mismatch
+
+The live deployed module's executable content matches `main/src/index.js`; the deployment adds a trailing source-map annotation. The current deployed Cron is hourly (`0 * * * *`), while the recovered code tests for `*/5 * * * *`. Those schedules do not match, so the YAOS pull branch is not selected by the configured Cron. The event-sync branch changes the discriminator to hourly and adds an outbox-based event path, but these changes have not been deployed. See [live-vs-repository comparison](CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md).
+
+The current production D1 is to be retained and reused. Its schema snapshot is for compatibility review only; it is not a request or instruction to rebuild the database. The proposed outbox migration `migrations/pending/0008_yaos_sync_jobs.sql` is additive but has not been applied. Event sync cannot be enabled until the migration and conflict behavior are validated.
+
 ## Remaining recovery work
 
 1. Recover original D1 migration SQL `0001`–`0007` from source history/backups; do not reverse-engineer and label guessed SQL as original.
 2. Recover the exact Wrangler Durable Object migration declarations for tags `v1`–`v5`.
 3. `wrangler.jsonc` is now a recovered configuration draft and is checked in CI. It is not deploy-ready until the original Durable Object migration declarations are recovered; no deploy workflow should run before that.
-4. Validate clean-database migrations and a staging deployment before any production deploy.
+4. Validate the additive outbox migration on an isolated staging database. A clean-database bootstrap is a separate disaster-recovery exercise, not a prerequisite for retaining the existing production D1.
+5. Review the YAOS WebSocket write/read-back behavior, expected-content conflict protection, and mutation-path coverage before deployment.
 
-No Cloudflare settings, secrets, Worker code, or D1 data were changed during this capture.
+No Cloudflare settings, secrets, Worker code, or D1 data were changed during this capture. The two empty Durable Objects created by an earlier erroneous lookup are documented in the recovery conversation; do not create or delete DO instances during source/configuration recovery.
