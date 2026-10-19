@@ -183,6 +183,24 @@ async function enqueueSyncJob(env, entityType, entityId, operation) {
   }
 }
 __name(enqueueSyncJob, "enqueueSyncJob");
+async function backfillSyncUuidIndex(env, limit = 100) {
+  if (!env.DB) return { ok: false, skipped: "missing_binding" };
+  let rows;
+  try {
+    rows = (await env.DB.prepare("SELECT id, content, sync_uuid FROM notes WHERE sync_uuid IS NULL ORDER BY id LIMIT ?").bind(Math.max(1, Math.min(200, limit))).all()).results || [];
+  } catch {
+    return { ok: false, skipped: "sync_uuid_migration_missing" };
+  }
+  let updated = 0;
+  for (const row of rows) {
+    const contentUuid = readUuid(row.content || "");
+    const syncUuid = isValidSyncUuid(contentUuid) ? contentUuid : await deterministicUuid("notes:" + row.id);
+    const result = await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND sync_uuid IS NULL").bind(syncUuid, row.id).run();
+    if (result.meta?.changes) updated++;
+  }
+  return { ok: true, scanned: rows.length, updated };
+}
+__name(backfillSyncUuidIndex, "backfillSyncUuidIndex");
 async function drainSyncOutbox(env, limit = 5) {
   if (!env.DB || !env.YJS_CLIENT) return { ok: false, skipped: "missing_binding" };
   const now = new Date().toISOString();
@@ -221,6 +239,7 @@ async function drainSyncOutbox(env, limit = 5) {
 __name(drainSyncOutbox, "drainSyncOutbox");
 async function runScheduledMaintenance(env) {
   await drainSyncOutbox(env, 10);
+  await backfillSyncUuidIndex(env, 100);
   if (!env.GEMINI_API_KEY) {
     await enqueueBotAlert(env, "configuration");
   } else {
