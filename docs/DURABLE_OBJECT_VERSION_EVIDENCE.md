@@ -1,6 +1,6 @@
 # Durable Object migration evidence
 
-Captured read-only from Cloudflare Worker version metadata on 2026-10-19. This records what the API exposed; it is not a reconstruction of the original Wrangler migration declarations.
+Captured read-only from Cloudflare Worker version metadata on 2026-10-19. This records what the API exposed; it is not, by itself, a reconstruction of the original Wrangler migration declarations.
 
 ## Observed version sequence
 
@@ -18,15 +18,30 @@ Captured read-only from Cloudflare Worker version metadata on 2026-10-19. This r
 | 34 | 2026-10-18 14:48:24Z | v5 | Yes | `e84bbcb28ff0482a9b7b9a1cce2e28e5` |
 | 35 | 2026-10-18 15:27:45Z | v5 | Yes | `e84bbcb28ff0482a9b7b9a1cce2e28e5` |
 
-The latest observed deployed version is 49 with migration tag `v5` and namespace `e84bbcb28ff0482a9b7b9a1cce2e28e5`.
+The latest observed deployed version is 51 with migration tag `v5` and namespace `e84bbcb28ff0482a9b7b9a1cce2e28e5`.
 
-## What this establishes
+## Recovered local declaration
 
-- Cloudflare retains version metadata showing the tag progression `v1` → `v2` → `v3` → `v4` → `v5`.
-- The namespace recorded for `YJS_CLIENT` differs across the observed v1, v3, and v5 versions.
-- Versions 30 and 33 expose the migration tags v2 and v4 but do not expose a `YJS_CLIENT` binding in their version metadata.
-- Version metadata does **not** expose the ordered `new_classes`, `renamed_classes`, `deleted_classes`, or `new_sqlite_classes` declarations needed to faithfully recreate the original migration configuration.
+After the original read-only capture, a local `wrangler.toml` was found containing this ordered migration sequence:
+
+| Tag | Declaration |
+|---|---|
+| `v1` | `new_sqlite_classes = ["YjsClientDO"]` |
+| `v2` | `deleted_classes = ["YjsClientDO"]` |
+| `v3` | `new_sqlite_classes = ["YjsClientDO"]` |
+| `v4` | `deleted_classes = ["YjsClientDO"]` |
+| `v5` | `new_sqlite_classes = ["YjsClientDO"]` |
+
+The current recovery branch preserves these declarations in order. The local file is the source for the operation details; Cloudflare version metadata independently corroborates the tag progression and changing namespace IDs, but does not expose the original migration arrays.
+
+## Data-loss implication
+
+Cloudflare's legacy Durable Object migration documentation states that a `deleted_classes` migration deletes all Durable Objects for that class, including stored data. Therefore, if the recovered declarations reflect the operations actually applied, `v2` and `v4` were destructive lifecycle transitions; the namespace IDs observed for `v1`, `v3`, and `v5` are consistent with recreation. Do not assume data from an earlier namespace survived those transitions. This metadata does not establish whether the deleted namespaces held important data.
+
+The live Worker currently binds to the `v5` namespace `e84bbcb28ff0482a9b7b9a1cce2e28e5`. Because the live migration tag is already `v5`, the recovered history is intended to preserve the deployed migration ledger, not to introduce new lifecycle operations. However, the successful Wrangler `--dry-run` is local validation only and does not verify remote migration reconciliation or prove a production deployment safe.
 
 ## Recovery decision
 
-Do not infer missing migration declarations from namespace changes alone. Keep the original v1–v5 declarations marked unrecovered until source history, Wrangler config, or an authoritative deployment artifact is found. Do not deploy a guessed migration chain to production. This investigation used read-only Worker version endpoints; it did not query or modify Durable Object instances.
+- Preserve the ordered `v1`–`v5` declarations; do not reorder, collapse, or invent additional migrations.
+- Do not deploy to production as part of this recovery verification.
+- Before any production deployment, independently establish the remote migration reconciliation behavior and review the deployed bundle/configuration. No Durable Object instances were queried or changed during this investigation.
