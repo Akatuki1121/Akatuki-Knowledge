@@ -79,6 +79,31 @@ async function waitFor(predicate, label, timeoutMs = 20000) {
   throw new Error(`Timed out waiting for ${label}; last result: ${String(last)}`);
 }
 
+async function stopProcessTree(child) {
+  if (!child || child.exitCode !== null) return;
+
+  const signalTree = signal => {
+    try {
+      if (process.platform === "win32") child.kill(signal);
+      else process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  };
+
+  const waitForExit = () => new Promise(resolvePromise => {
+    if (child.exitCode !== null) return resolvePromise();
+    child.once("exit", resolvePromise);
+  });
+
+  signalTree("SIGTERM");
+  await Promise.race([waitForExit(), delay(3000)]);
+  if (child.exitCode === null) {
+    signalTree("SIGKILL");
+    await Promise.race([waitForExit(), delay(3000)]);
+  }
+}
+
 async function triggerDrain() {
   const response = await fetch(HOST + "/cdn-cgi/local/scheduled?cron=0+*+*+*+*");
   const text = await response.text();
@@ -284,6 +309,9 @@ SYNC_TOKEN = "${TOKEN}"
         "--log-level", "error",
       ], {
         cwd: ROOT,
+        // Keep Wrangler and its descendants in one process group so cancellation
+        // can terminate the whole local test stack, not just the npx wrapper.
+        detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -306,15 +334,7 @@ SYNC_TOKEN = "${TOKEN}"
     }
 
     async function stopWorker() {
-      if (!worker || worker.exitCode !== null) {
-        worker = null;
-        return;
-      }
-      const current = worker;
-      await new Promise(resolvePromise => {
-        current.once("exit", resolvePromise);
-        current.kill("SIGTERM");
-      });
+      await stopProcessTree(worker);
       worker = null;
     }
 
@@ -403,13 +423,7 @@ SYNC_TOKEN = "${TOKEN}"
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
     console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
   } finally {
-    if (worker && worker.exitCode === null) {
-      const current = worker;
-      await new Promise(resolvePromise => {
-        current.once("exit", resolvePromise);
-        current.kill("SIGTERM");
-      });
-    }
+    await stopProcessTree(worker);
     await rm(KNOWLEDGE_CONFIG, { force: true });
     await rm(YAOS_CONFIG, { force: true });
     await rm(clientPath, { force: true });
