@@ -10612,6 +10612,7 @@ var wrapper_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/sync/status" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       return doFetch(env, "status");
     }
     if (url.pathname.startsWith("/sync/")) {
