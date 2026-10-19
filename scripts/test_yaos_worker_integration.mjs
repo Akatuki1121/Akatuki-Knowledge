@@ -271,38 +271,54 @@ SYNC_TOKEN = "${TOKEN}"
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
 
-    worker = spawn("npx", [
-      ...WRANGLER, "dev",
-      "--config", KNOWLEDGE_CONFIG,
-      "--config", YAOS_CONFIG,
-      "--ip", "127.0.0.1",
-      "--port", "8787",
-      "--local",
-      "--test-scheduled",
-      "--persist-to", stateDir,
-      "--log-level", "error",
-    ], {
-      cwd: ROOT,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
-        CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false",
-      },
-    });
-    const collect = chunk => {
-      workerOutput += chunk.toString();
-      if (workerOutput.length > 12000) workerOutput = workerOutput.slice(-12000);
-    };
-    worker.stdout.on("data", collect);
-    worker.stderr.on("data", collect);
+    async function startWorker() {
+      worker = spawn("npx", [
+        ...WRANGLER, "dev",
+        "--config", KNOWLEDGE_CONFIG,
+        "--config", YAOS_CONFIG,
+        "--ip", "127.0.0.1",
+        "--port", "8787",
+        "--local",
+        "--test-scheduled",
+        "--persist-to", stateDir,
+        "--log-level", "error",
+      ], {
+        cwd: ROOT,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
+          CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false",
+        },
+      });
+      const collect = chunk => {
+        workerOutput += chunk.toString();
+        if (workerOutput.length > 12000) workerOutput = workerOutput.slice(-12000);
+      };
+      worker.stdout.on("data", collect);
+      worker.stderr.on("data", collect);
+      await waitFor(async () => {
+        try {
+          const response = await fetch(HOST + "/health");
+          return response.ok;
+        } catch { return false; }
+      }, "local Knowledge Worker startup");
+    }
 
-    await waitFor(async () => {
-      try {
-        const response = await fetch(HOST + "/health");
-        return response.ok;
-      } catch { return false; }
-    }, "local Knowledge Worker startup");
+    async function stopWorker() {
+      if (!worker || worker.exitCode !== null) {
+        worker = null;
+        return;
+      }
+      const current = worker;
+      await new Promise(resolvePromise => {
+        current.once("exit", resolvePromise);
+        current.kill("SIGTERM");
+      });
+      worker = null;
+    }
+
+    await startWorker();
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
@@ -346,6 +362,38 @@ SYNC_TOKEN = "${TOKEN}"
     notes = await getNotes();
     assert.ok(notes.some(item => item.id === noteId && item.path === RENAMED_PATH), "restored note remains under renamed path");
 
+    // Prove retry behavior with a controlled, temporary local auth failure.
+    // The first attempt must remain pending; after restoring the local YAOS
+    // token and restarting both local Workers, the scheduled drain must send it.
+    const sentBeforeRetry = await currentSentCount();
+    const statusBeforeRetry = await request("/sync/status");
+    const pendingBeforeRetry = statusBeforeRetry.outbox.pending || 0;
+    await stopWorker();
+    const invalidYaosConfig = yaosConfig.replace(
+      `SYNC_TOKEN = "${TOKEN}"`,
+      'SYNC_TOKEN = "integration-intentionally-invalid-token"',
+    );
+    assert.notEqual(invalidYaosConfig, yaosConfig, "can prepare temporary invalid YAOS token");
+    await writeFile(YAOS_CONFIG, invalidYaosConfig);
+    await startWorker();
+    await correctNote(noteId, noteContent("retry after temporary YAOS auth failure"), "Integration roundtrip");
+    await waitFor(async () => {
+      const status = await request("/sync/status");
+      return (status.outbox.pending || 0) > pendingBeforeRetry;
+    }, "failed YAOS auth attempt to return job to pending");
+    await stopWorker();
+    await writeFile(YAOS_CONFIG, yaosConfig);
+    await startWorker();
+    await waitFor(async () => {
+      try {
+        await triggerDrain();
+        const status = await request("/sync/status");
+        return status.outbox?.sent > sentBeforeRetry;
+      } catch {
+        return false;
+      }
+    }, "outbox job to retry after YAOS auth is restored", 30000);
+
     // Simulate a real independent YAOS edit after the last verified write.
     // The next Knowledge correction must be rejected as a permanent conflict,
     // not overwrite the remote document or mark the job as sent.
@@ -356,8 +404,11 @@ SYNC_TOKEN = "${TOKEN}"
     console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, conflict refusal.");
   } finally {
     if (worker && worker.exitCode === null) {
-      worker.kill("SIGTERM");
-      await new Promise(resolvePromise => worker.once("exit", resolvePromise));
+      const current = worker;
+      await new Promise(resolvePromise => {
+        current.once("exit", resolvePromise);
+        current.kill("SIGTERM");
+      });
     }
     await rm(KNOWLEDGE_CONFIG, { force: true });
     await rm(YAOS_CONFIG, { force: true });
