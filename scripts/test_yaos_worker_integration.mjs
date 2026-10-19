@@ -80,27 +80,56 @@ async function waitFor(predicate, label, timeoutMs = 20000) {
 }
 
 async function stopProcessTree(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-
-  const signalTree = signal => {
-    try {
-      if (process.platform === "win32") child.kill(signal);
-      else process.kill(-child.pid, signal);
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error;
-    }
-  };
+  if (!child?.pid) return;
 
   const waitForExit = () => new Promise(resolvePromise => {
     if (child.exitCode !== null || child.signalCode !== null) return resolvePromise();
     child.once("exit", resolvePromise);
   });
 
-  signalTree("SIGTERM");
-  await Promise.race([waitForExit(), delay(3000)]);
-  if (child.exitCode === null && child.signalCode === null) {
-    signalTree("SIGKILL");
+  if (process.platform === "win32") {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill("SIGTERM");
     await Promise.race([waitForExit(), delay(3000)]);
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await Promise.race([waitForExit(), delay(1000)]);
+    }
+    return;
+  }
+
+  // The npx parent can exit before Wrangler's descendants. Check the process
+  // group itself rather than treating the parent exit as proof of full cleanup.
+  const signalTree = signal => {
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  };
+  const groupExists = () => {
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") return false;
+      if (error?.code === "EPERM") return true;
+      throw error;
+    }
+  };
+  const waitForGroupExit = async timeoutMs => {
+    const deadline = Date.now() + timeoutMs;
+    while (groupExists() && Date.now() < deadline) await delay(100);
+    return !groupExists();
+  };
+
+  signalTree("SIGTERM");
+  if (!(await waitForGroupExit(3000))) {
+    signalTree("SIGKILL");
+    await waitForGroupExit(1000);
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    await Promise.race([waitForExit(), delay(1000)]);
   }
 }
 
