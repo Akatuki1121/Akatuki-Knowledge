@@ -161,8 +161,12 @@ async function enqueueSyncJob(env, entityType, entityId, operation) {
     if (!row) return;
     const now = new Date().toISOString();
     const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", deletedAt: row.deleted_at ?? null };
-    await env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)")
-      .bind(crypto.randomUUID(), entityType, entityId, operation, JSON.stringify(payload), now, now, now).run();
+    const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = ? AND entity_id = ? AND status = 'pending' ORDER BY job_id DESC LIMIT 1").bind(entityType, entityId).first();
+    if (pending) {
+      await env.DB.prepare("UPDATE yaos_sync_jobs SET operation = ?, payload_json = ?, next_attempt_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ? AND status = 'pending'").bind(operation, JSON.stringify(payload), now, now, pending.job_id).run();
+    } else {
+      await env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)").bind(crypto.randomUUID(), entityType, entityId, operation, JSON.stringify(payload), now, now, now).run();
+    }
   } catch {
     console.error("sync outbox enqueue failed");
   }
@@ -483,6 +487,7 @@ async function undoLastTelegramMemory(env, chatId) {
     await env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, organized_hash = NULL, summary = NULL, ai_tags_json = '[]', related_json = '[]', review_state = 'ready' WHERE id = ? AND content_hash = ?`).bind(action.before_title, action.before_content, action.before_hash, now, action.note_id, action.after_hash).run();
   }
   await env.DB.prepare("UPDATE telegram_note_actions SET reverted_at = ? WHERE action_id = ? AND reverted_at IS NULL").bind(now, action.action_id).run();
+  await enqueueSyncJob(env, table, action.note_id, action.action_type === "create" ? "delete" : "upsert");
   return "\u76F4\u524D\u306E\u8A18\u9332\u3092\u623B\u3057\u305F\u3088\u3002\u5C65\u6B74\u306F\u6B8B\u3057\u3066\u3042\u308B\u3002";
 }
 __name(undoLastTelegramMemory, "undoLastTelegramMemory");
@@ -659,6 +664,7 @@ async function applyTelegramCapture(env, chatId, messageId, now, capture, matche
     const result2 = await env.DB.prepare(`INSERT OR IGNORE INTO telegram_notes (id, chat_id, message_id, title, content, content_hash, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state, knowledge_type, knowledge_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id2, chatId, messageId, title, content, contentHash, now, now, JSON.stringify(extractTags(content)), credential ? 0 : 1, credential ? "credentials" : "unknown", credential ? "blocked_credentials" : "ready", capture.kind, capture.scope).run();
     if (!result2.meta?.changes) return null;
     await env.DB.prepare("INSERT INTO telegram_note_actions (chat_id, source_message_id, note_id, action_type, after_hash, created_at) VALUES (?, ?, ?, 'create', ?, ?)").bind(chatId, messageId, id2, contentHash, now).run();
+    await enqueueSyncJob(env, "telegram_notes", id2, "upsert");
     if (!credential && env.GEMINI_API_KEY) await organizePending(env, 1, [id2]);
     else if (!credential) await enqueueBotAlert(env, "configuration");
     return `\u300C${title}\u300D\u306B\u8A18\u9332\u3057\u305F\u3088\u3002`;
@@ -681,6 +687,7 @@ ${content}`;
   if (!result.meta?.changes) return null;
   await env.DB.prepare("DELETE FROM note_relations WHERE source_note_id = ? OR target_note_id = ?").bind(old.id, old.id).run();
   await env.DB.prepare("INSERT INTO telegram_note_actions (chat_id, source_message_id, note_id, action_type, before_title, before_content, before_hash, after_hash, created_at) VALUES (?, ?, ?, 'append', ?, ?, ?, ?, ?)").bind(chatId, messageId, old.id, old.title, old.content, old.content_hash, updatedHash, now).run();
+  await enqueueSyncJob(env, table, old.id, "upsert");
   return `\u300C${old.title}\u300D\u306B\u8FFD\u8A18\u3057\u305F\u3088\u3002`;
 }
 __name(applyTelegramCapture, "applyTelegramCapture");
