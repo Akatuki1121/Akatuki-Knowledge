@@ -182,6 +182,7 @@ const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
   connect: false,
 });
 let finished = false;
+let lastProviderStatus = "not reported";
 function done(code) {
   if (finished) return;
   finished = true;
@@ -189,7 +190,17 @@ function done(code) {
   doc.destroy();
   process.exitCode = code;
 }
-const timeout = setTimeout(() => { console.error("YAOS edit client timed out"); done(1); }, 10000);
+provider.on("status", event => {
+  lastProviderStatus = event?.status ?? JSON.stringify(event);
+  console.error("YAOS edit client status: " + lastProviderStatus);
+});
+provider.on("connection-error", error => {
+  console.error("YAOS edit client connection error: " + String(error));
+});
+const timeout = setTimeout(() => {
+  console.error("YAOS edit client timed out; last provider status: " + lastProviderStatus);
+  done(1);
+}, 10000);
 provider.on("sync", synced => {
   if (!synced || finished) return;
   const id = pathToId.get(${JSON.stringify(path)});
@@ -454,7 +465,12 @@ SYNC_TOKEN = "${TOKEN}"
     // Simulate a real independent YAOS edit after the last verified write.
     // The next Knowledge correction must be rejected as a permanent conflict,
     // not overwrite the remote document or mark the job as sent.
-    await mutateYaosNote(RENAMED_PATH, "\\n\\nexternal YAOS edit", clientPath);
+    try {
+      await mutateYaosNote(RENAMED_PATH, "\\n\\nexternal YAOS edit", clientPath);
+    } catch (error) {
+      console.error("Knowledge Worker logs around independent YAOS edit:\\n" + workerOutput);
+      throw error;
+    }
     const deadBeforeConflict = await currentDeadCount();
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
