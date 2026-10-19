@@ -100,12 +100,24 @@ async function currentSentCount() {
   return status.outbox.sent;
 }
 
-async function syncNote(path, content, title) {
+async function importNote(path, content, title) {
+  // /api/sync is the inbound YAOS -> D1 path and intentionally does not enqueue
+  // outbound work. Use it only to seed the local D1 row, then exercise the
+  // real correction/archive/restore mutation routes that enqueue outbox jobs.
   const result = await request("/api/sync", {
     method: "POST",
     body: { notes: [{ path, content, title }] },
   });
   assert.equal(result.ok, true, "sync endpoint accepts note");
+  return result;
+}
+
+async function correctNote(id, content, title) {
+  const result = await request("/api/notes/" + encodeURIComponent(id) + "/correction", {
+    method: "POST",
+    body: { content, title },
+  });
+  assert.equal(result.ok, true, "correction endpoint accepts note mutation");
   return result;
 }
 
@@ -244,19 +256,26 @@ SYNC_TOKEN = "${TOKEN}"
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
     let sent = await currentSentCount();
-    await syncNote(TEST_PATH, noteContent("version one"), "Integration roundtrip");
-    await waitForSent(sent);
+    await importNote(TEST_PATH, noteContent("seed only"), "Integration roundtrip");
     let notes = await getNotes();
     const note = notes.find(item => item.path === TEST_PATH);
     assert.ok(note, "created note is visible in local D1");
     const noteId = note.id;
 
     sent = await currentSentCount();
-    await syncNote(TEST_PATH, noteContent("version two"), "Integration roundtrip");
+    await correctNote(noteId, noteContent("version one"), "Integration roundtrip");
     await waitForSent(sent);
 
     sent = await currentSentCount();
-    await syncNote(RENAMED_PATH, noteContent("version two after rename"), "Integration roundtrip");
+    await correctNote(noteId, noteContent("version two"), "Integration roundtrip");
+    await waitForSent(sent);
+
+    // Path moves are imported through the same UUID reconciliation used by
+    // the Obsidian sync endpoint; the following correction enqueues the
+    // renamed document and verifies the new path/content in YAOS.
+    await importNote(RENAMED_PATH, noteContent("version two"), "Integration roundtrip");
+    sent = await currentSentCount();
+    await correctNote(noteId, noteContent("version two after rename"), "Integration roundtrip");
     await waitForSent(sent);
     notes = await getNotes();
     assert.ok(notes.some(item => item.id === noteId && item.path === RENAMED_PATH), "rename preserves the D1 note identity");
