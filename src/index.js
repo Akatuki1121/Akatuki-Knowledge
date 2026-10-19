@@ -819,16 +819,37 @@ async function syncNotes(request, env) {
       }
     }
     const tags = JSON.stringify(extractTags(content, input.tags));
+    const moved = Boolean(previous && previous.path !== path);
     if (previous && previous.content_hash === contentHash && previous.title === title) {
-      await env.DB.prepare("UPDATE notes SET path = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(path, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id).run();
-      if (uuidPathChanged || previous.path !== path) updated++;
-      else unchanged++;
+      if (moved) {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE notes SET id = ?, path = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(path, path, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
+          env.DB.prepare("UPDATE note_revisions SET note_id = ? WHERE note_id = ?").bind(path, previous.id),
+          env.DB.prepare("UPDATE note_relations SET source_note_id = ? WHERE source_note_id = ?").bind(path, previous.id),
+          env.DB.prepare("UPDATE note_relations SET target_note_id = ? WHERE target_note_id = ?").bind(path, previous.id),
+          env.DB.prepare("UPDATE note_archive_events SET note_id = ? WHERE note_id = ?").bind(path, previous.id),
+          env.DB.prepare("UPDATE telegram_note_actions SET note_id = ? WHERE note_id = ?").bind(path, previous.id)
+        ]);
+        updated++;
+      } else {
+        await env.DB.prepare("UPDATE notes SET source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id).run();
+        unchanged++;
+      }
       continue;
     }
     const id2 = path;
     if (previous) {
-      await env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now).run();
-      await env.DB.prepare(`UPDATE notes SET path = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE id = ?`).bind(path, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id).run();
+      const statements = [
+        env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(moved ? path : previous.id, previous.path, previous.title, previous.content, previous.content_hash, now),
+        env.DB.prepare(`UPDATE notes SET id = ?, path = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE id = ?`).bind(path, path, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id)
+      ];
+      if (moved) statements.push(
+        env.DB.prepare("UPDATE note_relations SET source_note_id = ? WHERE source_note_id = ?").bind(path, previous.id),
+        env.DB.prepare("UPDATE note_relations SET target_note_id = ? WHERE target_note_id = ?").bind(path, previous.id),
+        env.DB.prepare("UPDATE note_archive_events SET note_id = ? WHERE note_id = ?").bind(path, previous.id),
+        env.DB.prepare("UPDATE telegram_note_actions SET note_id = ? WHERE note_id = ?").bind(path, previous.id)
+      );
+      await env.DB.batch(statements);
       updated++;
     } else {
       await env.DB.prepare(`INSERT INTO notes (id, path, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id2, path, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags).run();
