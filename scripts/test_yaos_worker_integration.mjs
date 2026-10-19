@@ -177,7 +177,9 @@ const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
   prefix: ${JSON.stringify("/vault/sync/" + encodeURIComponent(VAULT_ID))},
   params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
   WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
-  connect: true,
+  // Register sync/error listeners before opening the socket to avoid missing
+  // the initial sync event on a fast local Worker.
+  connect: false,
 });
 let finished = false;
 function done(code) {
@@ -201,6 +203,7 @@ provider.on("sync", synced => {
   text.insert(text.length, ${JSON.stringify(suffix)});
   setTimeout(() => { clearTimeout(timeout); done(0); }, 500);
 });
+void provider.connect();
 `;
   await writeFile(clientPath, client);
   await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
