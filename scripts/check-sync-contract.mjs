@@ -8,6 +8,8 @@ const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.ur
 for (const contract of [
   "async function enqueueSyncJob",
   "async function drainSyncOutbox",
+  'SELECT status, COUNT(*) AS count FROM yaos_sync_jobs GROUP BY status',
+  'outbox = { ok: true, ...counts }',
   'SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1',
   'SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1',
   'expectedPreviousContent: previousRevision?.content ?? null',
