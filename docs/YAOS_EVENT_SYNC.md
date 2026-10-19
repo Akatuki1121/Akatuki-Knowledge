@@ -26,4 +26,4 @@ The D1 outbox migration is intentionally stored under `migrations/pending/`, not
 
 ## Scope and remaining checks
 
-The outbox is wired to Telegram note creation/organization and the existing API correction, delete, and restore operations. Other mutation paths (including all automatic-organizer write branches and undo operations) still need an integration audit before claiming every note change is event-synchronized. The hourly Vault pull remains the repair path for YAOS-to-D1 changes; a full bidirectional conflict policy still needs staging validation.
+The outbox is wired to Telegram note creation, conversation capture/append, undo, and the existing API correction, delete, and restore operations. The automatic organizer currently updates metadata rather than note bodies, so those metadata-only updates do not create Vault writes. A broader mutation audit is still required before claiming every possible note write is covered. The hourly Vault pull remains the repair path for YAOS-to-D1 changes; a full bidirectional conflict policy still needs staging validation.
