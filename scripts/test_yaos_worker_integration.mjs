@@ -143,7 +143,7 @@ const doc = new Y.Doc();
 const pathToId = doc.getMap("pathToId");
 const idToText = doc.getMap("idToText");
 const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
-  prefix: `/vault/sync/${encodeURIComponent(${JSON.stringify(VAULT_ID)})}`,
+  prefix: ${JSON.stringify("/vault/sync/" + encodeURIComponent(VAULT_ID))},
   params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
   WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
   connect: true,
