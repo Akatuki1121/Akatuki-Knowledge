@@ -1092,7 +1092,9 @@ async function correctNote(request, url, env) {
   if (typeof body.content !== "string" || !body.content.trim() || body.content.length > MAX_NOTE_CHARS) return json({ error: "content must be a non-empty string within the note size limit" }, 400);
   const table = await locateNote(env, id2);
   if (!table) return json({ error: "Note not found" }, 404);
-  const old = await env.DB.prepare(`SELECT id, path, title, content, content_hash, ai_allowed, review_state FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(id2).first();
+  const old = table === "notes"
+    ? await env.DB.prepare("SELECT id, path, title, content, content_hash, ai_allowed, review_state FROM notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first()
+    : await env.DB.prepare("SELECT id, NULL AS path, title, content, content_hash, ai_allowed, review_state FROM telegram_notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first();
   const contentHash = await sha256(body.content);
   if (old.content_hash === contentHash) return json({ ok: true, unchanged: true, id: id2 });
   const now = (/* @__PURE__ */ new Date()).toISOString();
