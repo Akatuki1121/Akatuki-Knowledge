@@ -27,7 +27,7 @@ The live Cloudflare Cron is `0 * * * *`, but the recovered production bundle che
 
 ## Monitoring\n\nThe authenticated `GET /sync/status` response includes pending, processing, sent, and dead-letter outbox counts. If the pending migration is not present, the response reports that the outbox table is not migrated rather than failing the entire status request.\n\n## Migration safety
 
-The D1 outbox migration is intentionally stored under `migrations/pending/`, not the executable migrations directory. The original migration SQL for 0001-0007 is missing from the recovered repository. Do not deploy this Worker version until the outbox table has been applied to the live D1 database and the migration chain has been validated. This feature branch does not change production Worker code, D1 data, secrets, or YAOS.
+The D1 outbox migration is intentionally stored under `migrations/pending/`, not the executable migrations directory. The recovered 0001-0007 SQL is structurally tested but not proven byte-for-byte identical to the production-applied SQL. The folder-schema forward migration remains pending as 0008 because production already has the schema but its ledger does not record its origin. Do not deploy this Worker version until the outbox table has been applied to the live D1 database and the migration chain has been validated. This feature branch does not change production Worker code, D1 data, secrets, or YAOS.
 
 ## Scope and remaining checks
 
