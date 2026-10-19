@@ -13,6 +13,8 @@ for (const contract of [
   'action === "knowledge-sync"',
   "async applyKnowledgeSyncJob(job)",
   'const uuidSeed = telegram ? payload.id : "notes:" + payload.id;',
+  'const desiredUuid = readUuid(desiredContent);',
+  'readUuid(textValue.toString()) === desiredUuid',
   'const hasUuid = fm && /^id:\\s*',
   'pathToId = doc.getMap("pathToId")',
   'pathToId.set(desiredPath, fileId)',
