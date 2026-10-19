@@ -10593,13 +10593,17 @@ var YjsClientDO = class extends DurableObject {
       else if (fm) desiredContent = desiredContent.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
       else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
     }
+    const desiredUuid = readUuid(desiredContent);
     const locate = (doc) => {
       let active = null, tombstone = null;
+      const idToText = doc.getMap("idToText");
       doc.getMap("meta").forEach((value, fileId) => {
         const path = value instanceof YMap ? value.get("path") : value?.path;
         if (typeof path !== "string") return;
         const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-        const matches = telegram ? path.startsWith(RESERVED_ROOT + "/Telegram/") && path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16 : norm(path) === desiredPath;
+        const textValue = idToText.get(fileId);
+        const sameUuid = !telegram && desiredUuid && textValue instanceof YText && readUuid(textValue.toString()) === desiredUuid;
+        const matches = telegram ? path.startsWith(RESERVED_ROOT + "/Telegram/") && path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16 : sameUuid || norm(path) === desiredPath;
         if (!matches) return;
         const item = { fileId, value, path, deleted };
         if (deleted) tombstone ??= item; else active ??= item;
