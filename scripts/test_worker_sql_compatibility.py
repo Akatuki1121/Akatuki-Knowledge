@@ -17,6 +17,7 @@ CALL_RE = re.compile(
 SQL_WORD = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE)\b", re.IGNORECASE)
 TABLE_TOKEN = "$" + "{table}"
 PATH_COLUMN_TOKEN = "$" + "{pathColumn}"
+PATH_COLUMN_EXPR = "$" + '{table === "notes" ? "path" : "NULL AS path"}'
 CONDITIONS_TOKEN = "$" + "{conditions}"
 ID_FILTER_TOKEN = "$" + "{idFilter}"
 SOURCE_EXPR = '$' + '{table === "notes" ? "obsidian" : "telegram"}'
@@ -36,7 +37,11 @@ def variants(query: str):
     if TABLE_TOKEN in query:
         for table in ("notes", "telegram_notes"):
             path_column = "path" if table == "notes" else "NULL AS path"
-            yield query.replace(TABLE_TOKEN, table).replace(PATH_COLUMN_TOKEN, path_column)
+            yield query.replace(TABLE_TOKEN, table).replace(PATH_COLUMN_TOKEN, path_column).replace(PATH_COLUMN_EXPR, path_column)
+        return
+    if PATH_COLUMN_EXPR in query:
+        yield query.replace(PATH_COLUMN_EXPR, "path")
+        yield query.replace(PATH_COLUMN_EXPR, "NULL AS path")
         return
     if PATH_COLUMN_TOKEN in query:
         yield query.replace(PATH_COLUMN_TOKEN, "path")
