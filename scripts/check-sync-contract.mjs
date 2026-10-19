@@ -21,6 +21,10 @@ for (const contract of [
   'const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload"]',
 
   'const effectiveOperation = row.deleted_at ? "delete" : operation;',
+  'async function enqueueSyncJob(env, entityType, entityId, operation, options = {})',
+  'allowRestore: options.allowRestore === true',
+  'current?.deleted && !payload.allowRestore',
+  'await enqueueSyncJob(env, table, id2, "upsert", { allowRestore: true })',
   'if (job.operation === "delete" || payload.deletedAt) {',
   'const incomingUuid = readUuid(content)',
   'SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?',
