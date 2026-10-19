@@ -47,9 +47,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install pinned YAOS dependencies
-        working-directory: yaos
-        run: npm ci
       - name: Install YAOS Worker dependencies
         working-directory: yaos/server
         run: npm ci
