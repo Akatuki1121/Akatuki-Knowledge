@@ -14,7 +14,7 @@ for (const contract of [
   'action === "knowledge-sync"',
   "async applyKnowledgeSyncJob(job)",
   'const uuidSeed = telegram ? payload.id : "notes:" + payload.id',
-  `id: "' + uuid + '"`,
+  'const uuid = digest.slice(0, 8).join("")',
   'const verified = !verifiedItem || verifiedItem.deleted',
   'const verified = Boolean(verifiedItem && !verifiedItem.deleted',
   'current.value.set("deletedAt", now)',
