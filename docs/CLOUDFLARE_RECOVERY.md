@@ -46,7 +46,7 @@ Live `d1_migrations` records:
 - 1. `0001_initial.sql` — applied_at `1792230000`
 - 2. `0002_ai_privacy.sql` — applied_at `1792230001`
 - 3. `0003_telegram_workflow.sql` — applied_at `1792325000`
-- 4. `0004_telegram_workflow.sql` — applied_at `1792325001`
+- 4. `0004_sensitive_content_policy.sql` — applied_at `1792325001`
 - 5. `0005_conversation_memory.sql` — applied_at `2026-10-18 08:41:04`
 - 6. `0006_bot_alerts.sql` — applied_at `2026-10-18 08:53:48`
 - 7. `0007_failure_stage.sql` — applied_at `2026-10-18 09:33:30`
