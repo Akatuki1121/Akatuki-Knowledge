@@ -206,7 +206,7 @@ async function drainSyncOutbox(env, limit = 5) {
   const now = new Date().toISOString();
   let jobs;
   try {
-    jobs = (await env.DB.prepare("SELECT j.job_id, j.entity_type, j.entity_id, j.operation, j.payload_json, j.attempts FROM yaos_sync_jobs j WHERE ((j.status = 'pending' AND j.next_attempt_at <= ?) OR (j.status = 'processing' AND j.lease_expires_at <= ?)) AND NOT EXISTS (SELECT 1 FROM yaos_sync_jobs earlier WHERE earlier.entity_type = j.entity_type AND earlier.entity_id = j.entity_id AND earlier.job_id < j.job_id AND earlier.status IN ('pending', 'processing', 'dead')) ORDER BY j.created_at, j.job_id LIMIT ?").bind(now, now, Math.max(1, Math.min(20, limit))).all()).results;
+    jobs = (await env.DB.prepare("SELECT j.job_id, j.entity_type, j.entity_id, j.operation, j.payload_json, j.attempts FROM yaos_sync_jobs j WHERE ((j.status = 'pending' AND j.next_attempt_at <= ?) OR (j.status = 'processing' AND j.lease_expires_at <= ?)) AND NOT EXISTS (SELECT 1 FROM yaos_sync_jobs earlier WHERE earlier.entity_type = j.entity_type AND earlier.entity_id = j.entity_id AND earlier.job_id < j.job_id AND earlier.status IN ('pending', 'processing')) ORDER BY j.created_at, j.job_id LIMIT ?").bind(now, now, Math.max(1, Math.min(20, limit))).all()).results;
   } catch {
     return { ok: false, skipped: "outbox_not_migrated" };
   }
