@@ -4,6 +4,10 @@
 
 Keep the existing YAOS Worker and its Durable Object protocol unchanged. Akatuki Knowledge writes changes to a D1 outbox; the existing `YJS_CLIENT` Durable Object binding applies those changes to the YAOS Vault and verifies the result.
 
+## Observed production mismatch
+
+The live Cloudflare Cron is `0 * * * *`, but the recovered production bundle checks `PULL_CRON = "*/5 * * * *"` before running the Vault pull. Those values do not match, so the intended pull branch is not selected by the configured hourly trigger. This branch changes the discriminator to the observed hourly schedule; that correction has not been deployed.
+
 ## Event path
 
 1. A Telegram note is created or organized, or a note is corrected, deleted, or restored through the API.
