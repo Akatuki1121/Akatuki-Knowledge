@@ -11,6 +11,7 @@ Cloudflare Worker and D1-backed knowledge service.
 - The active Worker module has been recovered into a normal JavaScript file on the recovery branch.
 - The live D1 schema and migration ledger have been captured under `schema-snapshots/` for compatibility checks only. The existing production D1 is to be preserved; these snapshots are not executable migrations and must not be replayed.
 - Observed Cloudflare configuration and unresolved recovery steps are recorded in `docs/CLOUDFLARE_RECOVERY.md`.
+- The byte-level comparison with the live Worker, the backup branch artifact, and the cron/code mismatch are documented in `docs/CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md`.
 - The original D1 migration SQL `0001`–`0007` and exact Durable Object migration declarations for tags `v1`–`v5` remain missing. The missing D1 SQL is a disaster-recovery gap, not a reason to rebuild the current database. The old `migrations/0001_initial.sql` snapshot has been moved out of the executable migrations directory.
 - A verified `wrangler.toml` is intentionally not included yet; inventing Durable Object migration declarations could make a future deployment unsafe.
 - `migrations/0008_yaos_sync_jobs.sql` exists only on the backup branch and is not applied to live D1. It is not included in this recovery PR.
