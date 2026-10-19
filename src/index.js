@@ -10581,15 +10581,17 @@ var YjsClientDO = class extends DurableObject {
     const desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + "-" + hash16 + ".md" : norm(payload.path || "");
     if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
     let desiredContent = payload.content;
-    if (telegram) {
-      const digest = (await sha256Hex(payload.id)).slice(0, 32).split("");
-      digest[12] = "5";
-      digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
-      const uuid = digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
-      const fm = desiredContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      if (fm) {
-        if (!/^id:\s*["']?[0-9A-Za-z-]+["']?\s*$/m.test(fm[1])) desiredContent = desiredContent.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
-      } else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
+    const uuidSeed = telegram ? payload.id : "notes:" + payload.id;
+    const digest = (await sha256Hex(uuidSeed)).slice(0, 32).split("");
+    digest[12] = "5";
+    digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
+    const uuid = digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
+    const fm = desiredContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    const hasUuid = fm && /^id:\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}["']?\s*$/im.test(fm[1]);
+    if (!hasUuid) {
+      if (fm && /^id:\s*.*$/m.test(fm[1])) desiredContent = desiredContent.replace(/^id:\s*.*$/m, 'id: "' + uuid + '"');
+      else if (fm) desiredContent = desiredContent.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
+      else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
     }
     const locate = (doc) => {
       let active = null, tombstone = null;
