@@ -1,18 +1,19 @@
-name: Check recovered Worker source
+name: Check recovered Worker and YAOS event sync
 
 on:
   pull_request:
   push:
     branches:
       - main
-      - recovery/normalize-cloudflare-worker-source
       - recovery/bootstrap-schema-validation
+      - recovery/restore-wrangler-do-history
+      - recovery/catch-up-existing-event-sync
 
 permissions:
   contents: read
 
 jobs:
-  syntax:
+  syntax-and-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +23,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: python3 scripts/test_pending_migration.py
       - name: Validate Wrangler config and build without deploying
         run: npx --yes wrangler@4 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
       - name: Validate reconstructed baseline in empty SQLite database
