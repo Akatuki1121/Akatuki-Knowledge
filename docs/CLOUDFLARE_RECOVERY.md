@@ -42,7 +42,7 @@ Live `d1_migrations` records:
 
 Legacy backup table records only `0001` through `0004` and their timestamps; it does not preserve the SQL text.
 
-The repository's `migrations/0001_initial.sql` currently contains a snapshot of the evolved schema, not a verified clean-database bootstrap migration. The live schema is preserved separately at `schema-snapshots/live-d1-schema-2026-10-19.sql`. That file is a reference snapshot only and must not be run as a migration against the live database.
+The previous `migrations/0001_initial.sql` was an evolved schema snapshot, including the `d1_migrations` table itself, not a verified clean-database bootstrap migration. It has been preserved as `schema-snapshots/legacy-0001-initial-evolved-schema.sql` and removed from the executable migrations directory. The live schema is preserved separately at `schema-snapshots/live-d1-schema-2026-10-19.sql`. Both files are reference snapshots only and must not be run as migrations.
 
 ## Remaining recovery work
 

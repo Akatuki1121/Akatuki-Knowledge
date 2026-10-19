@@ -1,3 +1,9 @@
+-- Legacy repository file preserved during recovery on 2026-10-19.
+-- This file is NOT a verified D1 migration: it contains the evolved schema,
+-- including the d1_migrations table itself, and must not be applied by Wrangler.
+-- The live schema capture is available at live-d1-schema-2026-10-19.sql.
+-- Original migrations 0001-0007 still need to be recovered from source history.
+
 CREATE TABLE _cf_KV (
         key TEXT PRIMARY KEY,
         value BLOB
@@ -122,3 +128,4 @@ CREATE TABLE bot_alerts (
   sent_at TEXT
 );
 CREATE TABLE folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT REFERENCES folders(id) ON DELETE CASCADE, kind TEXT NOT NULL, full_path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+
