@@ -224,6 +224,9 @@ binding = "DB"
 database_name = "knowledge-integration"
 database_id = "00000000-0000-0000-0000-000000000001"
 
+[triggers]
+crons = ["0 * * * *"]
+
 [[durable_objects.bindings]]
 name = "YJS_CLIENT"
 class_name = "YjsClientDO"
