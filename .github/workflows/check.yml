@@ -6,12 +6,13 @@ on:
     branches:
       - main
       - recovery/normalize-cloudflare-worker-source
+      - feature/yaos-event-sync-outbox
 
 permissions:
   contents: read
 
 jobs:
-  syntax:
+  syntax-and-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
