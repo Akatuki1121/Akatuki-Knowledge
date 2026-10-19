@@ -612,7 +612,8 @@ async function applyTelegramCapture(env, chatId, messageId, now, capture, matche
     return `\u300C${title}\u300D\u306B\u8A18\u9332\u3057\u305F\u3088\u3002`;
   }
   const table = target.source === "telegram" ? "telegram_notes" : "notes";
-  const old = await env.DB.prepare(`SELECT id, path, title, content, content_hash FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(target.id).first();
+  const pathColumn = table === "notes" ? "path" : "NULL AS path";
+  const old = await env.DB.prepare(`SELECT id, ${pathColumn}, title, content, content_hash FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(target.id).first();
   if (!old || inspectWholeContent(old.content, env).credentials) return null;
   const nowDate = now.slice(0, 10);
   const updatedContent = `${old.content.trim()}
@@ -966,7 +967,8 @@ async function correctNote(request, url, env) {
   if (typeof body.content !== "string" || !body.content.trim() || body.content.length > MAX_NOTE_CHARS) return json({ error: "content must be a non-empty string within the note size limit" }, 400);
   const table = await locateNote(env, id2);
   if (!table) return json({ error: "Note not found" }, 404);
-  const old = await env.DB.prepare(`SELECT id, path, title, content, content_hash, ai_allowed, review_state FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(id2).first();
+  const pathColumn = table === "notes" ? "path" : "NULL AS path";
+  const old = await env.DB.prepare(`SELECT id, ${pathColumn}, title, content, content_hash, ai_allowed, review_state FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(id2).first();
   const contentHash = await sha256(body.content);
   if (old.content_hash === contentHash) return json({ ok: true, unchanged: true, id: id2 });
   const now = (/* @__PURE__ */ new Date()).toISOString();
