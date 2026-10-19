@@ -7,7 +7,9 @@ const start = source.indexOf("async function syncNotes(request, env)");
 const marker = '__name(syncNotes, "syncNotes");';
 const end = source.indexOf(marker, start);
 assert.ok(start >= 0 && end > start, "Could not extract syncNotes from the Worker bundle");
-const syncNotesSource = source.slice(start, end).trim();
+const syncNotesSource = source.slice(start, end).trim()
+  .replaceAll(String.fromCharCode(92, 96), String.fromCharCode(96))
+  .replaceAll(String.fromCharCode(92, 36, 123), String.fromCharCode(36, 123));
 
 function readUuid(content) {
   const fm = content.slice(0, 4000).match(/^---\r?\n([\s\S]*?)\r?\n---/);
