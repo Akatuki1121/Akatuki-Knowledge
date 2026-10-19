@@ -40,3 +40,17 @@ Cloudflare version metadata records migration tags `v1`–`v5`, but does not exp
 - Read Cloudflare Worker code/settings/deployment metadata and GitHub files.
 - Confirmed the event-sync PR corrects the hourly Cron discriminator.
 - No production Worker deployment, D1 mutation/recreation, migration replay, secret change, or Vault write was performed by this comparison.
+
+
+## External YAOS Worker configuration (read-only observation)
+
+The separately deployed `yaos` Worker was inspected through Cloudflare settings/version metadata on 2026-10-19:
+
+- Active version ID: `18ae722f-ae97-40f9-bec4-7d127ae5477b`, created `2026-10-18T11:30:51.702769Z`.
+- Compatibility date: `2026-03-02`.
+- Durable Object binding `YAOS_CONFIG` → `ServerConfig`, namespace ID `bbb1227af8314a5393cdbfa9d0aefb69`.
+- Durable Object binding `YAOS_SYNC` → `VaultSyncServer`, namespace ID `08a506977fec4448ad89d208fe236dc5`.
+- No Cron schedules were configured for this Worker at the time of inspection.
+- The deployed bundle reports `SERVER_SCHEMA_VERSION = 3`.
+
+These are observed production settings, not a reconstructed source configuration. The source repository corresponding to this exact deployed bundle has not yet been verified. Do not change the YAOS Worker, its Durable Objects, or their data as part of this recovery. Do not treat the absence of a Cron trigger as a defect without confirming the intended YAOS execution model.
