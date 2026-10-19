@@ -32,3 +32,28 @@ jobs:
         run: python3 scripts/test_reconstructed_baseline.py
       - name: Compile Worker SQL against captured D1 schema
         run: python3 scripts/test_worker_sql_compatibility.py
+
+
+  yaos-worker-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kavinsood/yaos
+          ref: 2174eb89538ce7e213e9e33a0e75ecaf1a3f1f58
+          path: yaos
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned YAOS dependencies
+        working-directory: yaos
+        run: npm ci
+      - name: Install YAOS Worker dependencies
+        working-directory: yaos/server
+        run: npm ci
+      - name: Exercise isolated local D1 and both Workers
+        env:
+          YAOS_REPO_PATH: ${{ github.workspace }}/yaos
+        run: node scripts/test_yaos_worker_integration.mjs
