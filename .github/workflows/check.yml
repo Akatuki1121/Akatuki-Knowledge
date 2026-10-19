@@ -22,3 +22,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: python3 scripts/test_pending_migration.py
