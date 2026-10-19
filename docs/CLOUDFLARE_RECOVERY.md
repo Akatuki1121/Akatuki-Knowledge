@@ -48,7 +48,7 @@ The previous `migrations/0001_initial.sql` was an evolved schema snapshot, inclu
 
 1. Recover original D1 migration SQL `0001`–`0007` from source history/backups; do not reverse-engineer and label guessed SQL as original.
 2. Recover the exact Wrangler Durable Object migration declarations for tags `v1`–`v5`.
-3. Add a verified Wrangler config and package/tooling setup.
+3. `wrangler.jsonc` is now a recovered configuration draft and is checked in CI. It is not deploy-ready until the original Durable Object migration declarations are recovered; no deploy workflow should run before that.
 4. Validate clean-database migrations and a staging deployment before any production deploy.
 
 No Cloudflare settings, secrets, Worker code, or D1 data were changed during this capture.
