@@ -10638,6 +10638,7 @@ var wrapper_default = {
       } catch (error) {
         console.log(JSON.stringify({ pull: { ok: false, error: String(error).slice(0, 200) } }));
       }
+      ctx.waitUntil(runScheduledMaintenance(env));
       return;
     }
     return worker_default.scheduled(event, env, ctx);
