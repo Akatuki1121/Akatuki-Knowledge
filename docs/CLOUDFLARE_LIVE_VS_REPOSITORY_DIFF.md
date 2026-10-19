@@ -34,3 +34,8 @@ Reason: `telegram_notes` has no `path` column in the captured live D1 schema. Th
 - Read current Cloudflare Worker source/settings/deployment metadata and GitHub source.
 - Kept the code comparison and compatibility fix on `recovery/bootstrap-schema-validation`.
 - No production Worker deployment, D1 mutation, D1 recreation, or migration replay was performed by this comparison.
+
+## Backup-branch artifact and scheduled-sync mismatch
+
+- `backup/codespaces-20261019-040712/src/index.js` is not a clean JavaScript source file: it contains the complete multipart upload envelope around `wrapper.js`. After extracting the payload, it matches the deployed module / `main/src/index.js` exactly, including the deployed source-map annotation. Keep the extracted `main/src/index.js` as source; do not run the multipart-wrapped backup file as Worker code.
+- The deployed Worker configuration has a scheduled trigger of `0 * * * *` (hourly). The deployed code defines `PULL_CRON = "*/5 * * * *"` and calls the YAOS pull only when `event.cron === PULL_CRON`. With the currently observed hourly trigger, that equality will not match; the handler falls through to `worker_default.scheduled`. **Code/config analysis therefore indicates the scheduled YAOS→D1 pull is not being started by the configured cron.** This is an inference from the retrieved config and code, not a claim based on live execution logs. Do not change production scheduling as part of source recovery; decide the intended sync mechanism and interval separately.
