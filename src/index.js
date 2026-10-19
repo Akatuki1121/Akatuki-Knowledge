@@ -768,6 +768,17 @@ async function sha256(value) {
   return [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 __name(sha256, "sha256");
+async function deterministicUuid(seed) {
+  const digest = (await sha256(seed)).slice(0, 32).split("");
+  digest[12] = "5";
+  digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
+  return digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
+}
+__name(deterministicUuid, "deterministicUuid");
+function isValidSyncUuid(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+__name(isValidSyncUuid, "isValidSyncUuid");
 function extractTags(content, supplied) {
   if (Array.isArray(supplied)) return [...new Set(supplied.filter((x) => typeof x === "string").map((x) => x.trim().replace(/^#/, "")).filter(Boolean))].slice(0, 50);
   const found = /* @__PURE__ */ new Set();
