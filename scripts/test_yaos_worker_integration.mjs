@@ -134,7 +134,9 @@ async function stopProcessTree(child) {
 }
 
 async function triggerDrain() {
-  const response = await fetch(HOST + "/cdn-cgi/local/scheduled?cron=0+*+*+*+*");
+  const response = await fetch(HOST + "/__scheduled?cron=0+*+*+*+*", {
+    signal: AbortSignal.timeout(5000),
+  });
   const text = await response.text();
   if (!response.ok) throw new Error(`Local scheduled invocation failed: HTTP ${response.status}: ${text}`);
 }
@@ -436,15 +438,15 @@ SYNC_TOKEN = "${TOKEN}"
     await stopWorker();
     await writeFile(YAOS_CONFIG, yaosConfig);
     await startWorker();
+    let retryObservation = null;
     await waitFor(async () => {
-      try {
-        await triggerDrain();
-        const status = await request("/sync/status");
-        return status.outbox?.sent > sentBeforeRetry;
-      } catch {
-        return false;
-      }
-    }, "outbox job to retry after YAOS auth is restored", 30000);
+      await triggerDrain();
+      const status = await request("/sync/status");
+      retryObservation = status.outbox;
+      return status.outbox?.sent > sentBeforeRetry;
+    }, "outbox job to retry after YAOS auth is restored", 30000).catch(error => {
+      throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}`);
+    });
 
     // Simulate a real independent YAOS edit after the last verified write.
     // The next Knowledge correction must be rejected as a permanent conflict,
