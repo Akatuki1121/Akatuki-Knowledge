@@ -157,7 +157,9 @@ var worker_default = {
 async function enqueueSyncJob(env, entityType, entityId, operation) {
   if (!env.DB || !["notes", "telegram_notes"].includes(entityType) || !["upsert", "delete"].includes(operation)) return;
   try {
-    const row = await env.DB.prepare("SELECT id, path, title, content, deleted_at FROM " + entityType + " WHERE id = ?").bind(entityId).first();
+    const row = entityType === "notes"
+      ? await env.DB.prepare("SELECT id, path, title, content, deleted_at FROM notes WHERE id = ?").bind(entityId).first()
+      : await env.DB.prepare("SELECT id, title, content, deleted_at FROM telegram_notes WHERE id = ?").bind(entityId).first();
     if (!row) return;
     const now = new Date().toISOString();
     const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", deletedAt: row.deleted_at ?? null };
