@@ -23,6 +23,11 @@ jobs:
     outputs:
       integration: ${{ steps.filter.outputs.integration }}
     steps:
+      # Pull requests use the GitHub API; pushes need repository history for
+      # dorny/paths-filter to compare changed paths against the base commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dorny/paths-filter@v3
         id: filter
         with:
