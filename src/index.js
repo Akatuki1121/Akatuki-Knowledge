@@ -829,7 +829,7 @@ __name(inspectWholeContent, "inspectWholeContent");
 async function syncNotes(request, env) {
   const body = await readJson(request);
   if (!Array.isArray(body.notes) || body.notes.length > MAX_NOTES_PER_SYNC) {
-    return json({ error: \`notes must be an array of at most \${MAX_NOTES_PER_SYNC} items\` }, 400);
+    return json({ error: "notes must be an array of at most " + MAX_NOTES_PER_SYNC + " items" }, 400);
   }
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0;
@@ -859,38 +859,19 @@ async function syncNotes(request, env) {
     const tags = JSON.stringify(extractTags(content, input.tags));
     const moved = Boolean(previous && previous.path !== path);
     if (previous && previous.content_hash === contentHash && previous.title === title) {
-      if (moved) {
-        await env.DB.batch([
-          env.DB.prepare("UPDATE notes SET id = ?, path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(path, path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
-          env.DB.prepare("UPDATE note_revisions SET note_id = ? WHERE note_id = ?").bind(path, previous.id),
-          env.DB.prepare("UPDATE note_relations SET source_note_id = ? WHERE source_note_id = ?").bind(path, previous.id),
-          env.DB.prepare("UPDATE note_relations SET target_note_id = ? WHERE target_note_id = ?").bind(path, previous.id),
-          env.DB.prepare("UPDATE note_archive_events SET note_id = ? WHERE note_id = ?").bind(path, previous.id),
-          env.DB.prepare("UPDATE telegram_note_actions SET note_id = ? WHERE note_id = ?").bind(path, previous.id)
-        ]);
-        updated++;
-      } else {
-        await env.DB.prepare("UPDATE notes SET sync_uuid = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id).run();
-        unchanged++;
-      }
+      await env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ?, deleted_at = NULL WHERE id = ?").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id).run();
+      if (moved) updated++;
+      else unchanged++;
       continue;
     }
     if (previous) {
-      const statements = [
-        env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(moved ? path : previous.id, previous.path, previous.title, previous.content, previous.content_hash, now),
-        env.DB.prepare(\`UPDATE notes SET id = ?, path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE id = ?\`).bind(path, path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id)
-      ];
-      if (moved) statements.push(
-        env.DB.prepare("UPDATE note_relations SET source_note_id = ? WHERE source_note_id = ?").bind(path, previous.id),
-        env.DB.prepare("UPDATE note_relations SET target_note_id = ? WHERE target_note_id = ?").bind(path, previous.id),
-        env.DB.prepare("UPDATE note_archive_events SET note_id = ? WHERE note_id = ?").bind(path, previous.id),
-        env.DB.prepare("UPDATE telegram_note_actions SET note_id = ? WHERE note_id = ?").bind(path, previous.id)
-      );
-      await env.DB.batch(statements);
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now),
+        env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready', deleted_at = NULL WHERE id = ?").bind(path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id)
+      ]);
       updated++;
     } else {
-      const id2 = path;
-      await env.DB.prepare(\`INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\`).bind(id2, path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags).run();
+      await env.DB.prepare("INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(path, path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags).run();
       created++;
     }
   }
