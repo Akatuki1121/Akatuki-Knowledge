@@ -8,7 +8,7 @@ The recovered SQL files `0001` through `0007` are present in this directory and 
 
 The live schema contains a `folders` table and a `notes.folder_id` column that are absent from migrations `0001`–`0007`. The origin of this schema change is unknown. A new forward migration candidate is preserved at `pending/0008_folders_schema_reconstructed.sql`; it is explicitly not claimed to be the original historical change.
 
-The candidate applies cleanly after `0001`–`0007` on an empty SQLite database and makes the resulting table/column shape match the captured live schema. CI verifies this structural match. It does not establish when the production schema was added.
+The candidate applies cleanly after `0001`–`0007` on an empty SQLite database and makes the resulting table/column shape match the captured live schema. CI compares tables, column definitions, foreign keys, and index definitions against the captured schema. It does not establish when the production schema was added.
 
 **Do not move this migration into the executable `migrations/` directory or run it against production yet.** Production already has `folders` and `notes.folder_id`, but the ledger does not record the migration. Running the candidate normally against production would fail on the existing `folder_id` column. A reviewed procedure must first verify the live schema and reconcile the ledger without rerunning the DDL.
 
