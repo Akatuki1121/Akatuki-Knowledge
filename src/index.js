@@ -10443,7 +10443,14 @@ var YjsClientDO = class extends DurableObject {
       owners.push(row.id);
       dbUuidOwners.set(row.sync_uuid, owners);
     }
-    const comparable = (value) => String(value ?? "").replace(/\r\n/g, "\n").replace(/^---\n([\s\S]*?)\n---/, (_all, frontmatter) => "---\n" + frontmatter.split("\n").filter((line) => !/^id:\s*/i.test(line)).join("\n") + "\n---");
+    const comparable = (value) => {
+      const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      const match = normalized.match(/^---\n([\s\S]*?)\n---\n*/);
+      if (!match) return normalized;
+      const lines = match[1].split("\n").filter((line) => !/^id:\s*/i.test(line));
+      const prefix = lines.length ? "---\n" + lines.join("\n") + "\n---\n" : "";
+      return prefix + normalized.slice(match[0].length);
+    };
     const withUuid = (content, uuid) => {
       const text = String(content ?? "");
       if (/^---\r?\n[\s\S]*?\r?\n---/.test(text)) {
@@ -10807,7 +10814,14 @@ var YjsClientDO = class extends DurableObject {
       else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
     }
     const desiredUuid = readUuid(desiredContent);
-    const comparableContent = (value) => String(value ?? "").replace(/\r\n/g, "\n").replace(/^---\n([\s\S]*?)\n---/, (_all, frontmatter) => "---\n" + frontmatter.split("\n").filter((line) => !/^id:\s*/i.test(line)).join("\n") + "\n---");
+    const comparableContent = (value) => {
+      const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      const match = normalized.match(/^---\n([\s\S]*?)\n---\n*/);
+      if (!match) return normalized;
+      const lines = match[1].split("\n").filter((line) => !/^id:\s*/i.test(line));
+      const prefix = lines.length ? "---\n" + lines.join("\n") + "\n---\n" : "";
+      return prefix + normalized.slice(match[0].length);
+    };
     const locate = (doc) => {
       const found = [];
       const idToText = doc.getMap("idToText");

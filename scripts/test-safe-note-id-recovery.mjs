@@ -177,4 +177,17 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   assert.deepEqual(result.missingNoteIds, [], "A YAOS tombstone must not be resurrected automatically");
 }
 
+{
+  const path = "Notes/no-frontmatter.md";
+  const vaultContent = `---\nid: "${uuid}"\n---\n\nplain article`;
+  const { instance, rows, revisions } = setup([{ id: path, path, title: "No frontmatter", content: "plain article", content_hash: "old-hash", sync_uuid: uuid }], [{ path, content: vaultContent }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.equal(result.ok, true);
+  assert.equal(result.contentConflicts, 0, "An ID-only frontmatter wrapper must not create a false content conflict");
+  assert.equal(result.d1Updated, 1);
+  assert.equal(rows[0].content, vaultContent);
+  assert.equal(readUuid(rows[0].content), uuid);
+  assert.equal(revisions.length, 1);
+}
+
 console.log("Safe existing-note ID recovery tests passed.");
