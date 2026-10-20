@@ -10408,18 +10408,26 @@ var YjsClientDO = class extends DurableObject {
     if (initial.getMap("sys").get("initialized") !== true) return { ok: true, skipped: "vault_not_initialized" };
     const paths = new Map();
     const vaultUuidOwners = new Map();
+    const deletedPaths = new Set();
+    const deletedUuids = new Set();
     let vaultFiles = 0;
     meta.forEach((value, fileId) => {
       const path = value instanceof YMap ? value.get("path") : value?.path;
+      if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
+      const textValue = idToText.get(fileId);
+      const uuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
       const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
+      if (deleted) {
+        deletedPaths.add(norm(path));
+        if (isValidSyncUuid(uuid)) deletedUuids.add(uuid);
+        return;
+      }
+      if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
       vaultFiles++;
       const key = norm(path);
       const entries = paths.get(key) || [];
       entries.push({ fileId, path });
       paths.set(key, entries);
-      const textValue = idToText.get(fileId);
-      const uuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
       if (isValidSyncUuid(uuid)) {
         const owners = vaultUuidOwners.get(uuid) || [];
         owners.push({ fileId, path, uuid });
@@ -10448,10 +10456,20 @@ var YjsClientDO = class extends DurableObject {
     };
     const candidates = [];
     const edits = [];
-    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
+    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0, tombstonedInVault = 0, uuidPathMismatch = 0, unsafeMissingPaths = 0;
+    const missingNoteIds = [];
     for (const row of rows) {
       const entries = paths.get(norm(row.path)) || [];
-      if (entries.length === 0) { missingInVault++; continue; }
+      if (entries.length === 0) {
+        const rowUuid = isValidSyncUuid(row.sync_uuid) ? row.sync_uuid : null;
+        if (deletedPaths.has(norm(row.path)) || (rowUuid && deletedUuids.has(rowUuid))) { tombstonedInVault++; continue; }
+        if (rowUuid && (vaultUuidOwners.get(rowUuid) || []).length > 0) { uuidPathMismatch++; continue; }
+        const pathParts = String(row.path || "").split("/");
+        if (!String(row.path || "").toLowerCase().endsWith(".md") || String(row.path || "").startsWith(RESERVED_ROOT + "/") || pathParts.slice(0, -1).some((part) => part.startsWith("."))) { unsafeMissingPaths++; continue; }
+        missingInVault++;
+        missingNoteIds.push(row.id);
+        continue;
+      }
       if (entries.length !== 1) { duplicatePaths++; continue; }
       const entry = entries[0];
       const textValue = idToText.get(entry.fileId);
@@ -10529,7 +10547,7 @@ var YjsClientDO = class extends DurableObject {
       const batch = statements.slice(i, i + 60);
       if (batch.length) await this.env.DB.batch(batch);
     }
-    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
+    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, missingNoteIds, tombstonedInVault, uuidPathMismatch, unsafeMissingPaths, duplicatePaths, contentConflicts, uuidConflicts };
   }
 
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
@@ -10777,7 +10795,7 @@ var YjsClientDO = class extends DurableObject {
     const hash16 = telegram ? (await sha256Hex(payload.id)).slice(0, 16) : null;
     const slug = (payload.title || "Telegram note").normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[-. ]+|[-. ]+$/g, "").slice(0, 64) || "Telegram-note";
     const desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + "-" + hash16 + ".md" : norm(payload.path || "");
-    if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
+    if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").slice(0, -1).some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
     let desiredContent = payload.content;
     const contentUuid = readUuid(desiredContent);
     const uuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : await deterministicUuid(telegram ? payload.id : "notes:" + payload.id));
@@ -11038,10 +11056,27 @@ var wrapper_default = {
     if (event.cron === RECOVERY_CRON) {
       try {
         const response = await doFetch(env, "reconcile-existing-note-ids");
-        const recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        let recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        let queuedForRestore = 0, restoreQueueErrors = 0, skippedExistingJobs = 0;
+        for (const id of Array.isArray(recovery.missingNoteIds) ? recovery.missingNoteIds : []) {
+          try {
+            const existing = await env.DB.prepare("SELECT status FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? ORDER BY job_id DESC LIMIT 1").bind(id).first();
+            if (existing) { skippedExistingJobs++; continue; }
+            await enqueueSyncJob(env, "notes", id, "upsert");
+            queuedForRestore++;
+          } catch {
+            restoreQueueErrors++;
+          }
+        }
+        const restoreDrain = queuedForRestore ? await drainSyncOutbox(env, 10) : { sent: 0, failed: 0, processed: 0 };
+        if (queuedForRestore > 0) {
+          const verifyResponse = await doFetch(env, "reconcile-existing-note-ids");
+          recovery = await verifyResponse.json().catch(() => ({ ok: false, error: "invalid_post_restore_response" }));
+        }
+        recovery = { ...recovery, queuedForRestore, restoreQueueErrors, skippedExistingJobs, restoreSent: restoreDrain.sent || 0, restoreFailed: restoreDrain.failed || 0 };
         await persistRecoveryDiagnostics(env, recovery);
-        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
-          console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
+        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.tombstonedInVault > 0 || recovery.uuidPathMismatch > 0 || recovery.unsafeMissingPaths > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0 || restoreQueueErrors > 0 || restoreDrain.failed > 0) {
+          console.log(JSON.stringify({ safeNoteIdRecovery: { ...recovery, missingNoteIds: undefined } }));
         }
       } catch (error) {
         console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false, error: String(error).slice(0, 200) } }));
