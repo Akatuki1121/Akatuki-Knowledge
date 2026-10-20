@@ -21,7 +21,7 @@ for (const required of [
   'context_ready: "関連ノートの取得完了"',
   'prompt_ready: "要約プロンプトの準備完了"',
   'completed: "結果の保存完了"',
-  '"\n段階: " + (stageLabels[stage] || stage)',
+  '"\\n段階: " + (stageLabels[stage] || stage)',
   "/task_status",
   'url.pathname === "/api/agent-tasks"',
   'request.method === "POST"',
