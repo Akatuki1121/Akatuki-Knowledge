@@ -38,6 +38,7 @@ for (const required of [
   "allowRestart: true",
   'return "restart_deferred"',
   "allowRestart = false",
+  'ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false })',
   "flushAgentTaskNotifications",
   "notificationStatus: task.notification_status",
   "notification_status = 'sending'",

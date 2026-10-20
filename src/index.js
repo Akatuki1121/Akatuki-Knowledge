@@ -11635,7 +11635,7 @@ var wrapper_default = {
         || (task.status === "waiting" && task.next_attempt_at <= now)
         || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
         try {
-          await ensureAgentTaskWorkflow(env, task.task_id, task.status === "running");
+          await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
         } catch {
           dispatchPending = true;
         }
