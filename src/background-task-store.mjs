@@ -232,12 +232,13 @@ export async function reserveAgentAiBudget(db, input) {
         updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
       AND deadline_at > ?
+      AND lease_expires_at > ?
       AND ai_calls_used < max_ai_calls
       AND ai_calls_used < ?
       AND ai_tokens_used + ? <= max_ai_tokens
       AND ai_tokens_used + ? <= ?
   `).bind(
-    estimatedTokens, now, input.taskId, input.leaseToken, now,
+    estimatedTokens, now, input.taskId, input.leaseToken, now, now,
     TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
     TASK_BUDGET_CEILINGS.maxAiTokens,
   ).run();
@@ -255,6 +256,7 @@ export async function reserveAgentAiBudget(db, input) {
         END,
         completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
+      AND lease_expires_at > ?
       AND (
         deadline_at <= ?
         OR ai_calls_used >= max_ai_calls
@@ -263,7 +265,7 @@ export async function reserveAgentAiBudget(db, input) {
         OR ai_tokens_used + ? > ?
       )
   `).bind(
-    now, now, now, input.taskId, input.leaseToken,
+    now, now, now, input.taskId, input.leaseToken, now,
     now, TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
     TASK_BUDGET_CEILINGS.maxAiTokens,
   ).run();
@@ -278,8 +280,9 @@ export async function renewAgentTaskLease(db, input) {
   const result = await db.prepare(`
     UPDATE agent_tasks
     SET lease_expires_at = datetime(?, '+' || ? || ' seconds'), updated_at = ?
-    WHERE task_id = ? AND status = 'running' AND lease_token = ? AND deadline_at > ?
-  `).bind(now, leaseSeconds, now, input.taskId, leaseToken, now).run();
+    WHERE task_id = ? AND status = 'running' AND lease_token = ?
+      AND lease_expires_at > ? AND deadline_at > ?
+  `).bind(now, leaseSeconds, now, input.taskId, leaseToken, now, now).run();
   return result?.meta?.changes === 1;
 }
 
@@ -290,7 +293,8 @@ export async function saveAgentTaskCheckpoint(db, input) {
     UPDATE agent_tasks
     SET checkpoint_json = ?, updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-  `).bind(checkpointJson, now, input.taskId, input.leaseToken).run();
+      AND lease_expires_at > ? AND deadline_at > ?
+  `).bind(checkpointJson, now, input.taskId, input.leaseToken, now, now).run();
   return result?.meta?.changes === 1;
 }
 
@@ -301,7 +305,8 @@ export async function completeAgentTask(db, input) {
     SET status = 'succeeded', completed_at = ?, updated_at = ?,
         lease_token = NULL, lease_expires_at = NULL, stop_reason = NULL
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-  `).bind(now, now, input.taskId, input.leaseToken).run();
+      AND lease_expires_at > ? AND deadline_at > ?
+  `).bind(now, now, input.taskId, input.leaseToken, now, now).run();
   return result?.meta?.changes === 1;
 }
 
@@ -315,7 +320,8 @@ export async function recordAgentTaskFailure(db, input) {
   const row = await db.prepare(`
     SELECT * FROM agent_tasks
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-  `).bind(input.taskId, input.leaseToken).first();
+      AND lease_expires_at > ?
+  `).bind(input.taskId, input.leaseToken, now).first();
   if (!row) return { applied: false, decision: null };
 
   const decision = decideTaskRetry({
@@ -340,7 +346,8 @@ export async function recordAgentTaskFailure(db, input) {
           last_error_class = ?, last_error = NULL, stop_reason = NULL,
           lease_token = NULL, lease_expires_at = NULL
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
-    `).bind(retryAt, now, input.errorClass, input.taskId, input.leaseToken).run();
+        AND lease_expires_at > ?
+    `).bind(retryAt, now, input.errorClass ?? "unknown", input.taskId, input.leaseToken, now).run();
     return { applied: result?.meta?.changes === 1, decision };
   }
 
@@ -350,6 +357,7 @@ export async function recordAgentTaskFailure(db, input) {
         last_error_class = ?, last_error = NULL, stop_reason = ?,
         lease_token = NULL, lease_expires_at = NULL
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-  `).bind(now, now, input.errorClass ?? "unknown", decision.stopReason, input.taskId, input.leaseToken).run();
+      AND lease_expires_at > ?
+  `).bind(now, now, input.errorClass ?? "unknown", decision.stopReason, input.taskId, input.leaseToken, now).run();
   return { applied: result?.meta?.changes === 1, decision };
 }
