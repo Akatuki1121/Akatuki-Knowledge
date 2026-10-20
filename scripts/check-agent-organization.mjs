@@ -12,6 +12,8 @@ for (const contract of [
   "AI送信許可を一括反映して",
   "env.DB.batch(batch)",
   "sensitivity = 'user-approved'",
+  "sensitivity = 'credentials'",
+  "credentialAllowed",
   "AI送信許可の一括確認が完了しました"
 ]) {
   assert.ok(source.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
