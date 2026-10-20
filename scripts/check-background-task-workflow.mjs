@@ -14,7 +14,7 @@ for (const required of [
   "await isAuthorized(request, env)",
   "inspectAndRedact(task.payload.prompt)",
   "inspectAndRedact(body.prompt",
-  "payload: { prompt: inspection.text, maxOutputTokens },
+  "payload: { prompt: inspection.text, maxOutputTokens },",
   '["health", "financial", "location"]',
   "reserveAgentAiBudget",
   "step.sleepUntil",
