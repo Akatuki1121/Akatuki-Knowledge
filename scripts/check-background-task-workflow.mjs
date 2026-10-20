@@ -53,6 +53,14 @@ for (const required of [
 ]) {
   assert.ok(source.includes(required), "Missing background workflow contract: " + required);
 }
+assert.ok(source.includes('task.budget_reserved === 1 && (task.status === "queued"'), "Telegram intake must not dispatch before budget admission");
+assert.ok(source.includes('task.budget_reserved === 1 && (task.status === "queued"'), "HTTP intake must not dispatch before budget admission");
+const terminalNotificationStart = source.indexOf('let message = "背景タスク " + statusText');
+const terminalNotificationEnd = source.indexOf('await sendTelegramMessage(env, task.notify_chat_id, message);', terminalNotificationStart);
+assert.ok(terminalNotificationStart >= 0 && terminalNotificationEnd > terminalNotificationStart, "Terminal notification message must exist");
+assert.ok(!source.slice(terminalNotificationStart, terminalNotificationEnd).includes("\\\\n"), "Terminal notification must use actual newline escapes, not literal backslash-n text");
+const taskMigration = await readFile(new URL("../migrations/pending/0011_agent_tasks.sql", import.meta.url), "utf8");
+assert.ok(taskMigration.includes("budget_reserved INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved IN (0, 1))"), "Pending task schema must include budget reservation admission flag");
 assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
 assert.ok(config.includes('class_name = "AgentTaskWorkflow"'));
 assert.ok(config.includes('"*/15 * * * *"'));
