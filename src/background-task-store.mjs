@@ -40,22 +40,11 @@ export async function getAgentTask(db, taskId) {
 
 export async function listAgentTasks(db, input = {}) {
   const status = typeof input.status === "string" ? input.status : "active";
-  const statusSql = {
-    active: "status IN ('queued', 'running', 'waiting')",
-    terminal: "status IN ('succeeded', 'failed', 'cancelled')",
-    failed: "status = 'failed'",
-    succeeded: "status = 'succeeded'",
-    cancelled: "status = 'cancelled'",
-    all: "1 = 1"
-  }[status];
-  if (!statusSql) throw new TypeError("Unsupported task status filter");
-
-  const clauses = [statusSql];
-  const bindings = [];
-  if (typeof input.notifyChatId === "string" && input.notifyChatId.trim()) {
-    clauses.push("notify_chat_id = ?");
-    bindings.push(input.notifyChatId.trim());
+  if (!["active", "terminal", "failed", "succeeded", "cancelled", "all"].includes(status)) {
+    throw new TypeError("Unsupported task status filter");
   }
+  const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
+    ? input.notifyChatId.trim() : null;
   const limit = Math.max(1, Math.min(20, Math.floor(finiteNumber(input.limit, 10))));
   const result = await db.prepare(`
     SELECT task_id, task_type, status, attempts, max_attempts, created_at,
@@ -63,10 +52,21 @@ export async function listAgentTasks(db, input = {}) {
       checkpoint_json, notify_chat_id, notification_status,
       notification_attempts, notification_last_error_class
     FROM agent_tasks
-    WHERE ${clauses.join(" AND ")}
+    WHERE (
+      (? = 'active' AND status IN ('queued', 'running', 'waiting'))
+      OR (? = 'terminal' AND status IN ('succeeded', 'failed', 'cancelled'))
+      OR (? = 'failed' AND status = 'failed')
+      OR (? = 'succeeded' AND status = 'succeeded')
+      OR (? = 'cancelled' AND status = 'cancelled')
+      OR (? = 'all')
+    )
+      AND (? IS NULL OR notify_chat_id = ?)
     ORDER BY updated_at DESC
     LIMIT ?
-  `).bind(...bindings, limit).all();
+  `).bind(
+    status, status, status, status, status, status,
+    notifyChatId, notifyChatId, limit,
+  ).all();
   return (result?.results || []).map((row) => ({
     ...row,
     checkpoint: parseJson(row.checkpoint_json, {})
