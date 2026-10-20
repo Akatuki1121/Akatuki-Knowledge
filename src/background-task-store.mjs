@@ -38,6 +38,43 @@ export async function getAgentTask(db, taskId) {
   return presentTask(row);
 }
 
+export async function listAgentTasks(db, input = {}) {
+  const status = typeof input.status === "string" ? input.status : "active";
+  const statusSql = {
+    active: "status IN ('queued', 'running', 'waiting')",
+    terminal: "status IN ('succeeded', 'failed', 'cancelled')",
+    failed: "status = 'failed'",
+    succeeded: "status = 'succeeded'",
+    cancelled: "status = 'cancelled'",
+    all: "1 = 1"
+  }[status];
+  if (!statusSql) throw new TypeError("Unsupported task status filter");
+
+  const clauses = [statusSql];
+  const bindings = [];
+  if (typeof input.notifyChatId === "string" && input.notifyChatId.trim()) {
+    clauses.push("notify_chat_id = ?");
+    bindings.push(input.notifyChatId.trim());
+  }
+  const limit = Math.max(1, Math.min(20, Math.floor(finiteNumber(input.limit, 10))));
+  const result = await db.prepare(`
+    SELECT task_id, task_type, status, attempts, max_attempts, created_at,
+      updated_at, next_attempt_at, stop_reason, last_error_class,
+      checkpoint_json, notify_chat_id, notification_status,
+      notification_attempts, notification_last_error_class
+    FROM agent_tasks
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).bind(...bindings, limit).all();
+  return (result?.results || []).map((row) => ({
+    ...row,
+    checkpoint: parseJson(row.checkpoint_json, {})
+  }));
+}
+__name(listAgentTasks, "listAgentTasks");
+
+
 export async function expireAgentTasks(db, input = {}) {
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const result = await db.prepare(`

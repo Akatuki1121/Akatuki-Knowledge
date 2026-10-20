@@ -6,6 +6,7 @@ import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
 import {
   enqueueAgentTask,
   getAgentTask,
+  listAgentTasks,
   claimNextAgentTask,
   reserveAgentAiBudget,
   saveAgentTaskCheckpoint,
@@ -318,7 +319,9 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、状態確認は /task_status ID。ノート変更は通常の会話で依頼してね。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、未完了一覧は /tasks、状態確認は /task_status ID。ノート変更は通常の会話で依頼してね。";
+    } else if (/^\/tasks(?:@\w+)?(?:\s|$)/u.test(text2)) {
+      reply = await listTelegramBackgroundTasks(env, chatId);
     } else if (/^\/task(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2);
     } else if (/^\/task_status(?:@\w+)?(?:\s|$)/u.test(text2)) {
@@ -458,6 +461,37 @@ async function getTelegramBackgroundTaskStatus(env, taskId) {
   return reply;
 }
 __name(getTelegramBackgroundTaskStatus, "getTelegramBackgroundTaskStatus");
+
+async function listTelegramBackgroundTasks(env, chatId) {
+  let tasks;
+  try {
+    tasks = await listAgentTasks(env.DB, { status: "active", notifyChatId: chatId, limit: 10 });
+  } catch {
+    return "背景タスク一覧を取得できませんでした。";
+  }
+  if (!tasks.length) return "未完了の背景タスクはありません。";
+
+  const statusLabels = { queued: "受付済み", running: "実行中", waiting: "再試行待ち" };
+  const stageLabels = {
+    context_ready: "関連ノートの取得完了",
+    prompt_ready: "要約プロンプトの準備完了",
+    completed: "結果保存済み"
+  };
+  const lines = tasks.map((task) => {
+    const stage = task.checkpoint?.stage;
+    return task.task_id
+      + "\\n状態: " + (statusLabels[task.status] || task.status)
+      + " / 試行 " + task.attempts + "/" + task.max_attempts
+      + (stage ? "\\n段階: " + (stageLabels[stage] || stage) : "")
+      + (task.notification_status && task.notification_status !== "none"
+        ? "\\n通知: " + task.notification_status : "");
+  });
+  return "未完了の背景タスク（" + tasks.length + "件）:\\n\\n"
+    + lines.join("\\n\\n")
+    + "\\n\\n個別の状態・結果: /task_status タスクID";
+}
+__name(listTelegramBackgroundTasks, "listTelegramBackgroundTasks");
+
 
 function classifyOperationalFailure(error) {
   const message = error instanceof Error ? error.message : String(error || "");
@@ -11646,6 +11680,39 @@ var wrapper_default = {
         status: task.status,
         dispatchPending
       }, { status: terminal ? 200 : 202, headers: JSON_HEADERS2 });
+    }
+
+    if (url.pathname === "/api/agent-tasks" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      const statusFilter = url.searchParams.get("status") || "active";
+      if (!["active", "terminal", "failed", "succeeded", "cancelled", "all"].includes(statusFilter)) {
+        return Response.json({ error: "invalid_status_filter" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      const requestedLimit = Number(url.searchParams.get("limit") || 10);
+      const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(20, Math.floor(requestedLimit))) : 10;
+      try {
+        const tasks = await listAgentTasks(env.DB, { status: statusFilter, limit });
+        return Response.json({
+          tasks: tasks.map((task) => ({
+            taskId: task.task_id,
+            taskType: task.task_type,
+            status: task.status,
+            attempts: Number(task.attempts || 0),
+            maxAttempts: Number(task.max_attempts || 0),
+            stage: task.checkpoint?.stage || null,
+            updatedAt: task.updated_at,
+            stopReason: task.stop_reason,
+            lastErrorClass: task.last_error_class,
+            notificationStatus: task.notification_status,
+            notificationAttempts: Number(task.notification_attempts || 0),
+            result: task.status === "succeeded" && typeof task.checkpoint?.result === "string"
+              ? task.checkpoint.result.slice(0, 500) : null
+          }))
+        }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
     }
 
     const taskMatch = url.pathname.match(/^\/api\/agent-tasks\/([A-Za-z0-9_-]{1,100})$/);

@@ -5,6 +5,9 @@ import { toSqliteDateTime } from "../src/background-task-store.mjs";
 const source = await readFile(new URL("../src/background-task-store.mjs", import.meta.url), "utf8");
 for (const required of [
   "ON CONFLICT(idempotency_key) DO NOTHING",
+  "export async function listAgentTasks",
+  "Unsupported task status filter",
+  "ORDER BY updated_at DESC",
   "notify_chat_id, notification_status, notification_next_attempt_at",
   "UPDATE agent_tasks",
   "lease_expires_at <= ?",

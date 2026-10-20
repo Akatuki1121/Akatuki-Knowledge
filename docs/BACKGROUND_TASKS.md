@@ -63,3 +63,8 @@ The first task type is `knowledge_query`: a read-only multi-stage note search an
 Telegram-originated tasks persist their notification target and delivery state in D1. The Workflow sends a terminal result immediately; the 15-minute recovery Cron also scans terminal tasks whose notification is pending or whose sending lease expired. Delivery retries use bounded exponential backoff and stop after eight attempts. A notification failure never re-runs the AI task or resets its execution budget. HTTP-created tasks without a Telegram target do not send Telegram messages.
 
 `/task_status <id>` and the authenticated status API expose notification delivery separately from task execution. A task can be complete while its notification is pending; the recovery path handles that state without repeating the task.
+
+
+## Discovering unfinished work
+
+Authenticated `GET /api/agent-tasks?status=active` lists queued, running, and waiting tasks without returning their original prompts. Use `status=terminal` or `status=all` for a bounded audit of task state. Telegram `/tasks` lists the current chat's unfinished tasks, so task IDs and checkpoint stages remain discoverable even if the original conversation is no longer available. Individual results remain available through `/task_status <id>` or `GET /api/agent-tasks/{id}`.
