@@ -23,7 +23,13 @@ Cloudflare Worker and D1-backed knowledge service.
 - Telegram can propose a move for one AI-permitted Obsidian note at a time. It does not move notes until the user explicitly replies `フォルダ整理案を反映して`; `フォルダ整理案を却下して` rejects the pending proposal.
 - Before proposing, the Worker excludes notes with detected credentials and sends only note IDs, titles, paths, and short summaries to Gemini. It validates proposed paths, checks collisions, and verifies the note has not changed since the proposal.
 - Approved moves save a note revision and enqueue the existing YAOS sync outbox. The bot's behavior-improvement proposals remain separately approval-gated.
-- The new table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. This is a pending schema migration: do not deploy the Worker changes to production until the migration has been reviewed and applied to the production D1. This change does not apply the migration or deploy production.
+- The organization-candidate table is documented in `migrations/pending/0010_bot_organization_candidates.sql`; this migration has already been applied to the existing production D1. The directory name reflects the reconstructed migration history, not an instruction to apply it again.
+
+## Telegram-first permission management
+
+- Routine use does not require the web UI. Send `AI送信許可を一括確認して` in Telegram to count Obsidian notes that can be safely allowed; no data changes during this preview.
+- To apply the proposal, explicitly send `AI送信許可を一括反映して`. The Worker re-scans all active Obsidian notes with the existing credential detector and only enables notes whose current content has no detected credentials. Notes with detected credentials are excluded.
+- `AI送信許可の一括許可案を却下して` dismisses the proposal. The UI remains an optional diagnostic/manual tool, not a required step in the normal Telegram workflow.
 
 ## Development
 
