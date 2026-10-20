@@ -10521,7 +10521,7 @@ var YjsClientDO = class extends DurableObject {
         statements.push(this.env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(row.id, row.path, row.title, row.content, row.content_hash, now));
         statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, sync_uuid = ?, imported_at = ?, updated_at = ? WHERE id = ?").bind(candidate.desired, hash, candidate.uuid, now, now, row.id));
         d1Updated++;
-      } else {
+      } else if (row.sync_uuid !== candidate.uuid) {
         statements.push(this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(candidate.uuid, row.id));
       }
     }
