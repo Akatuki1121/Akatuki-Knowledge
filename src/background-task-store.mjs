@@ -104,100 +104,84 @@ function boundedInteger(value, fallback, ceiling) {
 }
 
 export async function enqueueAgentTask(db, input) {
-  if (!input || typeof input.taskId !== "string" || !input.taskId.trim()) {
-    throw new TypeError("taskId is required");
-  }
-  if (typeof input.taskType !== "string" || !input.taskType.trim()) {
-    throw new TypeError("taskType is required");
-  }
-
+  if (!input || typeof input.taskId !== "string" || !input.taskId.trim()) throw new TypeError("taskId is required");
+  if (typeof input.taskType !== "string" || !input.taskType.trim()) throw new TypeError("taskType is required");
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const hardDeadline = nowMs + TASK_BUDGET_CEILINGS.maxTaskAgeMs;
   const deadlineAtMs = Math.min(finiteNumber(input.deadlineAtMs, hardDeadline), hardDeadline);
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
-
   const maxAttempts = boundedInteger(input.maxAttempts, 4, TASK_BUDGET_CEILINGS.maxAttempts);
   const maxAiCalls = boundedInteger(input.maxAiCalls, 20, TASK_BUDGET_CEILINGS.maxAiCalls);
   const maxAiTokens = boundedInteger(input.maxAiTokens, 40_000, TASK_BUDGET_CEILINGS.maxAiTokens);
-  const idempotencyKey = typeof input.idempotencyKey === "string" && input.idempotencyKey.trim()
-    ? input.idempotencyKey.trim()
-    : null;
-  const now = toSqliteDateTime(nowMs);
-  const deadline = toSqliteDateTime(deadlineAtMs);
-  const payloadJson = safeJson(input.payload, "payload");
+  const idempotencyKey = typeof input.idempotencyKey === "string" && input.idempotencyKey.trim() ? input.idempotencyKey.trim() : null;
+  const now = toSqliteDateTime(nowMs), deadline = toSqliteDateTime(deadlineAtMs), budgetDay = now.slice(0, 10);
+  const taskId = input.taskId.trim(), payloadJson = safeJson(input.payload, "payload");
+  const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim() ? input.notifyChatId.trim() : null;
 
-  if (idempotencyKey) {
-    const existing = await db.prepare("SELECT * FROM agent_tasks WHERE idempotency_key = ?")
-      .bind(idempotencyKey).first();
+  // One transactional D1 batch makes admission restart-safe. The task-keyed
+  // ledger and counted marker prevent duplicate daily budget charges.
+  const statements = [
+    db.prepare(`
+      INSERT INTO agent_tasks (
+        task_id, idempotency_key, task_type, status, budget_reserved, payload_json, checkpoint_json,
+        attempts, max_attempts, ai_calls_used, max_ai_calls, ai_tokens_used, max_ai_tokens,
+        created_at, updated_at, deadline_at, next_attempt_at,
+        notify_chat_id, notification_status, notification_next_attempt_at
+      ) VALUES (?, ?, ?, 'queued', 0, ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?,
+        CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
+      ON CONFLICT(idempotency_key) DO NOTHING
+    `).bind(taskId, idempotencyKey, input.taskType.trim(), payloadJson, maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now, notifyChatId, notifyChatId, now),
+    db.prepare(`
+      INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at)
+      VALUES (?, 0, 0, ?) ON CONFLICT(budget_day) DO NOTHING
+    `).bind(budgetDay, now),
+    db.prepare(`
+      INSERT INTO agent_task_budget_reservations (task_id, budget_day, workflow_steps, counted)
+      SELECT task_id, ?, 32, 0 FROM agent_tasks
+      WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
+        AND EXISTS (SELECT 1 FROM agent_task_daily_budget
+          WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000)
+      ON CONFLICT(task_id) DO NOTHING
+    `).bind(budgetDay, taskId, budgetDay),
+    db.prepare(`
+      UPDATE agent_task_daily_budget
+      SET tasks_reserved = tasks_reserved + 1, workflow_steps_reserved = workflow_steps_reserved + 32, updated_at = ?
+      WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
+        AND EXISTS (SELECT 1 FROM agent_task_budget_reservations
+          WHERE task_id = ? AND budget_day = ? AND counted = 0)
+    `).bind(now, budgetDay, taskId, budgetDay),
+    db.prepare(`
+      UPDATE agent_task_budget_reservations SET counted = 1
+      WHERE task_id = ? AND budget_day = ? AND counted = 0
+        AND EXISTS (SELECT 1 FROM agent_task_daily_budget
+          WHERE budget_day = ? AND tasks_reserved > 0 AND workflow_steps_reserved >= 32)
+    `).bind(taskId, budgetDay, budgetDay),
+    db.prepare(`
+      UPDATE agent_tasks SET budget_reserved = 1, updated_at = ?
+      WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
+        AND EXISTS (SELECT 1 FROM agent_task_budget_reservations WHERE task_id = ? AND counted = 1)
+    `).bind(now, taskId, taskId),
+  ];
+  const results = await db.batch(statements);
+  const inserted = Number(results?.[0]?.meta?.changes || 0) === 1;
+  let row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?").bind(taskId).first();
+  if (!row && idempotencyKey) {
+    const existing = await db.prepare("SELECT * FROM agent_tasks WHERE idempotency_key = ?").bind(idempotencyKey).first();
     if (existing) return { created: false, task: presentTask(existing) };
   }
-
-  const result = await db.prepare(`
-    INSERT INTO agent_tasks (
-      task_id, idempotency_key, task_type, status, budget_reserved, payload_json, checkpoint_json,
-      attempts, max_attempts, ai_calls_used, max_ai_calls, ai_tokens_used, max_ai_tokens,
-      created_at, updated_at, deadline_at, next_attempt_at,
-      notify_chat_id, notification_status, notification_next_attempt_at
-    ) VALUES (?, ?, ?, 'queued', 0, ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?,
-      CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
-    ON CONFLICT(idempotency_key) DO NOTHING
-  `).bind(
-    input.taskId.trim(), idempotencyKey, input.taskType.trim(), payloadJson,
-    maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now,
-    typeof input.notifyChatId === "string" && input.notifyChatId.trim() ? input.notifyChatId.trim() : null,
-    typeof input.notifyChatId === "string" && input.notifyChatId.trim() ? input.notifyChatId.trim() : null,
-    now,
-  ).run();
-
-  if (result?.meta?.changes === 0) {
-    if (idempotencyKey) {
-      const existing = await db.prepare(
-        "SELECT * FROM agent_tasks WHERE idempotency_key = ?",
-      ).bind(idempotencyKey).first();
-      if (existing) return { created: false, task: presentTask(existing) };
-    }
-    throw new Error("agent_task_insert_conflict");
-  }
-
-  // Only the request that actually inserted the unique task may reserve daily
-  // admission budget. Duplicate idempotency-key deliveries return above without
-  // consuming another reservation. Unreserved tasks are ineligible for claims,
-  // so a crash between these steps fails closed rather than dispatching for free.
-  const dailyReservation = await db.prepare(`
-    INSERT INTO agent_task_daily_budget (
-      budget_day, tasks_reserved, workflow_steps_reserved, updated_at
-    ) VALUES (?, 1, 32, ?)
-    ON CONFLICT(budget_day) DO UPDATE SET
-      tasks_reserved = tasks_reserved + 1,
-      workflow_steps_reserved = workflow_steps_reserved + 32,
-      updated_at = excluded.updated_at
-    WHERE tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
-    RETURNING tasks_reserved, workflow_steps_reserved
-  `).bind(now.slice(0, 10), now).first();
-  if (!dailyReservation) {
+  if (!row) throw new Error("agent_task_insert_not_confirmed");
+  if (row.budget_reserved !== 1 && row.status === "queued") {
     await db.prepare(`
-      UPDATE agent_tasks
-      SET status = 'failed', stop_reason = 'daily_workflow_budget_exhausted',
-          completed_at = ?, updated_at = ?
+      UPDATE agent_tasks SET status = 'failed', stop_reason = 'daily_workflow_budget_exhausted',
+        completed_at = ?, updated_at = ?
       WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
-    `).bind(now, now, input.taskId.trim()).run();
+    `).bind(now, now, taskId).run();
     throw new Error("daily_workflow_budget_exhausted");
   }
-
-  const admission = await db.prepare(`
-    UPDATE agent_tasks
-    SET budget_reserved = 1, updated_at = ?
-    WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
-  `).bind(now, input.taskId.trim()).run();
-  if (admission?.meta?.changes !== 1) {
-    // Keep the reservation conservative if admission confirmation fails.
-    throw new Error("agent_task_admission_not_confirmed");
-  }
-
-  const row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?")
-    .bind(input.taskId.trim()).first();
+  if (row.budget_reserved !== 1 && row.status !== "queued") return { created: inserted, task: presentTask(row) };
+  row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?").bind(taskId).first();
   if (!row) throw new Error("agent_task_insert_not_confirmed");
-  return { created: true, task: presentTask(row) };
+  return { created: inserted, task: presentTask(row) };
 }
 
 /**
