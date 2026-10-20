@@ -128,4 +128,11 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   assert.equal(revisions.length, 1);
 }
 
+{
+  const template = setup([{ id: "Templates/example.md", path: "Templates/example.md", title: "Template", content: body, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Templates/example.md", content: body }]);
+  const result = await template.instance.reconcileExistingNoteIds();
+  assert.equal(result.skipped, "vault_looks_empty", "Reusable templates must not receive persistent note IDs");
+  assert.equal(template.texts.get("file-0").toString(), body);
+  assert.equal(template.rows[0].content, body);
+}
 console.log("Safe existing-note ID recovery tests passed.");
