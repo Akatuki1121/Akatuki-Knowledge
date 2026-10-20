@@ -10981,7 +10981,7 @@ async function isAuthorized(request, env) {
 __name(isAuthorized, "isAuthorized");
 async function persistRecoveryDiagnostics(env, result) {
   if (!env.DB) return;
-  const fields = ["ok", "skipped", "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned", "d1FrontmatterMissing", "missingInVault", "duplicatePaths", "contentConflicts", "uuidConflicts", "error"];
+  const fields = ["ok", "skipped", "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned", "d1FrontmatterMissing", "missingInVault", "queuedForRestore", "restoreQueueErrors", "skippedExistingJobs", "restoreSent", "restoreFailed", "tombstonedInVault", "uuidPathMismatch", "unsafeMissingPaths", "duplicatePaths", "contentConflicts", "uuidConflicts", "error"];
   const summary = { recordedAt: new Date().toISOString() };
   for (const key of fields) if (result && Object.hasOwn(result, key)) summary[key] = result[key];
   const now = summary.recordedAt;
