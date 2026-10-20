@@ -17,6 +17,10 @@ for (const required of [
   "attempt_budget_exhausted",
   "ai_call_budget_exhausted",
   "ai_token_budget_exhausted",
+  "export async function reserveAgentAiBudget",
+  "ai_calls_used = ai_calls_used + 1",
+  "ai_tokens_used = ai_tokens_used + ?",
+  "ai_tokens_used + ? <= max_ai_tokens",
 ]) {
   assert.ok(source.includes(required), "Missing background task store contract: " + required);
 }

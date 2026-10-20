@@ -153,6 +153,36 @@ export async function claimNextAgentTask(db, input = {}) {
   return presentTask(row);
 }
 
+/**
+ * Reserve budget before issuing an AI request. The increment is atomic and the
+ * call is charged even if the provider later fails, preventing retry loops from
+ * making unbounded external requests.
+ */
+export async function reserveAgentAiBudget(db, input) {
+  const estimatedTokens = Math.floor(finiteNumber(input.estimatedTokens, 0));
+  if (estimatedTokens < 1 || estimatedTokens > TASK_BUDGET_CEILINGS.maxAiTokens) {
+    throw new RangeError("estimatedTokens is outside the permitted range");
+  }
+  const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET ai_calls_used = ai_calls_used + 1,
+        ai_tokens_used = ai_tokens_used + ?,
+        updated_at = ?
+    WHERE task_id = ? AND status = 'running' AND lease_token = ?
+      AND deadline_at > ?
+      AND ai_calls_used < max_ai_calls
+      AND ai_calls_used < ?
+      AND ai_tokens_used + ? <= max_ai_tokens
+      AND ai_tokens_used + ? <= ?
+  `).bind(
+    estimatedTokens, now, input.taskId, input.leaseToken, now,
+    TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
+    TASK_BUDGET_CEILINGS.maxAiTokens,
+  ).run();
+  return result?.meta?.changes === 1;
+}
+
 export async function saveAgentTaskCheckpoint(db, input) {
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const checkpointJson = safeJson(input.checkpoint, "checkpoint");
