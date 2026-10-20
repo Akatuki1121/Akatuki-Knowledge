@@ -128,4 +128,17 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   assert.equal(revisions.length, 1);
 }
 
+
+{
+  const dotBody = "A valid article whose filename begins with a dot.";
+  const path = "Notes/プログラミング/知識/.gitattributes ファイル解説.md";
+  const { instance, rows, texts, revisions } = setup([{ id: path, path, title: "gitattributes article", content: dotBody, content_hash: "old-hash", sync_uuid: uuid }], [{ path, content: dotBody }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.equal(result.ok, true);
+  assert.equal(result.changed, 1, "Dot-prefixed filenames are valid Markdown notes, not hidden directories");
+  assert.equal(readUuid(texts.get("file-0").toString()), uuid);
+  assert.equal(readUuid(rows[0].content), uuid);
+  assert.equal(revisions.length, 1);
+}
+
 console.log("Safe existing-note ID recovery tests passed.");

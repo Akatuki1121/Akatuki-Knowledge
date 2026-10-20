@@ -10412,7 +10412,7 @@ var YjsClientDO = class extends DurableObject {
     meta.forEach((value, fileId) => {
       const path = value instanceof YMap ? value.get("path") : value?.path;
       const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
+      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
       vaultFiles++;
       const key = norm(path);
       const entries = paths.get(key) || [];
