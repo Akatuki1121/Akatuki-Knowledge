@@ -4,11 +4,12 @@ Cloudflare Worker and D1-backed knowledge service.
 
 ## Production status (2026-10-20)
 
-- The recovered Worker source is `src/index.js`. YAOS event-sync PR #14 was merged as `46ab2b71dbe66f4247af274c3a0ed47d1aad4b68` and deployed to 100% traffic as Worker version 54 (`2d5eb437-6985-4038-8bd3-8356955decda`). The deployment retains the production D1, YAOS service binding, Yjs Durable Object binding, existing secret bindings, and hourly `0 * * * *` Cron.
-- Production D1 is `Akatuki-knowledge`. The additive YAOS outbox schema was applied and verified on 2026-10-20. The existing folders schema was verified before recording the reconstructed 0008 ledger entry; 0009 was then recorded. The 602 existing notes remain present.
-- The `notes.sync_uuid` backfill completed for all 602 existing notes using the same deterministic UUID algorithm as the Worker. A read-after-write check confirmed 602 non-null, unique UUIDs. Note content was not changed. No initial bulk outbox enqueue was performed, to avoid recreating a Vault file that may have been independently deleted; existing Vault files receive stable frontmatter IDs through safe outbound updates.
+- The recovered Worker source is `src/index.js`. YAOS event-sync PR #14 was merged as `46ab2b71dbe66f4247af274c3a0ed47d1aad4b68`. Cloudflare currently routes 100% of production traffic to Worker version 65 (`41c8cfc7-f94a-4669-833c-6e75cec70d13`), uploaded on 2026-10-20 at 08:00:52 UTC. The active configuration retains the production D1, YAOS service binding, Yjs Durable Object binding, existing secret bindings, and hourly `0 * * * *` Cron.
+- Production D1 is `Akatuki-knowledge`. Read-only queries on 2026-10-20 returned 602 rows in `notes`, 8 in `telegram_notes`, zero `notes.sync_uuid IS NULL`, and three outbox jobs, all in `sent` state (no pending, processing, or dead jobs).
+- The latest persisted safe-recovery diagnostic (2026-10-20 08:00:40 UTC) scanned 602 D1 notes and 602 Vault files: all 602 matched and were already aligned. It reported no missing Vault notes, tombstones, duplicate paths, UUID conflicts, or content conflicts. This verifies the reconciliation pass's recorded result, not every live request path.
+- The `notes.sync_uuid` backfill completed for all 602 existing notes using the same deterministic UUID algorithm as the Worker. Note content was not changed. No initial bulk outbox enqueue was performed, to avoid recreating a Vault file that may have been independently deleted; existing Vault files receive stable frontmatter IDs through safe outbound updates.
 - Staging live tests and evidence are recorded on [`evidence/yaos-staging-validation-20261020`](https://github.com/Akatuki1121/Akatuki-Knowledge/tree/evidence/yaos-staging-validation-20261020). The staging Workers were cleaned up after testing: secrets removed, public subdomains disabled, and schedules empty.
-- Cloudflare API metadata confirms the active deployment, bindings, and Cron. A direct public HTTP smoke test was not available through the current execution path, so runtime request-level verification remains outstanding.
+- Cloudflare API metadata confirms the active deployment, bindings, and Cron. A direct public HTTP smoke test and an end-to-end production mutation test have not been completed through the current execution path, so runtime request-level verification remains outstanding.
 
 ## Recovery limitations
 
@@ -25,4 +26,4 @@ Use Node.js and run:
 npm run check
 ```
 
-This verifies JavaScript syntax only. It does not validate Cloudflare bindings, Durable Object migration state, or live YAOS integration. A clean-database bootstrap remains a separate disaster-recovery task and must not be attempted against the existing production D1.
+This verifies JavaScript syntax, sync-contract checks, sync identity/conflict tests, safe-note-ID recovery tests, and Wrangler configuration assertions. It does not validate Cloudflare bindings, Durable Object migration state, or live YAOS integration. A clean-database bootstrap remains a separate disaster-recovery task and must not be attempted against the existing production D1.
