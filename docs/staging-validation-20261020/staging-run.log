@@ -1,0 +1,17 @@
+[2026-10-20T04:33:20.618Z] baseline outbox {"ok":true,"pending":0,"processing":0,"sent":0,"dead":0}
+[2026-10-20T04:33:20.621Z] PASS 0 baseline: outbox migrated, empty - {"ok":true,"pending":0,"processing":0,"sent":0,"dead":0}
+[2026-10-20T04:33:23.230Z] PASS 0 baseline: staging YAOS vault empty - paths=0
+[2026-10-20T04:33:24.729Z] PASS 1 create: note row in staging D1 - id=Staging Verify/pr14-roundtrip.md
+[2026-10-20T04:33:36.579Z] PASS 1 create->YAOS: verified in YAOS - path=Staging Verify/pr14-roundtrip.md yaosId=v-n4md19WDfSQT7J meta={"path":"Staging Verify/pr14-roundtrip.md","mtime":1792470810705,"device":"akatuki-worker"}
+[2026-10-20T04:33:47.561Z] PASS 2 update: YAOS content updated - yaosText="---\nid: d5ecc195-a923-4f6f-86e8-1502470ce44d\n---\n# Staging roundtrip\n\nversion two\n"
+[2026-10-20T04:34:00.313Z] PASS 3 rename: D1 identity kept, YAOS at new path - d1Path=Staging Verify/pr14-roundtrip-renamed.md yaosOld=null yaosNew=v-n4md19WDfSQT7J yaosMeta={"path":"Staging Verify/pr14-roundtrip-renamed.md","mtime":1792470833983,"device":"akatuki-worker"}
+[2026-10-20T04:34:11.862Z] PASS 4 delete: D1 archived + YAOS tombstone - api={"ok":true,"id":"Staging Verify/pr14-roundtrip.md","deleted":true} yaosMeta=null pathPresent=false
+[2026-10-20T04:34:23.548Z] PASS 5 restore: D1 restored + YAOS live again - api={"ok":true,"id":"Staging Verify/pr14-roundtrip.md","restored":true,"aiAllowed":false,"reviewState":"blocked"} yaosMeta={"path":"Staging Verify/pr14-roundtrip-renamed.md","mtime":1792470857407,"device":"akatuki-worker"}
+[2026-10-20T04:34:28.724Z] yaos-staging SYNC_TOKEN temporarily invalid; waiting for deployment
+[2026-10-20T04:34:44.996Z] PASS 6a retry: failed delivery stays pending (not lost) - {"ok":true,"pending":1,"processing":0,"sent":5,"dead":0}
+[2026-10-20T04:34:52.440Z] yaos-staging SYNC_TOKEN restored; waiting for deployment + backoff
+[2026-10-20T04:36:41.376Z] FAIL 6b retry: pending job delivered after auth restored - Error: timeout: pending job retried and sent; last=false
+[2026-10-20T04:36:54.939Z] PASS 7 conflict: independent Vault edit not overwritten - {"ok":true,"pending":1,"processing":0,"sent":6,"dead":1} yaosText="---\nid: d5ecc195-a923-4f6f-86e8-1502470ce44d\n---\n# Staging roundtrip\n\nretry after temporary YAOS auth failure\n\n\nexternal YAOS edit"
+[2026-10-20T04:36:55.349Z] final outbox {"ok":true,"pending":1,"processing":0,"sent":6,"dead":1}
+[2026-10-20T04:36:55.350Z] noteId=Staging Verify/pr14-roundtrip.md vaultId=staging-pr14-47cc881e-cd5a-415a-be67-07514b70b3d0
+[2026-10-20T04:36:55.353Z] DONE 10/11 passed

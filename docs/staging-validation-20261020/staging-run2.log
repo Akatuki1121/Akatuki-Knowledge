@@ -1,0 +1,8 @@
+[2026-10-20T04:38:00.437Z] pass2 baseline outbox {"ok":true,"pending":1,"processing":0,"sent":6,"dead":1} (job 8 from pass 1 still pending: stale correction)
+[2026-10-20T04:38:13.721Z] PASS P2-0 pass-1 stale correction (job 8) refused by drain, B created - {"ok":true,"pending":0,"processing":0,"sent":7,"dead":2}
+[2026-10-20T04:38:16.038Z] PASS P2-1 B present in YAOS with meta - yaosId=uPIGf-1e-LDALUq5 meta={"path":"Staging Verify/pr14-pass2.md","mtime":1792471090664,"device":"akatuki-worker"}
+[2026-10-20T04:38:28.063Z] PASS P2-2 delete: tombstone in YAOS meta for the same file id - pathPresent=false metaForId={"deletedAt":1792471101767,"deleted":true,"path":"Staging Verify/pr14-pass2.md","mtime":1792471101767,"device":"akatuki-worker"} textStillPresent=true
+[2026-10-20T04:38:39.808Z] PASS P2-3 restore: live again, tombstone cleared - yaosId=uPIGf-1e-LDALUq5 sameId=true meta={"path":"Staging Verify/pr14-pass2.md","mtime":1792471113605,"device":"akatuki-worker"}
+[2026-10-20T04:38:53.566Z] PASS P2-4 conflict (clean): independent edit kept, stale write refused - {"ok":true,"pending":0,"processing":0,"sent":9,"dead":3} yaosText="---\nid: 0d52271c-8724-4144-a413-9c79272a16d0\n---\n# Staging roundtrip\n\nB version one\n\n\nexternal YAOS edit B"
+[2026-10-20T04:38:54.194Z] final outbox {"ok":true,"pending":0,"processing":0,"sent":9,"dead":3}
+[2026-10-20T04:38:54.197Z] DONE 5/5 passed

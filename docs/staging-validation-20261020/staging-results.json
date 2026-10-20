@@ -1,0 +1,60 @@
+{
+  "noteId": "Staging Verify/pr14-roundtrip.md",
+  "results": [
+    {
+      "step": "0 baseline: outbox migrated, empty",
+      "ok": true,
+      "detail": "{\"ok\":true,\"pending\":0,\"processing\":0,\"sent\":0,\"dead\":0}"
+    },
+    {
+      "step": "0 baseline: staging YAOS vault empty",
+      "ok": true,
+      "detail": "paths=0"
+    },
+    {
+      "step": "1 create: note row in staging D1",
+      "ok": true,
+      "detail": "id=Staging Verify/pr14-roundtrip.md"
+    },
+    {
+      "step": "1 create->YAOS: verified in YAOS",
+      "ok": true,
+      "detail": "path=Staging Verify/pr14-roundtrip.md yaosId=v-n4md19WDfSQT7J meta={\"path\":\"Staging Verify/pr14-roundtrip.md\",\"mtime\":1792470810705,\"device\":\"akatuki-worker\"}"
+    },
+    {
+      "step": "2 update: YAOS content updated",
+      "ok": true,
+      "detail": "yaosText=\"---\\nid: d5ecc195-a923-4f6f-86e8-1502470ce44d\\n---\\n# Staging roundtrip\\n\\nversion two\\n\""
+    },
+    {
+      "step": "3 rename: D1 identity kept, YAOS at new path",
+      "ok": true,
+      "detail": "d1Path=Staging Verify/pr14-roundtrip-renamed.md yaosOld=null yaosNew=v-n4md19WDfSQT7J yaosMeta={\"path\":\"Staging Verify/pr14-roundtrip-renamed.md\",\"mtime\":1792470833983,\"device\":\"akatuki-worker\"}"
+    },
+    {
+      "step": "4 delete: D1 archived + YAOS tombstone",
+      "ok": true,
+      "detail": "api={\"ok\":true,\"id\":\"Staging Verify/pr14-roundtrip.md\",\"deleted\":true} yaosMeta=null pathPresent=false"
+    },
+    {
+      "step": "5 restore: D1 restored + YAOS live again",
+      "ok": true,
+      "detail": "api={\"ok\":true,\"id\":\"Staging Verify/pr14-roundtrip.md\",\"restored\":true,\"aiAllowed\":false,\"reviewState\":\"blocked\"} yaosMeta={\"path\":\"Staging Verify/pr14-roundtrip-renamed.md\",\"mtime\":1792470857407,\"device\":\"akatuki-worker\"}"
+    },
+    {
+      "step": "6a retry: failed delivery stays pending (not lost)",
+      "ok": true,
+      "detail": "{\"ok\":true,\"pending\":1,\"processing\":0,\"sent\":5,\"dead\":0}"
+    },
+    {
+      "step": "6b retry: pending job delivered after auth restored",
+      "ok": false,
+      "detail": "Error: timeout: pending job retried and sent; last=false"
+    },
+    {
+      "step": "7 conflict: independent Vault edit not overwritten",
+      "ok": true,
+      "detail": "{\"ok\":true,\"pending\":1,\"processing\":0,\"sent\":6,\"dead\":1} yaosText=\"---\\nid: d5ecc195-a923-4f6f-86e8-1502470ce44d\\n---\\n# Staging roundtrip\\n\\nretry after temporary YAOS auth failure\\n\\n\\nexternal YAOS edit\""
+    }
+  ]
+}
