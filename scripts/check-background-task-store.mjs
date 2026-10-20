@@ -24,6 +24,8 @@ for (const required of [
   "ai_tokens_used + ? <= max_ai_tokens",
   "ai_tokens_used + ? > max_ai_tokens",
   "export async function renewAgentTaskLease",
+  "AND lease_expires_at > ?",
+  "AND deadline_at > ?",
   "agent_task_daily_budget",
   "tasks_reserved < 60",
   "workflow_steps_reserved + 32 <= 2000",
