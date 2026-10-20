@@ -35,6 +35,10 @@ for (const required of [
 ]) {
   assert.ok(source.includes(required), "Missing background workflow contract: " + required);
 }
+assert.ok(source.split('task.budget_reserved === 1 && (task.status === "queued"').length - 1 >= 2,
+  "Telegram and HTTP intake must not dispatch before budget admission");
+assert.ok(source.includes('ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false })'),
+  "Intake must not restart stopped Workflow instances");
 assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
 assert.ok(config.includes('class_name = "AgentTaskWorkflow"'));
 assert.ok(config.includes('"*/15 * * * *"'));
