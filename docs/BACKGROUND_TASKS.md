@@ -6,7 +6,7 @@ The interactive Worker accepts a task, persists it in D1, starts a Cloudflare Wo
 
 - D1 is the business source of truth for task state, checkpoint, attempt count, deadlines, usage budgets and stop reasons.
 - The dedicated `agent_tasks` table is separate from `yaos_sync_jobs`; the latter remains a delivery outbox for YAOS sync.
-- The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It currently accepts a bounded AI-prompt task and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt.
+- The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It accepts a bounded AI-prompt task and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt. Telegram has `/task <prompt>` to enqueue and `/task_status <id>` to inspect progress/result; ordinary messages remain available while a Workflow runs.
 - Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. The existing hourly sync/maintenance Cron remains separate.
 - Workflow IDs reuse the stable task ID. Restarting a Workflow never resets D1 attempt/usage budgets.
 
@@ -43,7 +43,7 @@ Official docs:
 - Workflows limits: https://developers.cloudflare.com/workflows/reference/limits/
 - Workers limits: https://developers.cloudflare.com/workers/platform/limits/
 
-Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow executions/day shared with Workers request limits, 100 active concurrent Workflow instances, 10 ms CPU per step, 1 MiB per non-stream step result, and 3-day Workflow state retention. Workflow steps can wait on network I/O without consuming CPU during the wait. The design keeps steps small, caps task execution and output size, and uses D1 as durable business state. The recovery Cron handles at most five tasks per run to limit CPU and subrequests.
+Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow executions/day shared with Workers request limits, 100 active concurrent Workflow instances, 10 ms CPU per step, 1 MiB per non-stream step result, 100 MB maximum persisted state per instance, 1 GB-month of included Workflow state storage, and 3-day Workflow state retention. Workflow steps can wait on network I/O without consuming CPU during the wait. The design keeps steps small, caps task execution and output size, and uses D1 as durable business state. The recovery Cron handles at most five tasks per run to limit CPU and subrequests.
 
 ## Implementation / rollout boundary
 

@@ -6,6 +6,9 @@ const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf
 
 for (const required of [
   "class AgentTaskWorkflow extends WorkflowEntrypoint",
+  "startTelegramBackgroundTask",
+  "getTelegramBackgroundTaskStatus",
+  "/task_status",
   'url.pathname === "/api/agent-tasks"',
   'request.method === "POST"',
   "await isAuthorized(request, env)",

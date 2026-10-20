@@ -318,7 +318,12 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。背景タスクは /task 内容、状態確認は /task_status ID でできます。";
+    } else if (/^\/task(?:@\w+)?(?:\s|$)/u.test(text2)) {
+      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2);
+    } else if (/^\/task_status(?:@\w+)?(?:\s|$)/u.test(text2)) {
+      const taskIdMatch = text2.match(/^\/task_status(?:@\w+)?(?:\s+([A-Za-z0-9_-]{1,100}))?\s*$/u);
+      reply = await getTelegramBackgroundTaskStatus(env, taskIdMatch?.[1] || "");
     } else if (isFolderOrganizationApproval(text2)) {
       reply = await applyLatestFolderOrganization(env, chatId);
     } else if (isFolderOrganizationRejection(text2)) {
@@ -368,6 +373,79 @@ async function telegramWebhook(request, env, ctx) {
   }
 }
 __name(telegramWebhook, "telegramWebhook");
+
+async function startTelegramBackgroundTask(env, chatId, messageId, commandText) {
+  const prompt = commandText.replace(/^\/task(?:@\w+)?\s*/u, "").trim();
+  if (!prompt) return "背景で実行する依頼を書いてね。例: /task 仕様を整理して";
+  if (!env.AGENT_TASK_WORKFLOW || !env.DB) return "背景実行基盤はまだ利用できません。";
+
+  const inspection = inspectAndRedact(prompt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
+  if (!inspection.ok) {
+    return inspection.findings.includes("credentials")
+      ? "認証情報らしい内容を検出したため、AIには送らず停止しました。値を削除して依頼し直してください。"
+      : "入力を安全に確認できなかったため、AIには送らず停止しました。";
+  }
+  if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+    return "個人情報を安全にマスキングできない内容を検出したため、AIには送らず停止しました。識別情報を除いて依頼し直してください。";
+  }
+
+  let queued;
+  try {
+    queued = await enqueueAgentTask(env.DB, {
+      taskId: crypto.randomUUID(),
+      taskType: "ai_prompt",
+      idempotencyKey: "telegram:" + chatId + ":" + messageId,
+      payload: { prompt: inspection.text, maxOutputTokens: 512 },
+      nowMs: Date.now()
+    });
+  } catch {
+    return "背景タスクを登録できませんでした。基盤の状態を確認してください。";
+  }
+
+  const task = queued.task;
+  const now = toSqliteDateTime(Date.now());
+  if (task.status === "queued"
+    || (task.status === "waiting" && task.next_attempt_at <= now)
+    || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
+    try {
+      await ensureAgentTaskWorkflow(env, task.task_id, task.status === "running");
+    } catch {
+      return "タスクは保存しましたが、実行開始を確認できませんでした。しばらくして /task_status " + task.task_id + " で確認してください。";
+    }
+  }
+  return "背景タスクを受け付けました。\nID: " + task.task_id + "\n状態は /task_status " + task.task_id + " で確認できます。";
+}
+__name(startTelegramBackgroundTask, "startTelegramBackgroundTask");
+
+async function getTelegramBackgroundTaskStatus(env, taskId) {
+  if (!taskId) return "使い方: /task_status タスクID";
+  let task;
+  try {
+    task = await getAgentTask(env.DB, taskId);
+  } catch {
+    return "タスク状態を取得できませんでした。";
+  }
+  if (!task) return "そのタスクIDは見つかりませんでした。";
+
+  const labels = {
+    queued: "受付済み",
+    running: "実行中",
+    waiting: "再試行待ち",
+    succeeded: "完了",
+    failed: "停止",
+    cancelled: "キャンセル済み"
+  };
+  let reply = "背景タスク: " + (labels[task.status] || task.status)
+    + "\nID: " + task.task_id
+    + "\n試行回数: " + task.attempts + "/" + task.max_attempts;
+  if (task.status === "failed" && task.stop_reason) reply += "\n停止理由: " + task.stop_reason;
+  if (task.status === "succeeded" && typeof task.checkpoint?.result === "string") {
+    reply += "\n\n" + task.checkpoint.result.slice(0, 3000);
+  }
+  return reply;
+}
+__name(getTelegramBackgroundTaskStatus, "getTelegramBackgroundTaskStatus");
+
 function classifyOperationalFailure(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   if (/429|quota|resource.?exhausted|rate.?limit|daily.?limit|制限|上限/iu.test(message)) return "gemini_limit";
