@@ -10448,7 +10448,7 @@ var YjsClientDO = class extends DurableObject {
     };
     const edits = [];
     const uuidUpdates = new Map();
-    let matched = 0, alreadyAligned = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
+    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
     for (const row of rows) {
       const entries = paths.get(norm(row.path)) || [];
       if (entries.length === 0) { missingInVault++; continue; }
@@ -10468,6 +10468,7 @@ var YjsClientDO = class extends DurableObject {
       uuidUpdates.set(row.id, uuid);
       if (isValidSyncUuid(vaultUuid)) {
         alreadyAligned++;
+        if (readUuid(row.content) !== vaultUuid) d1FrontmatterMissing++;
         continue;
       }
       const desired = withUuid(current, uuid);
@@ -10509,7 +10510,7 @@ var YjsClientDO = class extends DurableObject {
       const batch = updates.slice(i, i + 50).map(([id, uuid]) => this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(uuid, id));
       if (batch.length) await this.env.DB.batch(batch);
     }
-    return { ok: applied === edits.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, alreadyAligned, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
+    return { ok: applied === edits.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
   }
 
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
@@ -10926,6 +10927,7 @@ var YjsClientDO = class extends DurableObject {
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
+var RECOVERY_CRON = "*/5 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11004,6 +11006,22 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === RECOVERY_CRON) {
+      try {
+        const response = await doFetch(env, "reconcile-existing-note-ids");
+        const recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
+          console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
+        }
+        if (recovery.ok && (recovery.changed > 0 || recovery.d1FrontmatterMissing > 0)) {
+          const pull = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
+          if (!pull.ok || pull.applied) console.log(JSON.stringify({ recoveryPull: { ok: pull.ok, stage: pull.stage, created: pull.created, updated: pull.updated, error: pull.error } }));
+        }
+      } catch (error) {
+        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false, error: String(error).slice(0, 200) } }));
+      }
+      return;
+    }
     if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
@@ -11014,7 +11032,7 @@ var wrapper_default = {
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
         }
-        if (reconcile.ok && (reconcile.changed > 0 || reconcile.alreadyAligned > 0)) {
+        if (reconcile.ok && (reconcile.changed > 0 || reconcile.d1FrontmatterMissing > 0)) {
           const postPull = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
           if (!postPull.ok || postPull.applied) console.log(JSON.stringify({ recoveryPull: { ok: postPull.ok, stage: postPull.stage, created: postPull.created, updated: postPull.updated, error: postPull.error } }));
         }
