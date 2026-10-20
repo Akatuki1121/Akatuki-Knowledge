@@ -11426,4 +11426,8 @@ var wrapper_default = {
     return worker_default.scheduled(event, env, ctx);
   }
 };
-export {\n  AgentTaskWorkflow,\n  YjsClientDO,\n  wrapper_default as default\n};
+export {
+  AgentTaskWorkflow,
+  YjsClientDO,
+  wrapper_default as default
+};
