@@ -2,7 +2,7 @@
 
 ## Production status (2026-10-20)
 
-The YAOS event-sync implementation was merged through PR [#14](https://github.com/Akatuki1121/Akatuki-Knowledge/pull/14) and is deployed to the production `akatuki-knowledge` Worker. Cloudflare Workers Builds may create a new deployment after each merge to `main`, including documentation-only changes, so deployment version IDs are intentionally not pinned here. Check the current deployment and traffic split in the Cloudflare dashboard or API when verifying production. The configured Cron is `0 * * * *` (hourly). The existing YAOS Worker and its Durable Object protocol were not changed.
+The YAOS event-sync implementation was merged through PR [#14](https://github.com/Akatuki1121/Akatuki-Knowledge/pull/14) and is deployed to the production `akatuki-knowledge` Worker. Cloudflare Workers Builds may create a new deployment after each merge to `main`, including documentation-only changes, so deployment version IDs are intentionally not pinned here. Check the current deployment and traffic split in the Cloudflare dashboard or API when verifying production. The configured Cron is `0 * * * *` (hourly). The existing YAOS Worker and its Durable Object protocol were not changed (YAOS Worker and its Durable Object protocol unchanged).
 
 Read-only production checks on 2026-10-20 found:
 
