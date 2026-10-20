@@ -480,15 +480,15 @@ async function listTelegramBackgroundTasks(env, chatId) {
   const lines = tasks.map((task) => {
     const stage = task.checkpoint?.stage;
     return task.task_id
-      + "\\n状態: " + (statusLabels[task.status] || task.status)
+      + "\n状態: " + (statusLabels[task.status] || task.status)
       + " / 試行 " + task.attempts + "/" + task.max_attempts
-      + (stage ? "\\n段階: " + (stageLabels[stage] || stage) : "")
+      + (stage ? "\n段階: " + (stageLabels[stage] || stage) : "")
       + (task.notification_status && task.notification_status !== "none"
-        ? "\\n通知: " + task.notification_status : "");
+        ? "\n通知: " + task.notification_status : "");
   });
-  return "未完了の背景タスク（" + tasks.length + "件）:\\n\\n"
-    + lines.join("\\n\\n")
-    + "\\n\\n個別の状態・結果: /task_status タスクID";
+  return "未完了の背景タスク（" + tasks.length + "件）:\n\n"
+    + lines.join("\n\n")
+    + "\n\n個別の状態・結果: /task_status タスクID";
 }
 __name(listTelegramBackgroundTasks, "listTelegramBackgroundTasks");
 
