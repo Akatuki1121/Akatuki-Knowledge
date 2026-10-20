@@ -23,7 +23,7 @@ Cloudflare Worker and D1-backed knowledge service.
 - Telegram can propose a move for one AI-permitted Obsidian note at a time. It does not move notes until the user explicitly replies `フォルダ整理案を反映して`; `フォルダ整理案を却下して` rejects the pending proposal.
 - Before proposing, the Worker excludes notes with detected credentials and sends only note IDs, titles, paths, and short summaries to Gemini. It validates proposed paths, checks collisions, and verifies the note has not changed since the proposal.
 - Approved moves save a note revision and enqueue the existing YAOS sync outbox. The bot's behavior-improvement proposals remain separately approval-gated.
-- The folder-organization table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. The background-task table is proposed in `migrations/pending/0011_agent_tasks.sql`. Both are pending schema migrations: do not deploy Worker changes that depend on them until each migration has been reviewed and applied to production D1. The background-task code is still on an unmerged PR and is not active in production.
+- The folder-organization table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. The background-task table is proposed in `migrations/pending/0011_agent_tasks.sql`. Both are pending schema migrations: do not deploy Worker changes that depend on them until each migration has been reviewed and applied to production D1. The background-task code is still on an unmerged PR and is not active in production. Its first task type is read-only knowledge search/summarization; note mutations remain outside the Workflow until their retry/idempotency boundaries are verified.
 
 ## Development
 

@@ -6,8 +6,8 @@ The interactive Worker accepts a task, persists it in D1, starts a Cloudflare Wo
 
 - D1 is the business source of truth for task state, checkpoint, attempt count, deadlines, usage budgets and stop reasons.
 - The dedicated `agent_tasks` table is separate from `yaos_sync_jobs`; the latter remains a delivery outbox for YAOS sync.
-- The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It accepts a bounded AI-prompt task, masks identifiers before storing it, and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt. The Workflow repeats the safety check immediately before calling Gemini. Telegram has `/task <prompt>` to enqueue and `/task_status <id>` to inspect progress/result; ordinary messages remain available while a Workflow runs.
-- Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. Intake requests never restart an existing stopped Workflow; only the scheduled recovery path may do so, preventing repeated webhook/API delivery from triggering an immediate restart loop. Task lifetime and persisted attempt/usage budgets remain hard stop conditions. The existing hourly sync/maintenance Cron remains separate.
+- The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It accepts a bounded read-only knowledge query, masks identifiers before storing it, and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt. The Workflow searches relevant notes, filters unsafe excerpts, composes a prompt, calls Gemini, and saves a result checkpoint. It never creates, appends, moves, or deletes notes. Telegram has `/task <query>` to search/summarize the knowledge base and `/task_status <id>` to inspect progress/result; ordinary messages remain available while a Workflow runs.
+- Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. The existing hourly sync/maintenance Cron remains separate.
 - Workflow IDs reuse the stable task ID. Restarting a Workflow never resets D1 attempt/usage budgets.
 
 ## State machine
@@ -46,6 +46,10 @@ Official docs:
 
 Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow executions/day shared with Workers request limits, 100 active concurrent Workflow instances, 10 ms CPU per step, 1 MiB per non-stream step result, 100 MB maximum persisted state per instance, 1 GB-month of included Workflow state storage, and 3-day Workflow state retention. Workflow steps can wait on network I/O without consuming CPU during the wait. The design keeps steps small, caps task execution and output size, and uses D1 as durable business state. The recovery Cron handles at most five tasks per run to limit CPU and subrequests.
 
+## Current task-type boundary
+
+The first task type is `knowledge_query`: a read-only multi-stage note search and summarization. Note writes are intentionally excluded until their D1/YAOS side effects have explicit idempotency keys and restart tests. The Workflow stores `context_ready`, `prompt_ready`, and `completed` checkpoints; a restart reuses saved context/prompt and completes from an existing output rather than issuing another AI call.
+
 ## Implementation / rollout boundary
 
 - Retry policy, pending D1 schema, claim/lease/checkpoint store, and Workflow/API wiring are developed on a feature branch and validated with Actions.
@@ -56,6 +60,6 @@ Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow exe
 
 ## Terminal notification and recovery
 
-Telegram-originated tasks store their notification target and delivery state in the same D1 task row. The Workflow attempts notification immediately after a terminal result; the 15-minute recovery Cron also scans terminal tasks whose notification is still pending or whose sending lease expired. Delivery retries use bounded exponential backoff and stop after eight attempts. A notification failure never re-runs the AI task, changes its task result, or resets its execution budget. HTTP-created tasks without a Telegram target do not send Telegram messages.
+Telegram-originated tasks persist their notification target and delivery state in D1. The Workflow sends a terminal result immediately; the 15-minute recovery Cron also scans terminal tasks whose notification is pending or whose sending lease expired. Delivery retries use bounded exponential backoff and stop after eight attempts. A notification failure never re-runs the AI task or resets its execution budget. HTTP-created tasks without a Telegram target do not send Telegram messages.
 
-Use `/task_status <id>` or the authenticated task-status API to inspect both task execution and notification delivery. A task may be complete even while its notification is pending; those are separate states.
+`/task_status <id>` and the authenticated status API expose notification delivery separately from task execution. A task can be complete while its notification is pending; the recovery path handles that state without repeating the task.
