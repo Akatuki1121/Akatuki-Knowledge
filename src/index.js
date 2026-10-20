@@ -11014,7 +11014,7 @@ var wrapper_default = {
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
         }
-        if (reconcile.ok && reconcile.changed > 0) {
+        if (reconcile.ok && (reconcile.changed > 0 || reconcile.alreadyAligned > 0)) {
           const postPull = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
           if (!postPull.ok || postPull.applied) console.log(JSON.stringify({ recoveryPull: { ok: postPull.ok, stage: postPull.stage, created: postPull.created, updated: postPull.updated, error: postPull.error } }));
         }
