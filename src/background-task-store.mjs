@@ -72,7 +72,6 @@ export async function listAgentTasks(db, input = {}) {
     checkpoint: parseJson(row.checkpoint_json, {})
   }));
 }
-__name(listAgentTasks, "listAgentTasks");
 
 
 export async function expireAgentTasks(db, input = {}) {
