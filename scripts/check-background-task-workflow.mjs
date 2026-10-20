@@ -21,6 +21,9 @@ for (const required of [
   "AbortSignal.timeout(30_000)",
   "recordAgentTaskFailure",
   "recoverAgentTaskWorkflows",
+  "allowRestart = false",
+  'return "restart_deferred"',
+  "allowRestart: true",
   'event.cron === TASK_RECOVERY_CRON',
   'export {\n  AgentTaskWorkflow,'
 ]) {
