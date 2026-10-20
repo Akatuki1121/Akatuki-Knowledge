@@ -28,7 +28,7 @@ Cloudflare Worker and D1-backed knowledge service.
 ## Telegram-first permission management
 
 - Routine use does not require the web UI. Send `AI送信許可を一括確認して` in Telegram to count Obsidian notes that can be safely allowed; no data changes during this preview.
-- To apply the proposal, explicitly send `AI送信許可を一括反映して`. The Worker re-scans all active Obsidian notes with the existing credential detector and only enables notes whose current content has no detected credentials. Notes with detected credentials are excluded.
+- To apply the proposal, explicitly send `AI送信許可を一括反映して`. The Worker re-scans all active Obsidian notes with the existing credential detector, enables only notes whose current content has no detected credentials, and revokes permission from any currently allowed note that now contains detected credentials.
 - `AI送信許可の一括許可案を却下して` dismisses the proposal. The UI remains an optional diagnostic/manual tool, not a required step in the normal Telegram workflow.
 
 ## Development
