@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+
+const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+
+for (const required of [
+  "class AgentTaskWorkflow extends WorkflowEntrypoint",
+  "startTelegramBackgroundTask",
+  "getTelegramBackgroundTaskStatus",
+  "/task_status",
+  'url.pathname === "/api/agent-tasks"',
+  'request.method === "POST"',
+  "await isAuthorized(request, env)",
+  "inspectAndRedact(task.payload.prompt)",
+  "inspectAndRedact(body.prompt",
+  "payload: { prompt: inspection.text, maxOutputTokens },",
+  '["health", "financial", "location"]',
+  "reserveAgentAiBudget",
+  "step.sleepUntil",
+  "AbortSignal.timeout(30_000)",
+  "recordAgentTaskFailure",
+  "recoverAgentTaskWorkflows",
+  "flushAgentTaskNotifications",
+  "notificationStatus: task.notification_status",
+  "notification_status = 'sending'",
+  "notification_status = 'sending'",
+  "notification_last_error_class = 'telegram_delivery_failed'",
+  "notifyChatId: chatId",
+  "allowRestart = false",
+  'return "restart_deferred"',
+  "allowRestart: true",
+  'event.cron === TASK_RECOVERY_CRON',
+  'export {\n  AgentTaskWorkflow,'
+]) {
+  assert.ok(source.includes(required), "Missing background workflow contract: " + required);
+}
+assert.ok(source.split('task.budget_reserved === 1 && (task.status === "queued"').length - 1 >= 2,
+  "Telegram and HTTP intake must not dispatch before budget admission");
+assert.ok(source.includes('ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false })'),
+  "Intake must not restart stopped Workflow instances");
+assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
+assert.ok(config.includes('class_name = "AgentTaskWorkflow"'));
+assert.ok(config.includes('"*/15 * * * *"'));
+console.log("Background task Workflow, authorization, safety, recovery, and retry contracts passed.");

@@ -2,7 +2,18 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // dist/wrapper.js
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
+import {
+  enqueueAgentTask,
+  getAgentTask,
+  claimNextAgentTask,
+  reserveAgentAiBudget,
+  saveAgentTaskCheckpoint,
+  completeAgentTask,
+  recordAgentTaskFailure,
+  listRecoverableAgentTasks,
+  toSqliteDateTime
+} from "./background-task-store.mjs";
 var UI_HTML = `<!doctype html>
 <html lang="ja">
 <head>
@@ -307,7 +318,12 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。背景タスクは /task 内容、状態確認は /task_status ID でできます。";
+    } else if (/^\/task(?:@\w+)?(?:\s|$)/u.test(text2)) {
+      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2);
+    } else if (/^\/task_status(?:@\w+)?(?:\s|$)/u.test(text2)) {
+      const taskIdMatch = text2.match(/^\/task_status(?:@\w+)?(?:\s+([A-Za-z0-9_-]{1,100}))?\s*$/u);
+      reply = await getTelegramBackgroundTaskStatus(env, taskIdMatch?.[1] || "");
     } else if (isFolderOrganizationApproval(text2)) {
       reply = await applyLatestFolderOrganization(env, chatId);
     } else if (isFolderOrganizationRejection(text2)) {
@@ -357,6 +373,87 @@ async function telegramWebhook(request, env, ctx) {
   }
 }
 __name(telegramWebhook, "telegramWebhook");
+
+async function startTelegramBackgroundTask(env, chatId, messageId, commandText) {
+  const prompt = commandText.replace(/^\/task(?:@\w+)?\s*/u, "").trim();
+  if (!prompt) return "背景で実行する依頼を書いてね。例: /task 仕様を整理して";
+  if (!env.AGENT_TASK_WORKFLOW || !env.DB) return "背景実行基盤はまだ利用できません。";
+
+  const inspection = inspectAndRedact(prompt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
+  if (!inspection.ok) {
+    return inspection.findings.includes("credentials")
+      ? "認証情報らしい内容を検出したため、AIには送らず停止しました。値を削除して依頼し直してください。"
+      : "入力を安全に確認できなかったため、AIには送らず停止しました。";
+  }
+  if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+    return "個人情報を安全にマスキングできない内容を検出したため、AIには送らず停止しました。識別情報を除いて依頼し直してください。";
+  }
+
+  let queued;
+  try {
+    queued = await enqueueAgentTask(env.DB, {
+      taskId: crypto.randomUUID(),
+      taskType: "ai_prompt",
+      idempotencyKey: "telegram:" + chatId + ":" + messageId,
+      payload: { prompt: inspection.text, maxOutputTokens: 512 },
+      notifyChatId: chatId,
+      nowMs: Date.now()
+    });
+  } catch (error) {
+    if (error?.message === "daily_workflow_budget_exhausted") return "本日の背景タスク上限（60件）に達しました。明日また依頼してください。";
+    return "背景タスクを登録できませんでした。基盤の状態を確認してください。";
+  }
+
+  const task = queued.task;
+  const now = toSqliteDateTime(Date.now());
+  if (task.budget_reserved === 1 && (task.status === "queued"
+    || (task.status === "waiting" && task.next_attempt_at <= now)
+    || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
+    try {
+      const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+      if (dispatchState === "restart_deferred") {
+        return "タスクは保存済みですが、既存の実行が停止しているため自動復旧待ちです。しばらくして /task_status " + task.task_id + " で確認してください。";
+      }
+    } catch {
+      return "タスクは保存しましたが、実行開始を確認できませんでした。しばらくして /task_status " + task.task_id + " で確認してください。";
+    }
+  }
+  return "背景タスクを受け付けました。\nID: " + task.task_id + "\n状態は /task_status " + task.task_id + " で確認できます。";
+}
+__name(startTelegramBackgroundTask, "startTelegramBackgroundTask");
+
+async function getTelegramBackgroundTaskStatus(env, taskId) {
+  if (!taskId) return "使い方: /task_status タスクID";
+  let task;
+  try {
+    task = await getAgentTask(env.DB, taskId);
+  } catch {
+    return "タスク状態を取得できませんでした。";
+  }
+  if (!task) return "そのタスクIDは見つかりませんでした。";
+
+  const labels = {
+    queued: "受付済み",
+    running: "実行中",
+    waiting: "再試行待ち",
+    succeeded: "完了",
+    failed: "停止",
+    cancelled: "キャンセル済み"
+  };
+  let reply = "背景タスク: " + (labels[task.status] || task.status)
+    + "\nID: " + task.task_id
+    + "\n試行回数: " + task.attempts + "/" + task.max_attempts;
+  const notificationLabels = { none: "対象外", pending: "通知待ち", sending: "通知中", sent: "通知済み", failed: "通知停止" };
+  if (task.notify_chat_id) reply += "\n通知: " + (notificationLabels[task.notification_status] || task.notification_status);
+  if (task.notification_status === "failed") reply += "\n通知停止理由: " + (task.notification_last_error_class || "delivery_failed");
+  if (task.status === "failed" && task.stop_reason) reply += "\n停止理由: " + task.stop_reason;
+  if (task.status === "succeeded" && typeof task.checkpoint?.result === "string") {
+    reply += "\n\n" + task.checkpoint.result.slice(0, 3000);
+  }
+  return reply;
+}
+__name(getTelegramBackgroundTaskStatus, "getTelegramBackgroundTaskStatus");
+
 function classifyOperationalFailure(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   if (/429|quota|resource.?exhausted|rate.?limit|daily.?limit|制限|上限/iu.test(message)) return "gemini_limit";
@@ -1458,13 +1555,14 @@ function parseJsonObject(raw) {
   return JSON.parse(text2.slice(start, end + 1));
 }
 __name(parseJsonObject, "parseJsonObject");
-async function callGemini(env, prompt, maxOutputTokens) {
+async function callGemini(env, prompt, maxOutputTokens, options = {}) {
   const model = maxOutputTokens <= 500
     ? (env.GEMINI_LIGHT_MODEL || "gemini-3.1-flash-lite")
     : (env.GEMINI_MODEL || "gemini-3.5-flash-lite");
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const response = await fetch(endpoint, {
     method: "POST",
+    signal: options.signal,
     headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens } })
   });
@@ -11057,6 +11155,7 @@ var YjsClientDO = class extends DurableObject {
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
+var TASK_RECOVERY_CRON = "*/15 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11071,6 +11170,274 @@ async function isAuthorized(request, env) {
   return diff === 0;
 }
 __name(isAuthorized, "isAuthorized");
+
+async function ensureAgentTaskWorkflow(env, taskId, options = {}) {
+  const { forceRestart = false, allowRestart = false } = options;
+  let instance = null;
+  try {
+    instance = await env.AGENT_TASK_WORKFLOW.get(taskId);
+  } catch {
+    instance = null;
+  }
+  if (!instance) {
+    await env.AGENT_TASK_WORKFLOW.create({
+      id: taskId,
+      params: { taskId },
+      retention: { successRetention: "1 day", errorRetention: "3 days" }
+    });
+    return "created";
+  }
+  const status = await instance.status();
+  if (forceRestart || ["errored", "terminated", "complete"].includes(status.status)) {
+    // Only the bounded recovery Cron may restart an existing Workflow. Intake
+    // requests must not turn repeated webhook/API deliveries into unbounded restarts.
+    if (!allowRestart) return "restart_deferred";
+    await instance.restart();
+    return "restarted";
+  }
+  return status.status;
+}
+__name(ensureAgentTaskWorkflow, "ensureAgentTaskWorkflow");
+
+async function flushAgentTaskNotifications(env, limit = 5) {
+  if (!env.DB || !env.TELEGRAM_BOT_TOKEN) return { checked: 0, sent: 0, deferred: 0, skipped: "notification_transport_unavailable" };
+  const nowMs = Date.now();
+  const now = toSqliteDateTime(nowMs);
+  let candidates;
+  try {
+    const result = await env.DB.prepare(`
+      SELECT task_id FROM agent_tasks
+      WHERE notify_chat_id IS NOT NULL
+        AND status IN ('succeeded', 'failed', 'cancelled')
+        AND (
+          (notification_status = 'pending' AND notification_next_attempt_at <= ?)
+          OR (notification_status = 'sending' AND notification_lease_expires_at <= ?)
+        )
+      ORDER BY completed_at ASC
+      LIMIT ?
+    `).bind(now, now, Math.max(1, Math.min(10, Math.floor(limit)))).all();
+    candidates = result.results || [];
+  } catch {
+    return { checked: 0, sent: 0, deferred: 0, skipped: "notification_schema_unavailable" };
+  }
+
+  let sent = 0;
+  let deferred = 0;
+  for (const candidate of candidates) {
+    const leaseExpiresAt = toSqliteDateTime(Date.now() + 2 * 60 * 1000);
+    const task = await env.DB.prepare(`
+      UPDATE agent_tasks
+      SET notification_status = 'sending', notification_lease_expires_at = ?
+      WHERE task_id = ? AND notify_chat_id IS NOT NULL
+        AND status IN ('succeeded', 'failed', 'cancelled')
+        AND (
+          (notification_status = 'pending' AND notification_next_attempt_at <= ?)
+          OR (notification_status = 'sending' AND notification_lease_expires_at <= ?)
+        )
+      RETURNING task_id, status, notify_chat_id, attempts, max_attempts,
+        stop_reason, last_error_class, checkpoint_json, notification_attempts
+    `).bind(leaseExpiresAt, candidate.task_id, now, now).first();
+    if (!task) continue;
+
+    let checkpoint = {};
+    try { checkpoint = JSON.parse(task.checkpoint_json || "{}"); } catch {}
+    const statusText = task.status === "succeeded" ? "完了"
+      : task.status === "cancelled" ? "キャンセル済み" : "自動処理を停止";
+    const stageLabels = {
+      context_ready: "関連ノートの取得",
+      prompt_ready: "要約準備",
+      completed: "結果保存"
+    };
+    let message = "背景タスク " + statusText
+      + "\\nID: " + task.task_id
+      + "\\n試行回数: " + task.attempts + "/" + task.max_attempts;
+    if (checkpoint.stage) message += "\\n最終段階: " + (stageLabels[checkpoint.stage] || checkpoint.stage);
+    if (task.status !== "succeeded" && task.stop_reason) message += "\\n停止理由: " + task.stop_reason;
+    if (task.last_error_class) message += "\\nエラー分類: " + task.last_error_class;
+    if (task.status === "succeeded" && typeof checkpoint.result === "string") {
+      message += "\\n\\n" + checkpoint.result.slice(0, 2500);
+    }
+
+    try {
+      await sendTelegramMessage(env, task.notify_chat_id, message);
+      await env.DB.prepare(`
+        UPDATE agent_tasks
+        SET notification_status = 'sent', notification_lease_expires_at = NULL,
+            notification_attempts = notification_attempts + 1,
+            notification_last_error_class = NULL, updated_at = ?
+        WHERE task_id = ? AND notification_status = 'sending' AND notification_lease_expires_at = ?
+      `).bind(toSqliteDateTime(Date.now()), task.task_id, leaseExpiresAt).run();
+      sent++;
+    } catch {
+      const attempts = Number(task.notification_attempts || 0) + 1;
+      const exhausted = attempts >= 8;
+      const delayMinutes = Math.min(24 * 60, 5 * (2 ** Math.min(attempts - 1, 8)));
+      await env.DB.prepare(`
+        UPDATE agent_tasks
+        SET notification_status = ?, notification_lease_expires_at = NULL,
+            notification_attempts = ?, notification_next_attempt_at = ?,
+            notification_last_error_class = 'telegram_delivery_failed', updated_at = ?
+        WHERE task_id = ? AND notification_status = 'sending' AND notification_lease_expires_at = ?
+      `).bind(
+        exhausted ? "failed" : "pending",
+        attempts,
+        toSqliteDateTime(Date.now() + delayMinutes * 60 * 1000),
+        toSqliteDateTime(Date.now()),
+        task.task_id,
+        leaseExpiresAt,
+      ).run();
+      deferred++;
+    }
+  }
+  return { checked: candidates.length, sent, deferred };
+}
+__name(flushAgentTaskNotifications, "flushAgentTaskNotifications");
+
+async function recoverAgentTaskWorkflows(env, limit = 5) {
+  const nowMs = Date.now();
+  const now = toSqliteDateTime(nowMs);
+  try {
+    await env.DB.prepare("SELECT 1 FROM agent_tasks LIMIT 1").first();
+  } catch {
+    return { checked: 0, dispatched: 0, deferred: 0, skipped: "task_table_unavailable" };
+  }
+  const tasks = await listRecoverableAgentTasks(env.DB, { nowMs, limit });
+  let dispatched = 0;
+  let deferred = 0;
+  for (const task of tasks) {
+    const staleLease = task.status === "running"
+      && typeof task.lease_expires_at === "string"
+      && task.lease_expires_at <= now;
+    try {
+      await ensureAgentTaskWorkflow(env, task.task_id, { forceRestart: staleLease, allowRestart: true });
+      dispatched++;
+    } catch {
+      deferred++;
+    }
+  }
+  return { checked: tasks.length, dispatched, deferred };
+}
+__name(recoverAgentTaskWorkflows, "recoverAgentTaskWorkflows");
+
+function classifyAgentTaskError(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden"]) {
+    if (message.includes(fixed)) return fixed;
+  }
+  if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
+  if (/Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
+  if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
+  if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
+  return "unknown";
+}
+__name(classifyAgentTaskError, "classifyAgentTaskError");
+
+class AgentTaskWorkflow extends WorkflowEntrypoint {
+  async run(event, step) {
+    const taskId = typeof event?.payload?.taskId === "string" ? event.payload.taskId : "";
+    if (!taskId) throw new Error("invalid_input");
+    const leaseToken = await step.do("create-lease-token", { retries: { limit: 0 } }, async () => crypto.randomUUID());
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const claim = await step.do("claim-" + attempt, { retries: { limit: 0 } }, async () => {
+        const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: 120 });
+        return task ? { claimed: true, attempts: task.attempts } : { claimed: false };
+      });
+      if (!claim.claimed) {
+        const current = await getAgentTask(this.env.DB, taskId);
+        if (["succeeded", "failed", "cancelled"].includes(current?.status)) {
+          await step.do("notify-existing-terminal", { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+        }
+        return { taskId, status: current?.status || "missing", stopReason: current?.stop_reason || null };
+      }
+
+      try {
+        const prepared = await step.do("prepare-" + attempt, { retries: { limit: 0 } }, async () => {
+          const task = await getAgentTask(this.env.DB, taskId);
+          if (!task || task.status !== "running" || task.lease_token !== leaseToken) throw new Error("lease_lost");
+          if (task.task_type !== "ai_prompt" || typeof task.payload?.prompt !== "string") throw new Error("invalid_input");
+          const inspection = inspectAndRedact(task.payload.prompt);
+          if (!inspection.ok) {
+            throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
+          }
+          if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+            throw new Error("pii_masking_failed");
+          }
+          const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 512;
+          const maxOutputTokens = Math.max(128, Math.min(1024, requested));
+          return {
+            safePrompt: inspection.text,
+            maxOutputTokens,
+            estimatedTokens: Math.max(1, Math.ceil(inspection.text.length / 4) + maxOutputTokens)
+          };
+        });
+
+        const reservation = await step.do("reserve-budget-" + attempt, { retries: { limit: 0 } }, async () => {
+          const reserved = await reserveAgentAiBudget(this.env.DB, {
+            taskId, leaseToken, estimatedTokens: prepared.estimatedTokens
+          });
+          if (reserved) return { reserved: true };
+          const current = await getAgentTask(this.env.DB, taskId);
+          return {
+            reserved: false,
+            status: current?.status || "missing",
+            stopReason: current?.stop_reason || "lease_lost"
+          };
+        });
+        if (!reservation.reserved) {
+          return { taskId, status: reservation.status, stopReason: reservation.stopReason };
+        }
+
+        const output = await step.do("generate-" + attempt, { retries: { limit: 0 } }, async () => {
+          return callGemini(this.env, prepared.safePrompt, prepared.maxOutputTokens, {
+            signal: AbortSignal.timeout(30_000)
+          });
+        });
+
+        const saved = await step.do("save-output-" + attempt, { retries: { limit: 0 } }, async () => {
+          return saveAgentTaskCheckpoint(this.env.DB, {
+            taskId, leaseToken, nowMs: Date.now(),
+            checkpoint: { stage: "completed", result: output }
+          });
+        });
+        if (!saved) {
+          const current = await getAgentTask(this.env.DB, taskId);
+          return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+        }
+
+        const completed = await step.do("complete-" + attempt, { retries: { limit: 0 } }, async () => {
+          return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
+        });
+        if (completed) {
+          await step.do("notify-complete-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+          return { taskId, status: "succeeded" };
+        }
+        const current = await getAgentTask(this.env.DB, taskId);
+        return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+      } catch (error) {
+        const errorClass = classifyAgentTaskError(error);
+        const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted"].includes(errorClass);
+        const failure = await step.do("record-failure-" + attempt, { retries: { limit: 0 } }, async () => {
+          return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, retryable, nowMs: Date.now() });
+        });
+        if (!failure.applied) {
+          const current = await getAgentTask(this.env.DB, taskId);
+          return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+        }
+        if (failure.decision?.action === "retry") {
+          await step.sleepUntil("retry-" + attempt, failure.decision.retryAtMs);
+          continue;
+        }
+        await step.do("notify-failure-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+        return { taskId, status: "failed", stopReason: failure.decision?.stopReason || "non_retryable_or_unknown_error" };
+      }
+    }
+    await step.do("notify-attempt-budget-exhausted", { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+    return { taskId, status: "failed", stopReason: "attempt_budget_exhausted" };
+  }
+}
+__name(AgentTaskWorkflow, "AgentTaskWorkflow");
+
 async function persistRecoveryDiagnostics(env, result) {
   if (!env.DB) return;
   const fields = ["ok", "skipped", "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned", "d1FrontmatterMissing", "missingInVault", "queuedForRestore", "restoreQueueErrors", "skippedExistingJobs", "restoreSent", "restoreFailed", "tombstonedInVault", "uuidPathMismatch", "unsafeMissingPaths", "duplicatePaths", "contentConflicts", "uuidConflicts", "error"];
@@ -11108,6 +11475,94 @@ __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/agent-tasks" && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB || !env.AGENT_TASK_WORKFLOW) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      const contentLength = Number(request.headers.get("content-length") || 0);
+      if (contentLength > 16384) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
+      let body;
+      try {
+        const raw = await request.text();
+        if (raw.length > 16384) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
+        body = JSON.parse(raw);
+      } catch {
+        return Response.json({ error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      if (typeof body?.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 8000) {
+        return Response.json({ error: "invalid_prompt" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 100) {
+        return Response.json({ error: "invalid_idempotency_key" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      const inspection = inspectAndRedact(body.prompt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
+      if (!inspection.ok || inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+        return Response.json({ error: "sensitive_input_blocked" }, { status: 422, headers: JSON_HEADERS2 });
+      }
+      const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 512;
+      const maxOutputTokens = Math.max(128, Math.min(1024, requestedTokens));
+      let queued;
+      try {
+        queued = await enqueueAgentTask(env.DB, {
+          taskId: crypto.randomUUID(),
+          taskType: "ai_prompt",
+          idempotencyKey: body.idempotencyKey,
+          payload: { prompt: inspection.text, maxOutputTokens },
+          nowMs: Date.now()
+        });
+      } catch (error) {
+        if (error?.message === "daily_workflow_budget_exhausted") {
+          return Response.json({ error: "daily_task_budget_exhausted" }, { status: 429, headers: JSON_HEADERS2 });
+        }
+        return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+      const task = queued.task;
+      let dispatchPending = false;
+      const now = toSqliteDateTime(Date.now());
+      if (task.budget_reserved === 1 && (task.status === "queued"
+        || (task.status === "waiting" && task.next_attempt_at <= now)
+        || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
+        try {
+          const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+          if (dispatchState === "restart_deferred") dispatchPending = true;
+        } catch {
+          dispatchPending = true;
+        }
+      }
+      const terminal = ["succeeded", "failed", "cancelled"].includes(task.status);
+      return Response.json({
+        taskId: task.task_id,
+        status: task.status,
+        dispatchPending
+      }, { status: terminal ? 200 : 202, headers: JSON_HEADERS2 });
+    }
+
+    const taskMatch = url.pathname.match(/^\/api\/agent-tasks\/([A-Za-z0-9_-]{1,100})$/);
+    if (taskMatch && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      let task;
+      try {
+        task = await getAgentTask(env.DB, taskMatch[1]);
+      } catch {
+        return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+      if (!task) return Response.json({ error: "task_not_found" }, { status: 404, headers: JSON_HEADERS2 });
+      return Response.json({
+        taskId: task.task_id,
+        status: task.status,
+        attempts: Number(task.attempts || 0),
+        maxAttempts: Number(task.max_attempts || 0),
+        nextAttemptAt: task.next_attempt_at,
+        stopReason: task.stop_reason,
+        lastErrorClass: task.last_error_class,
+        createdAt: task.created_at,
+        updatedAt: task.updated_at,
+        notificationStatus: task.notification_status,
+        notificationAttempts: Number(task.notification_attempts || 0),
+        result: task.checkpoint?.result ?? null
+      }, { status: 200, headers: JSON_HEADERS2 });
+    }
+
     if (url.pathname === "/sync/status" && request.method === "GET") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       const response = await doFetch(env, "status");
@@ -11145,6 +11600,18 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === TASK_RECOVERY_CRON) {
+      try {
+        const recovery = await recoverAgentTaskWorkflows(env, 5);
+        const notifications = await flushAgentTaskNotifications(env, 5);
+        if (recovery.dispatched > 0 || recovery.deferred > 0 || notifications.sent > 0 || notifications.deferred > 0) {
+          console.log(JSON.stringify({ agentTaskRecovery: recovery, agentTaskNotifications: notifications }));
+        }
+      } catch {
+        console.log(JSON.stringify({ agentTaskRecovery: { ok: false } }));
+      }
+      return;
+    }
     if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
@@ -11165,6 +11632,7 @@ var wrapper_default = {
   }
 };
 export {
+  AgentTaskWorkflow,
   YjsClientDO,
   wrapper_default as default
 };

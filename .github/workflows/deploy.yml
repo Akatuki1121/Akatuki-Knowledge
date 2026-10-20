@@ -31,7 +31,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      # A merge must not deploy code that depends on a candidate D1 schema.
+      # Production migration and deployment are separate, explicitly reviewed steps.
+      - name: Gate deployment on pending D1 migrations
+        id: migration_gate
+        run: |
+          pending="$(find migrations/pending -maxdepth 1 -type f -name '*.sql' -print -quit 2>/dev/null || true)"
+          if [ -n "$pending" ]; then
+            echo "::notice::Production deployment skipped: pending migration $pending requires a separately reviewed rollout."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Require Cloudflare deployment credential
+        if: steps.migration_gate.outputs.allowed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -40,6 +53,7 @@ jobs:
             exit 1
           fi
       - name: Deploy production Worker
+        if: steps.migration_gate.outputs.allowed == 'true'
         run: npx --yes wrangler@4.69.0 deploy --config wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

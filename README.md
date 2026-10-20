@@ -23,7 +23,7 @@ Cloudflare Worker and D1-backed knowledge service.
 - Telegram can propose a move for one AI-permitted Obsidian note at a time. It does not move notes until the user explicitly replies `フォルダ整理案を反映して`; `フォルダ整理案を却下して` rejects the pending proposal.
 - Before proposing, the Worker excludes notes with detected credentials and sends only note IDs, titles, paths, and short summaries to Gemini. It validates proposed paths, checks collisions, and verifies the note has not changed since the proposal.
 - Approved moves save a note revision and enqueue the existing YAOS sync outbox. The bot's behavior-improvement proposals remain separately approval-gated.
-- The new table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. This is a pending schema migration: do not deploy the Worker changes to production until the migration has been reviewed and applied to the production D1. This change does not apply the migration or deploy production.
+- The folder-organization table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. The background-task table is proposed in `migrations/pending/0011_agent_tasks.sql`. Both are pending schema migrations: do not deploy Worker changes that depend on them until each migration has been reviewed and applied to production D1. The background-task code is still on an unmerged PR and is not active in production.
 
 ## Development
 
@@ -33,4 +33,4 @@ Use Node.js and run:
 npm run check
 ```
 
-This verifies JavaScript syntax, sync-contract checks, sync identity/conflict tests, safe-note-ID recovery tests, and Wrangler configuration assertions. It does not validate Cloudflare bindings, Durable Object migration state, or live YAOS integration. A clean-database bootstrap remains a separate disaster-recovery task and must not be attempted against the existing production D1.
+This verifies JavaScript syntax, sync-contract checks, sync identity/conflict tests, safe-note-ID recovery, bounded background-task retries, the pending task schema/store SQL, Workflow/API safety contracts, and Wrangler configuration. CI also performs a Wrangler dry-run build and isolated YAOS integration checks when relevant source or schema files change. These checks do not apply pending migrations or validate live production request paths. A clean-database bootstrap remains a separate disaster-recovery task and must not be attempted against the existing production D1.

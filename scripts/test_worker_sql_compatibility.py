@@ -6,7 +6,7 @@ from pathlib import Path
 
 SOURCE = Path("src/index.js")
 SCHEMA = Path("schema-snapshots/live-d1-schema-2026-10-19.sql")
-PENDING_MIGRATIONS = [Path("migrations/pending/0009_yaos_sync_jobs.sql"), Path("migrations/pending/0010_bot_organization_candidates.sql")]
+PENDING_MIGRATIONS = [Path("migrations/pending/0009_yaos_sync_jobs.sql"), Path("migrations/pending/0010_bot_organization_candidates.sql"), Path("migrations/pending/0011_agent_tasks.sql")]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
     r'"((?:\\.|[^"\\])*)"'
