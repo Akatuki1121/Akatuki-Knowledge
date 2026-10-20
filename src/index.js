@@ -10399,6 +10399,139 @@ var YjsClientDO = class extends DurableObject {
     }
     return result;
   }
+  // Recover stable note IDs only for Vault files that already exist and whose body matches D1.
+  // This never creates or deletes Vault files and refuses content/path/identity conflicts.
+  async reconcileExistingNoteIds() {
+    const initial = await this.pullVault();
+    const meta = initial.getMap("meta");
+    const idToText = initial.getMap("idToText");
+    if (initial.getMap("sys").get("initialized") !== true) return { ok: true, skipped: "vault_not_initialized" };
+    const paths = new Map();
+    const vaultUuidOwners = new Map();
+    let vaultFiles = 0;
+    meta.forEach((value, fileId) => {
+      const path = value instanceof YMap ? value.get("path") : value?.path;
+      const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
+      vaultFiles++;
+      const key = norm(path);
+      const entries = paths.get(key) || [];
+      entries.push({ fileId, path });
+      paths.set(key, entries);
+      const textValue = idToText.get(fileId);
+      const uuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
+      if (isValidSyncUuid(uuid)) {
+        const owners = vaultUuidOwners.get(uuid) || [];
+        owners.push({ fileId, path, uuid });
+        vaultUuidOwners.set(uuid, owners);
+      }
+    });
+    if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return { ok: true, skipped: "vault_looks_empty", vaultFiles };
+    const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
+    const dbUuidOwners = new Map();
+    for (const row of rows) {
+      if (!isValidSyncUuid(row.sync_uuid)) continue;
+      const owners = dbUuidOwners.get(row.sync_uuid) || [];
+      owners.push(row.id);
+      dbUuidOwners.set(row.sync_uuid, owners);
+    }
+    const comparable = (value) => String(value ?? "").replace(/\r\n/g, "\n").replace(/^---\n([\s\S]*?)\n---/, (_all, frontmatter) => "---\n" + frontmatter.split("\n").filter((line) => !/^id:\s*/i.test(line)).join("\n") + "\n---");
+    const withUuid = (content, uuid) => {
+      const text = String(content ?? "");
+      if (/^---\r?\n[\s\S]*?\r?\n---/.test(text)) {
+        return text.replace(/^---\r?\n([\s\S]*?)\r?\n---/, (_all, frontmatter) => {
+          const lines = frontmatter.split(/\r?\n/).filter((line) => !/^id:\s*/i.test(line));
+          return "---\nid: \"" + uuid + "\"\n" + lines.join("\n") + "\n---";
+        });
+      }
+      return "---\nid: \"" + uuid + "\"\n---\n\n" + text;
+    };
+    const candidates = [];
+    const edits = [];
+    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
+    for (const row of rows) {
+      const entries = paths.get(norm(row.path)) || [];
+      if (entries.length === 0) { missingInVault++; continue; }
+      if (entries.length !== 1) { duplicatePaths++; continue; }
+      const entry = entries[0];
+      const textValue = idToText.get(entry.fileId);
+      if (!(textValue instanceof YText)) { contentConflicts++; continue; }
+      const current = textValue.toString();
+      if (comparable(current) !== comparable(row.content)) { contentConflicts++; continue; }
+      matched++;
+      const vaultUuid = readUuid(current);
+      let uuid = isValidSyncUuid(vaultUuid) ? vaultUuid : row.sync_uuid;
+      if (!isValidSyncUuid(uuid)) uuid = await deterministicUuid("notes:" + row.id);
+      const otherDbOwners = (dbUuidOwners.get(uuid) || []).filter((id) => id !== row.id);
+      const otherVaultOwners = (vaultUuidOwners.get(uuid) || []).filter((owner) => owner.fileId !== entry.fileId);
+      if (otherDbOwners.length || otherVaultOwners.length) { uuidConflicts++; continue; }
+      if (isValidSyncUuid(vaultUuid)) {
+        alreadyAligned++;
+        if (readUuid(row.content) !== vaultUuid) d1FrontmatterMissing++;
+      }
+      const desired = isValidSyncUuid(vaultUuid) ? current : withUuid(current, uuid);
+      if (desired.length > MAX_NOTE_CHARS) { contentConflicts++; continue; }
+      const candidate = { id: row.id, path: entry.path, fileId: entry.fileId, previous: current, desired, uuid, row };
+      candidates.push(candidate);
+      if (desired !== current) edits.push(candidate);
+    }
+    let applied = 0;
+    if (edits.length) {
+      await this.pullVault((doc) => {
+        const nextMeta = doc.getMap("meta"), nextTexts = doc.getMap("idToText");
+        let changed = 0;
+        doc.transact(() => {
+          for (const edit of edits) {
+            const entry = nextMeta.get(edit.fileId);
+            const path = entry instanceof YMap ? entry.get("path") : entry?.path;
+            const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+            const textValue = nextTexts.get(edit.fileId);
+            if (deleted || typeof path !== "string" || norm(path) !== norm(edit.path) || !(textValue instanceof YText) || textValue.toString() !== edit.previous) continue;
+            textValue.delete(0, textValue.length);
+            textValue.insert(0, edit.desired);
+            if (entry instanceof YMap) { entry.set("mtime", Date.now()); entry.set("device", WORKER_DEVICE); }
+            changed++;
+          }
+        }, "akatuki-safe-note-id-recovery");
+        return changed;
+      });
+    }
+    const verifiedDoc = candidates.length ? await this.pullVault() : initial;
+    const verifiedMeta = verifiedDoc.getMap("meta"), verifiedTexts = verifiedDoc.getMap("idToText");
+    const verifiedCandidates = [];
+    for (const candidate of candidates) {
+      const entry = verifiedMeta.get(candidate.fileId);
+      const path = entry instanceof YMap ? entry.get("path") : entry?.path;
+      const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+      const textValue = verifiedTexts.get(candidate.fileId);
+      if (!deleted && typeof path === "string" && norm(path) === norm(candidate.path) && textValue instanceof YText && textValue.toString() === candidate.desired && readUuid(textValue.toString()) === candidate.uuid) {
+        verifiedCandidates.push(candidate);
+        if (edits.some((edit) => edit.id === candidate.id)) applied++;
+      } else {
+        contentConflicts++;
+      }
+    }
+    let d1Updated = 0;
+    const now = new Date().toISOString();
+    const statements = [];
+    for (const candidate of verifiedCandidates) {
+      const row = candidate.row;
+      if (String(row.content ?? "") !== candidate.desired) {
+        const hash = await sha256Hex(candidate.desired);
+        statements.push(this.env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(row.id, row.path, row.title, row.content, row.content_hash, now));
+        statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, sync_uuid = ?, imported_at = ?, updated_at = ? WHERE id = ?").bind(candidate.desired, hash, candidate.uuid, now, now, row.id));
+        d1Updated++;
+      } else {
+        statements.push(this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(candidate.uuid, row.id));
+      }
+    }
+    for (let i = 0; i < statements.length; i += 60) {
+      const batch = statements.slice(i, i + 60);
+      if (batch.length) await this.env.DB.batch(batch);
+    }
+    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
+  }
+
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
   // 移動 = 既存fileIdのmetaのpath/mtime/deviceを更新するだけ(fileIdと本文は不変)。削除・新規作成はしない。
   async applyMoves(apply, limit) {
@@ -10748,6 +10881,14 @@ var YjsClientDO = class extends DurableObject {
       }
     }
 
+    if (action === "reconcile-existing-note-ids") {
+      try {
+        return Response.json(await this.reconcileExistingNoteIds());
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, error: this.lastError.slice(0, 300) }, { status: 502 });
+      }
+    }
     if (action === "telegram") {
       try {
         const apply = reqUrl.searchParams.get("apply") === "1";
@@ -10805,6 +10946,7 @@ var YjsClientDO = class extends DurableObject {
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
+var RECOVERY_CRON = "*/5 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -10883,11 +11025,28 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === RECOVERY_CRON) {
+      try {
+        const response = await doFetch(env, "reconcile-existing-note-ids");
+        const recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
+          console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
+        }
+      } catch (error) {
+        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false, error: String(error).slice(0, 200) } }));
+      }
+      return;
+    }
     if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
         if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, error: result.error } }));
+        const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
+        const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
+          console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
+        }
       } catch (error) {
         console.log(JSON.stringify({ pull: { ok: false, error: String(error).slice(0, 200) } }));
       }
