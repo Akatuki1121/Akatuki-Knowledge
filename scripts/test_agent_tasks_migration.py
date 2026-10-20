@@ -16,7 +16,9 @@ required = {
     "checkpoint_json", "attempts", "max_attempts", "ai_calls_used", "max_ai_calls",
     "ai_tokens_used", "max_ai_tokens", "created_at", "updated_at", "deadline_at",
     "next_attempt_at", "lease_token", "lease_expires_at", "last_error_class",
-    "last_error", "stop_reason",
+    "last_error", "stop_reason", "notify_chat_id", "notification_status",
+    "notification_attempts", "notification_next_attempt_at",
+    "notification_lease_expires_at", "notification_last_error_class",
 }
 assert required <= columns, f"Missing agent task columns: {required - columns}"
 
