@@ -409,9 +409,9 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
 
   const task = queued.task;
   const now = toSqliteDateTime(Date.now());
-  if (task.status === "queued"
+  if (task.budget_reserved === 1 && (task.status === "queued"
     || (task.status === "waiting" && task.next_attempt_at <= now)
-    || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
+    || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
     try {
       await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
     } catch {
@@ -11288,13 +11288,13 @@ async function flushAgentTaskNotifications(env, limit = 5) {
       completed: "結果保存"
     };
     let message = "背景タスク " + statusText
-      + "\\nID: " + task.task_id
-      + "\\n試行回数: " + task.attempts + "/" + task.max_attempts;
-    if (checkpoint.stage) message += "\\n最終段階: " + (stageLabels[checkpoint.stage] || checkpoint.stage);
-    if (task.status !== "succeeded" && task.stop_reason) message += "\\n停止理由: " + task.stop_reason;
-    if (task.last_error_class) message += "\\nエラー分類: " + task.last_error_class;
+      + "\nID: " + task.task_id
+      + "\n試行回数: " + task.attempts + "/" + task.max_attempts;
+    if (checkpoint.stage) message += "\n最終段階: " + (stageLabels[checkpoint.stage] || checkpoint.stage);
+    if (task.status !== "succeeded" && task.stop_reason) message += "\n停止理由: " + task.stop_reason;
+    if (task.last_error_class) message += "\nエラー分類: " + task.last_error_class;
     if (task.status === "succeeded" && typeof checkpoint.result === "string") {
-      message += "\\n\\n" + checkpoint.result.slice(0, 2500);
+      message += "\n\n" + checkpoint.result.slice(0, 2500);
     }
 
     try {
@@ -11665,9 +11665,9 @@ var wrapper_default = {
       const task = queued.task;
       let dispatchPending = false;
       const now = toSqliteDateTime(Date.now());
-      if (task.status === "queued"
+      if (task.budget_reserved === 1 && (task.status === "queued"
         || (task.status === "waiting" && task.next_attempt_at <= now)
-        || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
+        || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
         try {
           await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
         } catch {
