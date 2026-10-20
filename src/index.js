@@ -396,6 +396,7 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
       taskType: "ai_prompt",
       idempotencyKey: "telegram:" + chatId + ":" + messageId,
       payload: { prompt: inspection.text, maxOutputTokens: 512 },
+      notifyChatId: chatId,
       nowMs: Date.now()
     });
   } catch (error) {
@@ -11194,6 +11195,100 @@ async function ensureAgentTaskWorkflow(env, taskId, options = {}) {
   return status.status;
 }
 __name(ensureAgentTaskWorkflow, "ensureAgentTaskWorkflow");
+
+async function flushAgentTaskNotifications(env, limit = 5) {
+  if (!env.DB || !env.TELEGRAM_BOT_TOKEN) return { checked: 0, sent: 0, deferred: 0, skipped: "notification_transport_unavailable" };
+  const nowMs = Date.now();
+  const now = toSqliteDateTime(nowMs);
+  let candidates;
+  try {
+    const result = await env.DB.prepare(`
+      SELECT task_id FROM agent_tasks
+      WHERE notify_chat_id IS NOT NULL
+        AND status IN ('succeeded', 'failed', 'cancelled')
+        AND (
+          (notification_status = 'pending' AND notification_next_attempt_at <= ?)
+          OR (notification_status = 'sending' AND notification_lease_expires_at <= ?)
+        )
+      ORDER BY completed_at ASC
+      LIMIT ?
+    `).bind(now, now, Math.max(1, Math.min(10, Math.floor(limit)))).all();
+    candidates = result.results || [];
+  } catch {
+    return { checked: 0, sent: 0, deferred: 0, skipped: "notification_schema_unavailable" };
+  }
+
+  let sent = 0;
+  let deferred = 0;
+  for (const candidate of candidates) {
+    const leaseExpiresAt = toSqliteDateTime(Date.now() + 2 * 60 * 1000);
+    const task = await env.DB.prepare(`
+      UPDATE agent_tasks
+      SET notification_status = 'sending', notification_lease_expires_at = ?
+      WHERE task_id = ? AND notify_chat_id IS NOT NULL
+        AND status IN ('succeeded', 'failed', 'cancelled')
+        AND (
+          (notification_status = 'pending' AND notification_next_attempt_at <= ?)
+          OR (notification_status = 'sending' AND notification_lease_expires_at <= ?)
+        )
+      RETURNING task_id, status, notify_chat_id, attempts, max_attempts,
+        stop_reason, last_error_class, checkpoint_json, notification_attempts
+    `).bind(leaseExpiresAt, candidate.task_id, now, now).first();
+    if (!task) continue;
+
+    let checkpoint = {};
+    try { checkpoint = JSON.parse(task.checkpoint_json || "{}"); } catch {}
+    const statusText = task.status === "succeeded" ? "完了"
+      : task.status === "cancelled" ? "キャンセル済み" : "自動処理を停止";
+    const stageLabels = {
+      context_ready: "関連ノートの取得",
+      prompt_ready: "要約準備",
+      completed: "結果保存"
+    };
+    let message = "背景タスク " + statusText
+      + "\\nID: " + task.task_id
+      + "\\n試行回数: " + task.attempts + "/" + task.max_attempts;
+    if (checkpoint.stage) message += "\\n最終段階: " + (stageLabels[checkpoint.stage] || checkpoint.stage);
+    if (task.status !== "succeeded" && task.stop_reason) message += "\\n停止理由: " + task.stop_reason;
+    if (task.last_error_class) message += "\\nエラー分類: " + task.last_error_class;
+    if (task.status === "succeeded" && typeof checkpoint.result === "string") {
+      message += "\\n\\n" + checkpoint.result.slice(0, 2500);
+    }
+
+    try {
+      await sendTelegramMessage(env, task.notify_chat_id, message);
+      await env.DB.prepare(`
+        UPDATE agent_tasks
+        SET notification_status = 'sent', notification_lease_expires_at = NULL,
+            notification_attempts = notification_attempts + 1,
+            notification_last_error_class = NULL, updated_at = ?
+        WHERE task_id = ? AND notification_status = 'sending' AND notification_lease_expires_at = ?
+      `).bind(toSqliteDateTime(Date.now()), task.task_id, leaseExpiresAt).run();
+      sent++;
+    } catch {
+      const attempts = Number(task.notification_attempts || 0) + 1;
+      const exhausted = attempts >= 8;
+      const delayMinutes = Math.min(24 * 60, 5 * (2 ** Math.min(attempts - 1, 8)));
+      await env.DB.prepare(`
+        UPDATE agent_tasks
+        SET notification_status = ?, notification_lease_expires_at = NULL,
+            notification_attempts = ?, notification_next_attempt_at = ?,
+            notification_last_error_class = 'telegram_delivery_failed', updated_at = ?
+        WHERE task_id = ? AND notification_status = 'sending' AND notification_lease_expires_at = ?
+      `).bind(
+        exhausted ? "failed" : "pending",
+        attempts,
+        toSqliteDateTime(Date.now() + delayMinutes * 60 * 1000),
+        toSqliteDateTime(Date.now()),
+        task.task_id,
+        leaseExpiresAt,
+      ).run();
+      deferred++;
+    }
+  }
+  return { checked: candidates.length, sent, deferred };
+}
+__name(flushAgentTaskNotifications, "flushAgentTaskNotifications");
 
 async function recoverAgentTaskWorkflows(env, limit = 5) {
   const nowMs = Date.now();
