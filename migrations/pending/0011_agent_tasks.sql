@@ -62,7 +62,7 @@ CREATE TABLE agent_task_budget_reservations (
     task_id TEXT PRIMARY KEY,
     budget_day TEXT NOT NULL,
     workflow_steps INTEGER NOT NULL DEFAULT 32 CHECK (workflow_steps = 32),
-    counted INTEGER NOT NULL DEFAULT 0 CHECK (counted IN (0, 1))
+    counted INTEGER NOT NULL DEFAULT 0 CHECK (counted IN (0, 1, 2))
 );
 
 CREATE INDEX idx_agent_task_budget_reservations_day
