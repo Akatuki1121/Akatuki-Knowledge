@@ -10406,6 +10406,7 @@ var YjsClientDO = class extends DurableObject {
     const meta = initial.getMap("meta");
     const idToText = initial.getMap("idToText");
     if (initial.getMap("sys").get("initialized") !== true) return { ok: true, skipped: "vault_not_initialized" };
+    const isTemplatePath = (path) => typeof path === "string" && path.split("/")[0].toLowerCase() === "templates";
     const paths = new Map();
     const vaultUuidOwners = new Map();
     let vaultFiles = 0;
@@ -10418,6 +10419,7 @@ var YjsClientDO = class extends DurableObject {
       const entries = paths.get(key) || [];
       entries.push({ fileId, path });
       paths.set(key, entries);
+      if (isTemplatePath(path)) return;
       const textValue = idToText.get(fileId);
       const uuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
       if (isValidSyncUuid(uuid)) {
@@ -10430,7 +10432,7 @@ var YjsClientDO = class extends DurableObject {
     const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
     const dbUuidOwners = new Map();
     for (const row of rows) {
-      if (!isValidSyncUuid(row.sync_uuid)) continue;
+      if (isTemplatePath(row.path) || !isValidSyncUuid(row.sync_uuid)) continue;
       const owners = dbUuidOwners.get(row.sync_uuid) || [];
       owners.push(row.id);
       dbUuidOwners.set(row.sync_uuid, owners);
@@ -10446,9 +10448,17 @@ var YjsClientDO = class extends DurableObject {
       }
       return "---\nid: \"" + uuid + "\"\n---\n\n" + text;
     };
+    const withoutUuid = (content) => {
+      const text = String(content ?? "");
+      const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!match || !/^id:\s*/im.test(match[1])) return text;
+      const lines = match[1].split(/\r?\n/).filter((line) => !/^id:\s*/i.test(line));
+      if (!lines.length) return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+      return text.replace(/^---\r?\n([\s\S]*?)\r?\n---/, () => "---\n" + lines.join("\n") + "\n---");
+    };
     const candidates = [];
     const edits = [];
-    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
+    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0, templatesCleaned = 0;
     for (const row of rows) {
       const entries = paths.get(norm(row.path)) || [];
       if (entries.length === 0) { missingInVault++; continue; }
@@ -10459,6 +10469,15 @@ var YjsClientDO = class extends DurableObject {
       const current = textValue.toString();
       if (comparable(current) !== comparable(row.content)) { contentConflicts++; continue; }
       matched++;
+      const isTemplate = isTemplatePath(row.path);
+      if (isTemplate) {
+        const desired = withoutUuid(current);
+        if (desired.length > MAX_NOTE_CHARS) { contentConflicts++; continue; }
+        const candidate = { id: row.id, path: entry.path, fileId: entry.fileId, previous: current, desired, uuid: null, row, isTemplate: true };
+        candidates.push(candidate);
+        if (desired !== current) { edits.push(candidate); templatesCleaned++; }
+        continue;
+      }
       const vaultUuid = readUuid(current);
       let uuid = isValidSyncUuid(vaultUuid) ? vaultUuid : row.sync_uuid;
       if (!isValidSyncUuid(uuid)) uuid = await deterministicUuid("notes:" + row.id);
@@ -10471,7 +10490,7 @@ var YjsClientDO = class extends DurableObject {
       }
       const desired = isValidSyncUuid(vaultUuid) ? current : withUuid(current, uuid);
       if (desired.length > MAX_NOTE_CHARS) { contentConflicts++; continue; }
-      const candidate = { id: row.id, path: entry.path, fileId: entry.fileId, previous: current, desired, uuid, row };
+      const candidate = { id: row.id, path: entry.path, fileId: entry.fileId, previous: current, desired, uuid, row, isTemplate: false };
       candidates.push(candidate);
       if (desired !== current) edits.push(candidate);
     }
@@ -10504,7 +10523,8 @@ var YjsClientDO = class extends DurableObject {
       const path = entry instanceof YMap ? entry.get("path") : entry?.path;
       const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
       const textValue = verifiedTexts.get(candidate.fileId);
-      if (!deleted && typeof path === "string" && norm(path) === norm(candidate.path) && textValue instanceof YText && textValue.toString() === candidate.desired && readUuid(textValue.toString()) === candidate.uuid) {
+      const identityVerified = candidate.isTemplate ? !/^id:\s*/im.test(textValue instanceof YText ? (textValue.toString().match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || "") : "") : textValue instanceof YText && readUuid(textValue.toString()) === candidate.uuid;
+      if (!deleted && typeof path === "string" && norm(path) === norm(candidate.path) && textValue instanceof YText && textValue.toString() === candidate.desired && identityVerified) {
         verifiedCandidates.push(candidate);
         if (edits.some((edit) => edit.id === candidate.id)) applied++;
       } else {
@@ -10519,9 +10539,11 @@ var YjsClientDO = class extends DurableObject {
       if (String(row.content ?? "") !== candidate.desired) {
         const hash = await sha256Hex(candidate.desired);
         statements.push(this.env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(row.id, row.path, row.title, row.content, row.content_hash, now));
-        statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, sync_uuid = ?, imported_at = ?, updated_at = ? WHERE id = ?").bind(candidate.desired, hash, candidate.uuid, now, now, row.id));
+        statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, sync_uuid = ?, imported_at = ?, updated_at = ? WHERE id = ?").bind(candidate.desired, hash, candidate.isTemplate ? null : candidate.uuid, now, now, row.id));
         d1Updated++;
-      } else {
+      } else if (candidate.isTemplate && row.sync_uuid != null) {
+        statements.push(this.env.DB.prepare("UPDATE notes SET sync_uuid = NULL WHERE id = ?").bind(row.id));
+      } else if (!candidate.isTemplate && row.sync_uuid !== candidate.uuid) {
         statements.push(this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(candidate.uuid, row.id));
       }
     }
@@ -10529,7 +10551,7 @@ var YjsClientDO = class extends DurableObject {
       const batch = statements.slice(i, i + 60);
       if (batch.length) await this.env.DB.batch(batch);
     }
-    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
+    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, templatesCleaned, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
   }
 
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
