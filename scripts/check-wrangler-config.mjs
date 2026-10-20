@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 
 const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
 
+const deployWorkflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+assert.ok(deployWorkflow.includes("Gate deployment on pending D1 migrations"), "Production deploy must be gated while candidate D1 migrations are pending");
+assert.ok(deployWorkflow.includes("find migrations/pending -maxdepth 1 -type f -name '*.sql'"), "Deploy gate must detect pending SQL migrations");
+assert.ok(deployWorkflow.includes("if: steps.migration_gate.outputs.allowed == 'true'"), "Credential validation and deploy must require the migration gate");
+assert.ok(deployWorkflow.indexOf("Gate deployment on pending D1 migrations") < deployWorkflow.indexOf("Deploy production Worker"), "Migration gate must precede the deploy step");
+
 for (const required of [
   'name = "akatuki-knowledge"',
   'main = "src/index.js"',
