@@ -175,8 +175,12 @@ export async function enqueueAgentTask(db, input) {
     RETURNING tasks_reserved, workflow_steps_reserved
   `).bind(now.slice(0, 10), now).first();
   if (!dailyReservation) {
-    await db.prepare("DELETE FROM agent_tasks WHERE task_id = ? AND budget_reserved = 0")
-      .bind(input.taskId.trim()).run();
+    await db.prepare(`
+      UPDATE agent_tasks
+      SET status = 'failed', stop_reason = 'daily_workflow_budget_exhausted',
+          completed_at = ?, updated_at = ?
+      WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
+    `).bind(now, now, input.taskId.trim()).run();
     throw new Error("daily_workflow_budget_exhausted");
   }
 
