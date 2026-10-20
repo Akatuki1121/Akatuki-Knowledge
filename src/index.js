@@ -11590,7 +11590,10 @@ var wrapper_default = {
     if (event.cron === TASK_RECOVERY_CRON) {
       try {
         const recovery = await recoverAgentTaskWorkflows(env, 5);
-        if (recovery.dispatched > 0 || recovery.deferred > 0) console.log(JSON.stringify({ agentTaskRecovery: recovery }));
+        const notifications = await flushAgentTaskNotifications(env, 5);
+        if (recovery.dispatched > 0 || recovery.deferred > 0 || notifications.sent > 0 || notifications.deferred > 0) {
+          console.log(JSON.stringify({ agentTaskRecovery: recovery, agentTaskNotifications: notifications }));
+        }
       } catch {
         console.log(JSON.stringify({ agentTaskRecovery: { ok: false } }));
       }
