@@ -1,36 +1,43 @@
 # Akatuki-Knowledge
 
-Cloudflare Worker and D1-backed knowledge service.
+個人用ナレッジを管理するためのサービスです。Cloudflare Workers と D1 を基盤に、Telegram からの操作とノートの同期を扱います。
 
-## Production status (2026-10-20)
+## 主な機能
 
-- The recovered Worker source is `src/index.js`. YAOS event-sync PR #14 was merged as `46ab2b71dbe66f4247af274c3a0ed47d1aad4b68`. Cloudflare currently routes 100% of production traffic to Worker version 65 (`41c8cfc7-f94a-4669-833c-6e75cec70d13`), uploaded on 2026-10-20 at 08:00:52 UTC. The active configuration retains the production D1, YAOS service binding, Yjs Durable Object binding, existing secret bindings, and hourly `0 * * * *` Cron.
-- Production D1 is `Akatuki-knowledge`. Read-only queries on 2026-10-20 returned 602 rows in `notes`, 8 in `telegram_notes`, zero `notes.sync_uuid IS NULL`, and three outbox jobs, all in `sent` state (no pending, processing, or dead jobs).
-- The latest persisted safe-recovery diagnostic (2026-10-20 08:00:40 UTC) scanned 602 D1 notes and 602 Vault files: all 602 matched and were already aligned. It reported no missing Vault notes, tombstones, duplicate paths, UUID conflicts, or content conflicts. This verifies the reconciliation pass's recorded result, not every live request path.
-- The `notes.sync_uuid` backfill completed for all 602 existing notes using the same deterministic UUID algorithm as the Worker. Note content was not changed. No initial bulk outbox enqueue was performed, to avoid recreating a Vault file that may have been independently deleted; existing Vault files receive stable frontmatter IDs through safe outbound updates.
-- Staging live tests and evidence are recorded on [`evidence/yaos-staging-validation-20261020`](https://github.com/Akatuki1121/Akatuki-Knowledge/tree/evidence/yaos-staging-validation-20261020). The staging Workers were cleaned up after testing: secrets removed, public subdomains disabled, and schedules empty.
-- Cloudflare API metadata confirms the active deployment, bindings, and Cron. A direct public HTTP smoke test and an end-to-end production mutation test have not been completed through the current execution path, so runtime request-level verification remains outstanding.
+- **Telegram 連携**：Telegram からナレッジの検索や操作を行うための窓口を提供します。
+- **ノート管理**：ノートの情報を D1 に保存し、関連する処理を行います。
+- **YAOS 同期**：同期用アウトボックスを介して、ノートの変更を YAOS 側へ送信します。
+- **フォルダ整理の提案**：ノートの移動案を提示し、明示的な指示を受けてから反映する仕組みがあります。
+- **安全性を重視した AI 利用**：AI に渡す内容を事前に検査し、認証情報の検出や安全にマスキングできない機微情報がある場合は送信を止めます。
 
-## Recovery limitations
+## 構成
 
-- The exact historical SQL source for migrations `0001`–`0007` has not been recovered. The production D1 ledger contains those historical names, but the repository does not yet provide a verified clean-database migration chain.
-- `migrations/0009_yaos_sync_jobs.sql` documents the production outbox schema extension. The reconstructed folders migration is kept under `migrations/pending/` because its DDL already existed in production before its ledger entry was reconciled.
-- The recovered `wrangler.toml` reflects observed live settings and Durable Object migration tags `v1`–`v5`; the Cloudflare version API does not independently expose the full historical migration arrays.
-- R2 is intentionally not configured.
+| コンポーネント | 役割 |
+| --- | --- |
+| Cloudflare Workers | API と Telegram 連携の処理 |
+| Cloudflare D1 | ノートや処理状態などの永続化 |
+| Durable Objects / Yjs | リアルタイム連携に関わる状態管理 |
+| YAOS | ノート同期先との連携 |
+| GitHub Actions | 構文・契約テスト、設定検証などの自動チェック |
 
-## Telegram agent improvements
+## 開発・検証
 
-- Telegram can propose a move for one AI-permitted Obsidian note at a time. It does not move notes until the user explicitly replies `フォルダ整理案を反映して`; `フォルダ整理案を却下して` rejects the pending proposal.
-- Before proposing, the Worker excludes notes with detected credentials and sends only note IDs, titles, paths, and short summaries to Gemini. It validates proposed paths, checks collisions, and verifies the note has not changed since the proposal.
-- Approved moves save a note revision and enqueue the existing YAOS sync outbox. The bot's behavior-improvement proposals remain separately approval-gated.
-- The new table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. This is a pending schema migration: do not deploy the Worker changes to production until the migration has been reviewed and applied to the production D1. This change does not apply the migration or deploy production.
-
-## Development
-
-Use Node.js and run:
+Node.js を用意し、リポジトリのルートで次を実行します。
 
 ```sh
 npm run check
 ```
 
-This verifies JavaScript syntax, sync-contract checks, sync identity/conflict tests, safe-note-ID recovery tests, and Wrangler configuration assertions. It does not validate Cloudflare bindings, Durable Object migration state, or live YAOS integration. A clean-database bootstrap remains a separate disaster-recovery task and must not be attempted against the existing production D1.
+このコマンドは、JavaScript の構文、同期契約、同期 ID・競合処理、安全なノート ID の復旧処理、フォルダ整理関連の契約、Wrangler 設定を検証します。実行される検査の内容はスクリプトの更新に応じて変わります。
+
+GitHub Actions では、変更内容に応じて追加のビルド検証や統合チェックも実行します。ローカル検査や CI の成功だけでは、本番環境のバインディング・マイグレーション・実リクエストまで検証したことにはなりません。
+
+## ドキュメント
+
+- [背景タスクの設計](docs/BACKGROUND_TASKS.md)：バックグラウンド実行、再試行上限、利用量制限、安全性、導入時の注意点を説明します。
+
+## 開発中の機能について
+
+バックグラウンドタスク機能と、そのための D1 マイグレーションは開発中です。GitHub 上の PR がマージされ、本番環境へ反映されるまでは、Telegram から利用できる機能として扱わないでください。
+
+本番環境の変更やマイグレーションは、検証とレビューを行ったうえで別途実施します。
