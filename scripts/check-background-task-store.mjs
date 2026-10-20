@@ -10,7 +10,6 @@ for (const required of [
   "ORDER BY updated_at DESC",
   "budget_reserved = 1",
   "SET budget_reserved = 1",
-  "agent_task_insert_conflict",
   "notify_chat_id, notification_status, notification_next_attempt_at",
   "UPDATE agent_tasks",
   "lease_expires_at <= ?",
