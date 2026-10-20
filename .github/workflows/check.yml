@@ -23,9 +23,15 @@ jobs:
     outputs:
       integration: ${{ steps.filter.outputs.integration }}
     steps:
-      # Pull requests use the GitHub API; pushes need repository history for
-      # dorny/paths-filter to compare changed paths against the base commit.
+      # Pull requests use the GitHub API and only need the checked-out tree.
       - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 1
+      # Push path comparison needs the prior commit history. Keep the deeper
+      # checkout off PR runs, which are the common development path.
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v3
