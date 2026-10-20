@@ -65,6 +65,16 @@ except sqlite3.IntegrityError:
 else:
     raise AssertionError("Negative attempts were not rejected")
 
+try:
+    connection.execute(
+        "INSERT INTO agent_tasks (task_id, task_type, status, notification_status, deadline_at) "
+        "VALUES ('task-invalid-notification', 'test', 'queued', 'retrying-forever', '2099-01-01 00:00:00')"
+    )
+except sqlite3.IntegrityError:
+    pass
+else:
+    raise AssertionError("Invalid notification status was not rejected")
+
 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "agent_task_daily_budget" in tables, "Daily Workflow budget table is missing"
 

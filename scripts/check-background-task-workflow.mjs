@@ -22,6 +22,8 @@ for (const required of [
   "recordAgentTaskFailure",
   "recoverAgentTaskWorkflows",
   "flushAgentTaskNotifications",
+  "notificationStatus: task.notification_status",
+  "notification_status = 'sending'",
   "notification_status = 'sending'",
   "notification_last_error_class = 'telegram_delivery_failed'",
   "notifyChatId: chatId",

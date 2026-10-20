@@ -52,3 +52,10 @@ Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow exe
 - `migrations/pending/0011_agent_tasks.sql` is not applied to production.
 - No production D1 migration, Worker deployment, secret change, or live note mutation is performed by this PR.
 - Before production rollout, review the pending migration chain, apply the migration explicitly, run an authenticated smoke test, and document rollback.
+
+
+## Terminal notification and recovery
+
+Telegram-originated tasks store their notification target and delivery state in the same D1 task row. The Workflow attempts notification immediately after a terminal result; the 15-minute recovery Cron also scans terminal tasks whose notification is still pending or whose sending lease expired. Delivery retries use bounded exponential backoff and stop after eight attempts. A notification failure never re-runs the AI task, changes its task result, or resets its execution budget. HTTP-created tasks without a Telegram target do not send Telegram messages.
+
+Use `/task_status <id>` or the authenticated task-status API to inspect both task execution and notification delivery. A task may be complete even while its notification is pending; those are separate states.

@@ -443,6 +443,9 @@ async function getTelegramBackgroundTaskStatus(env, taskId) {
   let reply = "背景タスク: " + (labels[task.status] || task.status)
     + "\nID: " + task.task_id
     + "\n試行回数: " + task.attempts + "/" + task.max_attempts;
+  const notificationLabels = { none: "対象外", pending: "通知待ち", sending: "通知中", sent: "通知済み", failed: "通知停止" };
+  if (task.notify_chat_id) reply += "\n通知: " + (notificationLabels[task.notification_status] || task.notification_status);
+  if (task.notification_status === "failed") reply += "\n通知停止理由: " + (task.notification_last_error_class || "delivery_failed");
   if (task.status === "failed" && task.stop_reason) reply += "\n停止理由: " + task.stop_reason;
   if (task.status === "succeeded" && typeof task.checkpoint?.result === "string") {
     reply += "\n\n" + task.checkpoint.result.slice(0, 3000);
@@ -11554,6 +11557,8 @@ var wrapper_default = {
         lastErrorClass: task.last_error_class,
         createdAt: task.created_at,
         updatedAt: task.updated_at,
+        notificationStatus: task.notification_status,
+        notificationAttempts: Number(task.notification_attempts || 0),
         result: task.checkpoint?.result ?? null
       }, { status: 200, headers: JSON_HEADERS2 });
     }
