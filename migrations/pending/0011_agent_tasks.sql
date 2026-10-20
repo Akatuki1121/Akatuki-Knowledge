@@ -54,3 +54,16 @@ CREATE TABLE agent_task_daily_budget (
     workflow_steps_reserved INTEGER NOT NULL DEFAULT 0 CHECK (workflow_steps_reserved BETWEEN 0 AND 2000),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+
+-- Idempotent admission ledger: a task can consume the daily reservation only once.
+-- The ledger and counter update are written in one D1 batch transaction.
+CREATE TABLE agent_task_budget_reservations (
+    task_id TEXT PRIMARY KEY,
+    budget_day TEXT NOT NULL,
+    workflow_steps INTEGER NOT NULL DEFAULT 32 CHECK (workflow_steps = 32),
+    counted INTEGER NOT NULL DEFAULT 0 CHECK (counted IN (0, 1))
+);
+
+CREATE INDEX idx_agent_task_budget_reservations_day
+    ON agent_task_budget_reservations(budget_day, counted);
