@@ -307,7 +307,7 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。AI送信許可の一括確認は「AI送信許可を一括確認して」、内容を確認して反映する場合は「AI送信許可を一括反映して」と送ってね。";
     } else if (isBulkAiPermissionApproval(text2)) {
       reply = await applyBulkAiPermission(env, chatId);
     } else if (isBulkAiPermissionRejection(text2)) {
@@ -592,27 +592,29 @@ async function inspectBulkAiPermissionCandidates(env) {
   let credentials = 0;
   let alreadyAllowed = 0;
   const eligible = [];
+  const credentialAllowed = [];
   for (const note of results || []) {
     const hasCredentials = inspectWholeContent(note.content || "", env).credentials;
     if (hasCredentials) {
-      if (note.ai_allowed !== 1) credentials++;
+      credentials++;
+      if (note.ai_allowed === 1) credentialAllowed.push(note.id);
       continue;
     }
     if (note.ai_allowed === 1) alreadyAllowed++;
     else eligible.push(note.id);
   }
-  return { total: (results || []).length, eligible, credentials, alreadyAllowed };
+  return { total: (results || []).length, eligible, credentials, credentialAllowed, alreadyAllowed };
 }
 async function proposeBulkAiPermission(env) {
   const scan = await inspectBulkAiPermissionCandidates(env);
   if (!scan.eligible.length) {
-    return `AI送信許可の一括確認が完了しました。対象ノート: ${scan.total}件 / 新たに許可できるノート: 0件 / 認証情報を検出して除外: ${scan.credentials}件 / 既に許可済み: ${scan.alreadyAllowed}件。ノートは変更していません。`;
+    return `AI送信許可の一括確認が完了しました。対象ノート: ${scan.total}件 / 新たに許可できるノート: 0件 / 認証情報を検出: ${scan.credentials}件 / 既に許可済み（安全確認済み）: ${scan.alreadyAllowed}件。ノートは変更していません。`;
   }
   return `AI送信許可の一括反映待ちです。
 対象ノート: ${scan.total}件
 新たに許可できるノート: ${scan.eligible.length}件
-認証情報を検出して除外: ${scan.credentials}件
-既に許可済み: ${scan.alreadyAllowed}件
+認証情報を検出: ${scan.credentials}件（許可対象から除外し、既に許可済みなら許可を解除）
+既に許可済み（安全確認済み）: ${scan.alreadyAllowed}件
 
 この時点では設定を変更していません。許可対象を確認し、反映する場合だけ「AI送信許可を一括反映して」と送ってください。反映時にも全ノートを再検査します。`;
 }
@@ -622,6 +624,12 @@ async function applyBulkAiPermission(env, chatId) {
     return "先に「AI送信許可を一括確認して」で対象件数を確認してください。許可設定は変更していません。";
   }
   const scan = await inspectBulkAiPermissionCandidates(env);
+  let revoked = 0;
+  for (let offset = 0; offset < scan.credentialAllowed.length; offset += 50) {
+    const batch = scan.credentialAllowed.slice(offset, offset + 50).map((id) => env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1").bind(id));
+    const results = await env.DB.batch(batch);
+    revoked += results.reduce((sum, result) => sum + (result.meta?.changes || 0), 0);
+  }
   let changed = 0;
   for (let offset = 0; offset < scan.eligible.length; offset += 50) {
     const batch = scan.eligible.slice(offset, offset + 50).map((id) => env.DB.prepare("UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0").bind(id));
@@ -630,8 +638,9 @@ async function applyBulkAiPermission(env, chatId) {
   }
   return `AI送信許可の一括反映が完了しました。
 新たに許可: ${changed}件
-認証情報を検出して除外: ${scan.credentials}件
-既に許可済み: ${scan.alreadyAllowed}件
+認証情報を検出: ${scan.credentials}件
+認証情報検出により許可解除: ${revoked}件
+既に許可済み（安全確認済み）: ${scan.alreadyAllowed}件
 対象ノート総数: ${scan.total}件
 
 許可処理時にも本文を再検査し、認証情報を検出したノートは許可していません。`;
