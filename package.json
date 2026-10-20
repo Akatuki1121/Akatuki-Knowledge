@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Cloudflare Worker and D1-backed knowledge service",
   "scripts": {
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js && npm run check:sync && node scripts/check-wrangler-config.mjs",
+    "check:sync": "node scripts/check-sync-contract.mjs && node scripts/test-sync-identity.mjs && node scripts/test-sync-conflicts.mjs"
   }
 }

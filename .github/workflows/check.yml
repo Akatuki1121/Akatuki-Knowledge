@@ -1,19 +1,52 @@
-name: Check recovered Worker source
+name: Check recovered Worker and YAOS event sync
 
 on:
   pull_request:
   push:
     branches:
       - main
-      - recovery/normalize-cloudflare-worker-source
-      - recovery/production-candidate-20261020
+
+# Feature branches are tested by pull_request only. Avoid running the same
+# commit once for push and again for pull_request.
+concurrency:
+  group: check-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  syntax:
+  changed-files:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      integration: ${{ steps.filter.outputs.integration }}
+    steps:
+      # Pull requests use the GitHub API; pushes need repository history for
+      # dorny/paths-filter to compare changed paths against the base commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            integration:
+              - 'src/**'
+              - 'scripts/test_yaos_worker_integration.mjs'
+              - 'scripts/test_reconstructed_baseline.py'
+              - 'scripts/test_worker_sql_compatibility.py'
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/check.yml'
+
+  syntax-and-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,5 +55,38 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: python3 scripts/test_pending_migration.py
+      - name: Validate recovered migration chain and full schema shape
+        run: python3 scripts/test_recovered_migration_chain.py
       - name: Validate Wrangler config and build without deploying
-        run: npx --yes wrangler@4 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
+        run: npx --yes wrangler@4.69.0 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
+      - name: Validate reconstructed baseline in empty SQLite database
+        run: python3 scripts/test_reconstructed_baseline.py
+      - name: Compile Worker SQL against captured D1 schema
+        run: python3 scripts/test_worker_sql_compatibility.py
+
+  yaos-worker-integration:
+    needs: changed-files
+    if: needs.changed-files.outputs.integration == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kavinsood/yaos
+          ref: 2174eb89538ce7e213e9e33a0e75ecaf1a3f1f58
+          path: yaos
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: yaos/server/package-lock.json
+      - name: Install YAOS Worker dependencies
+        working-directory: yaos/server
+        run: npm ci
+      - name: Exercise isolated local D1 and both Workers
+        env:
+          YAOS_REPO_PATH: ${{ github.workspace }}/yaos
+        run: timeout --signal=TERM --kill-after=5s 3m node scripts/test_yaos_worker_integration.mjs
