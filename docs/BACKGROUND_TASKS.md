@@ -7,7 +7,7 @@ The interactive Worker accepts a task, persists it in D1, starts a Cloudflare Wo
 - D1 is the business source of truth for task state, checkpoint, attempt count, deadlines, usage budgets and stop reasons.
 - The dedicated `agent_tasks` table is separate from `yaos_sync_jobs`; the latter remains a delivery outbox for YAOS sync.
 - The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It accepts a bounded AI-prompt task, masks identifiers before storing it, and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt. The Workflow repeats the safety check immediately before calling Gemini. Telegram has `/task <prompt>` to enqueue and `/task_status <id>` to inspect progress/result; ordinary messages remain available while a Workflow runs.
-- Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. The existing hourly sync/maintenance Cron remains separate.
+- Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. Intake requests never restart an existing stopped Workflow; only the scheduled recovery path may do so, preventing repeated webhook/API delivery from triggering an immediate restart loop. Task lifetime and persisted attempt/usage budgets remain hard stop conditions. The existing hourly sync/maintenance Cron remains separate.
 - Workflow IDs reuse the stable task ID. Restarting a Workflow never resets D1 attempt/usage budgets.
 
 ## State machine
