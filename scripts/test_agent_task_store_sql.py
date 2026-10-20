@@ -33,7 +33,7 @@ print(f"Background task store SQL compilation passed ({len(statements)} statemen
 # This tests the production statements, rather than a simplified copy of the guard.
 source_statements = [
     textwrap.dedent(match.group(1)).strip()
-    for match in re.finditer(r"db\\.prepare\\(\\s*`([\\s\\S]*?)`\\s*\\)", source)
+    for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", source)
 ]
 enqueue_statements = source_statements[:7]
 assert len(enqueue_statements) == 7, "Expected all seven admission-batch statements"
