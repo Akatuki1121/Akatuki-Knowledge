@@ -10427,7 +10427,7 @@ var YjsClientDO = class extends DurableObject {
       }
     });
     if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return { ok: true, skipped: "vault_looks_empty", vaultFiles };
-    const rows = (await this.env.DB.prepare("SELECT id, path, content, sync_uuid FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
+    const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
     const dbUuidOwners = new Map();
     for (const row of rows) {
       if (!isValidSyncUuid(row.sync_uuid)) continue;
@@ -10446,8 +10446,8 @@ var YjsClientDO = class extends DurableObject {
       }
       return "---\nid: \"" + uuid + "\"\n---\n\n" + text;
     };
+    const candidates = [];
     const edits = [];
-    const uuidUpdates = new Map();
     let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
     for (const row of rows) {
       const entries = paths.get(norm(row.path)) || [];
@@ -10465,14 +10465,15 @@ var YjsClientDO = class extends DurableObject {
       const otherDbOwners = (dbUuidOwners.get(uuid) || []).filter((id) => id !== row.id);
       const otherVaultOwners = (vaultUuidOwners.get(uuid) || []).filter((owner) => owner.fileId !== entry.fileId);
       if (otherDbOwners.length || otherVaultOwners.length) { uuidConflicts++; continue; }
-      uuidUpdates.set(row.id, uuid);
       if (isValidSyncUuid(vaultUuid)) {
         alreadyAligned++;
         if (readUuid(row.content) !== vaultUuid) d1FrontmatterMissing++;
-        continue;
       }
-      const desired = withUuid(current, uuid);
-      edits.push({ id: row.id, fileId: entry.fileId, path: entry.path, previous: current, desired, uuid });
+      const desired = isValidSyncUuid(vaultUuid) ? current : withUuid(current, uuid);
+      if (desired.length > MAX_NOTE_CHARS) { contentConflicts++; continue; }
+      const candidate = { id: row.id, path: entry.path, fileId: entry.fileId, previous: current, desired, uuid, row };
+      candidates.push(candidate);
+      if (desired !== current) edits.push(candidate);
     }
     let applied = 0;
     if (edits.length) {
@@ -10494,23 +10495,41 @@ var YjsClientDO = class extends DurableObject {
         }, "akatuki-safe-note-id-recovery");
         return changed;
       });
-      const verifiedDoc = await this.pullVault();
-      const verifiedMeta = verifiedDoc.getMap("meta"), verifiedTexts = verifiedDoc.getMap("idToText");
-      for (const edit of edits) {
-        const entry = verifiedMeta.get(edit.fileId);
-        const path = entry instanceof YMap ? entry.get("path") : entry?.path;
-        const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
-        const textValue = verifiedTexts.get(edit.fileId);
-        if (!deleted && typeof path === "string" && norm(path) === norm(edit.path) && textValue instanceof YText && readUuid(textValue.toString()) === edit.uuid) applied++;
-        else uuidUpdates.delete(edit.id);
+    }
+    const verifiedDoc = candidates.length ? await this.pullVault() : initial;
+    const verifiedMeta = verifiedDoc.getMap("meta"), verifiedTexts = verifiedDoc.getMap("idToText");
+    const verifiedCandidates = [];
+    for (const candidate of candidates) {
+      const entry = verifiedMeta.get(candidate.fileId);
+      const path = entry instanceof YMap ? entry.get("path") : entry?.path;
+      const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+      const textValue = verifiedTexts.get(candidate.fileId);
+      if (!deleted && typeof path === "string" && norm(path) === norm(candidate.path) && textValue instanceof YText && textValue.toString() === candidate.desired && readUuid(textValue.toString()) === candidate.uuid) {
+        verifiedCandidates.push(candidate);
+        if (edits.some((edit) => edit.id === candidate.id)) applied++;
+      } else {
+        contentConflicts++;
       }
     }
-    const updates = [...uuidUpdates.entries()];
-    for (let i = 0; i < updates.length; i += 50) {
-      const batch = updates.slice(i, i + 50).map(([id, uuid]) => this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(uuid, id));
+    let d1Updated = 0;
+    const now = new Date().toISOString();
+    const statements = [];
+    for (const candidate of verifiedCandidates) {
+      const row = candidate.row;
+      if (String(row.content ?? "") !== candidate.desired) {
+        const hash = await sha256Hex(candidate.desired);
+        statements.push(this.env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(row.id, row.path, row.title, row.content, row.content_hash, now));
+        statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, sync_uuid = ?, imported_at = ?, updated_at = ? WHERE id = ?").bind(candidate.desired, hash, candidate.uuid, now, now, row.id));
+        d1Updated++;
+      } else {
+        statements.push(this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(candidate.uuid, row.id));
+      }
+    }
+    for (let i = 0; i < statements.length; i += 60) {
+      const batch = statements.slice(i, i + 60);
       if (batch.length) await this.env.DB.batch(batch);
     }
-    return { ok: applied === edits.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
+    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
   }
 
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
@@ -11013,10 +11032,6 @@ var wrapper_default = {
         if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
         }
-        if (recovery.ok && (recovery.changed > 0 || recovery.d1FrontmatterMissing > 0)) {
-          const pull = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
-          if (!pull.ok || pull.applied) console.log(JSON.stringify({ recoveryPull: { ok: pull.ok, stage: pull.stage, created: pull.created, updated: pull.updated, error: pull.error } }));
-        }
       } catch (error) {
         console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false, error: String(error).slice(0, 200) } }));
       }
@@ -11031,10 +11046,6 @@ var wrapper_default = {
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
-        }
-        if (reconcile.ok && (reconcile.changed > 0 || reconcile.d1FrontmatterMissing > 0)) {
-          const postPull = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
-          if (!postPull.ok || postPull.applied) console.log(JSON.stringify({ recoveryPull: { ok: postPull.ok, stage: postPull.stage, created: postPull.created, updated: postPull.updated, error: postPull.error } }));
         }
       } catch (error) {
         console.log(JSON.stringify({ pull: { ok: false, error: String(error).slice(0, 200) } }));
