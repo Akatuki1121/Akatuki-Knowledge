@@ -34,12 +34,17 @@ print(f"Background task store SQL compilation passed ({len(statements)} statemen
 enqueue_start = source.index("export async function enqueueAgentTask")
 enqueue_end = source.index("export async function claimNextAgentTask", enqueue_start)
 enqueue_source = source[enqueue_start:enqueue_end]
+# Inspect only the statements passed to db.batch(); the enqueue function also
+# contains a separate fail-closed UPDATE after the batch, which is not an
+# admission-batch statement and is exercised separately below.
+batch_start = enqueue_source.index("const statements = [")
+batch_end = enqueue_source.index("const results = await db.batch(statements);", batch_start)
+batch_source = enqueue_source[batch_start:batch_end]
 enqueue_statements = [
     textwrap.dedent(match.group(1)).strip()
-    for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", enqueue_source)
+    for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", batch_source)
 ]
 assert len(enqueue_statements) == 7, f"Expected all seven admission-batch statements, found {len(enqueue_statements)}"
-
 def assert_budget_cap_rejects_task(day, task_cap, step_cap):
     connection.execute(
         "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, ?, ?, ?)",
