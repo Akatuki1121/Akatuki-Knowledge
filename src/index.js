@@ -410,7 +410,7 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
     || (task.status === "waiting" && task.next_attempt_at <= now)
     || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
     try {
-      await ensureAgentTaskWorkflow(env, task.task_id, task.status === "running");
+      await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
     } catch {
       return "タスクは保存しましたが、実行開始を確認できませんでした。しばらくして /task_status " + task.task_id + " で確認してください。";
     }
@@ -11176,7 +11176,8 @@ async function isAuthorized(request, env) {
 }
 __name(isAuthorized, "isAuthorized");
 
-async function ensureAgentTaskWorkflow(env, taskId, forceRestart = false) {
+async function ensureAgentTaskWorkflow(env, taskId, options = {}) {
+  const { forceRestart = false, allowRestart = false } = options;
   let instance = null;
   try {
     instance = await env.AGENT_TASK_WORKFLOW.get(taskId);
@@ -11193,6 +11194,9 @@ async function ensureAgentTaskWorkflow(env, taskId, forceRestart = false) {
   }
   const status = await instance.status();
   if (forceRestart || ["errored", "terminated", "complete"].includes(status.status)) {
+    // Only the bounded recovery Cron may restart an existing Workflow. Intake
+    // requests must not turn repeated webhook/API deliveries into unbounded restarts.
+    if (!allowRestart) return "restart_deferred";
     await instance.restart();
     return "restarted";
   }
@@ -11310,7 +11314,7 @@ async function recoverAgentTaskWorkflows(env, limit = 5) {
       && typeof task.lease_expires_at === "string"
       && task.lease_expires_at <= now;
     try {
-      await ensureAgentTaskWorkflow(env, task.task_id, staleLease);
+      await ensureAgentTaskWorkflow(env, task.task_id, { forceRestart: staleLease, allowRestart: true });
       dispatched++;
     } catch {
       deferred++;
