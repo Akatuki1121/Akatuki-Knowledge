@@ -180,6 +180,45 @@ export async function reserveAgentAiBudget(db, input) {
     TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
     TASK_BUDGET_CEILINGS.maxAiTokens,
   ).run();
+  if (result?.meta?.changes === 1) return true;
+
+  // If the lease is still ours, turn an exhausted budget into a terminal task
+  // state instead of leaving a task that no executor can ever claim again.
+  await db.prepare(`
+    UPDATE agent_tasks
+    SET status = 'failed',
+        stop_reason = CASE
+          WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
+          WHEN ai_calls_used >= max_ai_calls OR ai_calls_used >= ? THEN 'ai_call_budget_exhausted'
+          ELSE 'ai_token_budget_exhausted'
+        END,
+        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
+    WHERE task_id = ? AND status = 'running' AND lease_token = ?
+      AND (
+        deadline_at <= ?
+        OR ai_calls_used >= max_ai_calls
+        OR ai_calls_used >= ?
+        OR ai_tokens_used + ? > max_ai_tokens
+        OR ai_tokens_used + ? > ?
+      )
+  `).bind(
+    now, now, now, input.taskId, input.leaseToken,
+    now, TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
+    TASK_BUDGET_CEILINGS.maxAiTokens,
+  ).run();
+  return false;
+}
+
+export async function renewAgentTaskLease(db, input) {
+  const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
+  const leaseToken = typeof input.leaseToken === "string" ? input.leaseToken : "";
+  if (!leaseToken.trim()) throw new TypeError("leaseToken is required");
+  const leaseSeconds = Math.max(5, Math.min(300, Math.floor(finiteNumber(input.leaseSeconds, 60))));
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET lease_expires_at = datetime(?, '+' || ? || ' seconds'), updated_at = ?
+    WHERE task_id = ? AND status = 'running' AND lease_token = ? AND deadline_at > ?
+  `).bind(now, leaseSeconds, now, input.taskId, leaseToken, now).run();
   return result?.meta?.changes === 1;
 }
 
