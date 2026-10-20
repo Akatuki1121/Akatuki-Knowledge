@@ -609,7 +609,7 @@ async function proposeFolderOrganization(env, chatId, now) {
     const targetPath = validateOrganizationPath(proposal.target_path);
     const reason = typeof proposal.reason === "string" ? proposal.reason.trim().slice(0, 240) : "";
     if (!note || !targetPath || !reason || targetPath === note.path) return "確認できる移動案を作れませんでした。対象ノートを絞って、もう一度頼んでください。";
-    const collision = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(targetPath, note.id).first();
+    const collision = await env.DB.prepare("SELECT id FROM notes WHERE lower(path) = lower(?) AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(targetPath, note.id).first();
     if (collision) return "移動先「" + targetPath + "」には別のノートがあるため、上書きせずに止めました。";
     await env.DB.prepare("INSERT INTO bot_organization_candidates (chat_id, note_id, source_path, target_path, reason, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)").bind(chatId, note.id, note.path, targetPath, reason, now).run();
     return "フォルダ整理案です。\n対象: " + note.title + "\n現在: " + note.path + "\n移動先: " + targetPath + "\n理由: " + reason + "\n\n実際の移動はまだしていません。「フォルダ整理案を反映して」で適用、「フォルダ整理案を却下して」で取り下げます。";
@@ -626,7 +626,7 @@ async function applyLatestFolderOrganization(env, chatId) {
   if (!targetPath || targetPath !== candidate.target_path) return "移動先のパスが安全条件を満たさないため、適用しませんでした。";
   const note = await env.DB.prepare("SELECT id, path, title, content, content_hash FROM notes WHERE id = ? AND deleted_at IS NULL").bind(candidate.note_id).first();
   if (!note || note.path !== candidate.source_path) return "対象ノートが提案後に変更されているため、適用を中止しました。新しい案を作ってください。";
-  const collision = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(targetPath, note.id).first();
+  const collision = await env.DB.prepare("SELECT id FROM notes WHERE lower(path) = lower(?) AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(targetPath, note.id).first();
   if (collision) return "移動先に別のノートがあるため、上書きせずに中止しました。";
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(note.id, note.path, note.title, note.content, note.content_hash, now).run();
