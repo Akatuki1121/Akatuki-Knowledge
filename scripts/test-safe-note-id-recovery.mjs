@@ -28,14 +28,17 @@ const uuid2 = "223e4567-e89b-42d3-a456-426614174000";
 const readUuid = (content) => content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1].match(/^id:\s*["']?([0-9a-f-]+)["']?\s*$/im)?.[1] ?? null;
 const isValidSyncUuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const deterministicUuid = async () => uuid;
+const sha256Hex = async (value) => "hash:" + value.length;
+const MAX_NOTE_CHARS = 500000;
 const norm = (value) => String(value ?? "").replaceAll("\\", "/").normalize("NFC");
 const RESERVED_ROOT = ".yaos";
 const WORKER_DEVICE = "test-worker";
 const MIN_VAULT_FILES_FOR_WRITE = 1;
-const deps = { YMap, YText, Doc, readUuid, isValidSyncUuid, deterministicUuid, norm, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE };
+const deps = { YMap, YText, Doc, readUuid, isValidSyncUuid, deterministicUuid, sha256Hex, norm, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE, MAX_NOTE_CHARS };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + method + " }")(...Object.values(deps));
 
 function setup(rows, vaultFiles) {
+  const revisions = [];
   const doc = new Doc();
   const meta = doc.getMap("meta"), texts = doc.getMap("idToText");
   doc.getMap("sys").set("initialized", true);
@@ -50,33 +53,42 @@ function setup(rows, vaultFiles) {
   instance.env = {
     DB: {
       prepare(sql) {
+        if (sql.startsWith("SELECT ")) return { all: async () => ({ results: rows }) };
         return {
-          all: async () => ({ results: rows }),
           bind(...args) {
             return {
               run: async () => {
-                const [syncUuid, id] = args;
-                const row = rows.find((item) => item.id === id);
-                if (row) row.sync_uuid = syncUuid;
-                return { meta: { changes: row ? 1 : 0 } };
+                if (sql.startsWith("INSERT INTO note_revisions")) { revisions.push({ sql, args }); return { meta: { changes: 1 } }; }
+                if (sql.startsWith("UPDATE notes SET content =")) {
+                  const [content, contentHash, syncUuid, importedAt, updatedAt, id] = args;
+                  const row = rows.find((item) => item.id === id);
+                  if (row) Object.assign(row, { content, content_hash: contentHash, sync_uuid: syncUuid, imported_at: importedAt, updated_at: updatedAt });
+                  return { meta: { changes: row ? 1 : 0 } };
+                }
+                if (sql.startsWith("UPDATE notes SET sync_uuid =")) {
+                  const [syncUuid, id] = args;
+                  const row = rows.find((item) => item.id === id);
+                  if (row) row.sync_uuid = syncUuid;
+                  return { meta: { changes: row ? 1 : 0 } };
+                }
+                throw new Error("Unexpected SQL in test: " + sql);
               }
             };
           }
         };
-      },
-      batch: async (statements) => Promise.all(statements.map((statement) => statement.run()))
+      },      batch: async (statements) => Promise.all(statements.map((statement) => statement.run()))
     }
   };
   instance.pullVault = async (callback) => {
     if (callback) callback(doc);
     return doc;
   };
-  return { instance, doc, rows, texts };
+  return { instance, doc, rows, texts, revisions };
 }
 
 const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
 {
-  const { instance, rows, texts } = setup([{ id: "Notes/example.md", path: "Notes/example.md", content: body, sync_uuid: uuid }], [{ path: "Notes/example.md", content: body }]);
+  const { instance, rows, texts, revisions } = setup([{ id: "Notes/example.md", path: "Notes/example.md", title: "Example", content: body, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Notes/example.md", content: body }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.ok, true);
   assert.equal(result.changed, 1);
@@ -84,6 +96,8 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   assert.equal(readUuid(texts.get("file-0").toString()), uuid);
   assert.equal(rows[0].sync_uuid, uuid);
   assert.ok(texts.get("file-0").toString().includes("original note"));
+  assert.equal(readUuid(rows[0].content), uuid, "D1 content must be reconciled with the verified Vault frontmatter");
+  assert.equal(revisions.length, 1, "The previous D1 content must be retained as a revision");
 }
 
 {
@@ -104,12 +118,14 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
 
 {
   const existing = `---\nid: "${uuid2}"\ntags: ["#example"]\n---\n\noriginal note`;
-  const { instance, rows, texts } = setup([{ id: "Notes/example.md", path: "Notes/example.md", content: body, sync_uuid: uuid }], [{ path: "Notes/example.md", content: existing }]);
+  const { instance, rows, texts, revisions } = setup([{ id: "Notes/example.md", path: "Notes/example.md", title: "Example", content: body, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Notes/example.md", content: existing }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.alreadyAligned, 1);
   assert.equal(result.changed, 0);
   assert.equal(rows[0].sync_uuid, uuid2, "An existing Vault identity must be preserved");
   assert.equal(texts.get("file-0").toString(), existing);
+  assert.equal(rows[0].content, existing, "D1 must preserve the existing Vault UUID");
+  assert.equal(revisions.length, 1);
 }
 
 console.log("Safe existing-note ID recovery tests passed.");
