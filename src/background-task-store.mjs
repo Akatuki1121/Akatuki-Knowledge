@@ -148,12 +148,17 @@ export async function enqueueAgentTask(db, input) {
     INSERT INTO agent_tasks (
       task_id, idempotency_key, task_type, status, payload_json, checkpoint_json,
       attempts, max_attempts, ai_calls_used, max_ai_calls, ai_tokens_used, max_ai_tokens,
-      created_at, updated_at, deadline_at, next_attempt_at
-    ) VALUES (?, ?, ?, 'queued', ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?)
+      created_at, updated_at, deadline_at, next_attempt_at,
+      notify_chat_id, notification_status, notification_next_attempt_at
+    ) VALUES (?, ?, ?, 'queued', ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?,
+      CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
     ON CONFLICT(idempotency_key) DO NOTHING
   `).bind(
     input.taskId.trim(), idempotencyKey, input.taskType.trim(), payloadJson,
     maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now,
+    typeof input.notifyChatId === "string" && input.notifyChatId.trim() ? input.notifyChatId.trim() : null,
+    typeof input.notifyChatId === "string" && input.notifyChatId.trim() ? input.notifyChatId.trim() : null,
+    now,
   ).run();
 
   if (result?.meta?.changes === 0 && idempotencyKey) {
