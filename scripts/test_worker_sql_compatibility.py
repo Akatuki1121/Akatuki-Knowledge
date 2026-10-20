@@ -6,7 +6,7 @@ from pathlib import Path
 
 SOURCE = Path("src/index.js")
 SCHEMA = Path("schema-snapshots/live-d1-schema-2026-10-19.sql")
-PENDING_MIGRATION = Path("migrations/pending/0009_yaos_sync_jobs.sql")
+PENDING_MIGRATIONS = [Path("migrations/pending/0009_yaos_sync_jobs.sql"), Path("migrations/pending/0010_bot_organization_candidates.sql")]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
     r'"((?:\\.|[^"\\])*)"'
@@ -50,8 +50,9 @@ def variants(query: str):
 
 db = sqlite3.connect(":memory:")
 db.executescript(SCHEMA.read_text(encoding="utf-8"))
-# Validate Worker SQL against the captured live schema plus the proposed additive sync migration.
-db.executescript(PENDING_MIGRATION.read_text(encoding="utf-8"))
+# Validate Worker SQL against the captured live schema plus additive pending migrations.
+for migration in PENDING_MIGRATIONS:
+    db.executescript(migration.read_text(encoding="utf-8"))
 source = SOURCE.read_text(encoding="utf-8")
 checked = 0
 skipped_dynamic = 0
