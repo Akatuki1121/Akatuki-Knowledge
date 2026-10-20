@@ -54,7 +54,7 @@ for (const required of [
   assert.ok(source.includes(required), "Missing background workflow contract: " + required);
 }
 assert.ok(
-  (source.match(/task\\.budget_reserved === 1 && \\(task\\.status === "queued"/g) || []).length >= 2,
+  source.split('task.budget_reserved === 1 && (task.status === "queued"').length - 1 >= 2,
   "Telegram and HTTP intake must not dispatch before budget admission",
 );
 const terminalNotificationStart = source.indexOf('let message = "背景タスク " + statusText');
