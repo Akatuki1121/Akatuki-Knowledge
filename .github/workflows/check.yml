@@ -46,9 +46,6 @@ jobs:
               - 'migrations/**'
               - 'schema-snapshots/**'
               - 'wrangler.toml'
-              - 'package.json'
-              - 'package-lock.json'
-              - '.github/workflows/check.yml'
 
   syntax-and-contract:
     runs-on: ubuntu-latest
