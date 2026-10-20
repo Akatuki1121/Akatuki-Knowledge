@@ -57,10 +57,16 @@ def assert_budget_cap_rejects_task(day, task_cap, step_cap):
     ]
     for statement, bindings in zip(enqueue_statements, params):
         connection.execute(statement, bindings)
+    connection.execute("""
+        UPDATE agent_tasks SET status = 'failed',
+            stop_reason = 'daily_workflow_budget_exhausted',
+            completed_at = ?, updated_at = ?
+        WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
+    """, (now, now, task_id))
     row = connection.execute(
-        "SELECT status, budget_reserved FROM agent_tasks WHERE task_id = ?", (task_id,)
+        "SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = ?", (task_id,)
     ).fetchone()
-    assert row == ("queued", 0), f"Task at daily cap must not be admitted: {row}"
+    assert row == ("failed", 0, "daily_workflow_budget_exhausted"), f"Task at daily cap must fail closed: {row}"
     reservation = connection.execute(
         "SELECT counted FROM agent_task_budget_reservations WHERE task_id = ?", (task_id,)
     ).fetchone()
