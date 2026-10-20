@@ -2,21 +2,20 @@
 
 Cloudflare Worker and D1-backed knowledge service.
 
-## Recovered deployed Worker
+## Production status (2026-10-20)
 
-`src/index.js` is the JavaScript module extracted from the currently deployed Cloudflare Worker. The recovered module matches the executable content of the deployed bundle; the deployed response additionally appends a source-map annotation. It is preserved as a single bundled entrypoint because the original modular source files and source map were not recovered.
+- The recovered Worker source is `src/index.js`. YAOS event-sync PR #14 was merged as `46ab2b71dbe66f4247af274c3a0ed47d1aad4b68` and deployed to 100% traffic as Worker version 54 (`2d5eb437-6985-4038-8bd3-8356955decda`). The deployment retains the production D1, YAOS service binding, Yjs Durable Object binding, existing secret bindings, and hourly `0 * * * *` Cron.
+- Production D1 is `Akatuki-knowledge`. The additive YAOS outbox schema was applied and verified on 2026-10-20. The existing folders schema was verified before recording the reconstructed 0008 ledger entry; 0009 was then recorded. The 602 existing notes remain present.
+- The `notes.sync_uuid` backfill completed for all 602 existing notes using the same deterministic UUID algorithm as the Worker. A read-after-write check confirmed 602 non-null, unique UUIDs. Note content was not changed. No initial bulk outbox enqueue was performed, to avoid recreating a Vault file that may have been independently deleted; existing Vault files receive stable frontmatter IDs through safe outbound updates.
+- Staging live tests and evidence are recorded on [`evidence/yaos-staging-validation-20261020`](https://github.com/Akatuki1121/Akatuki-Knowledge/tree/evidence/yaos-staging-validation-20261020). The staging Workers were cleaned up after testing: secrets removed, public subdomains disabled, and schedules empty.
+- Cloudflare API metadata confirms the active deployment, bindings, and Cron. A direct public HTTP smoke test was not available through the current execution path, so runtime request-level verification remains outstanding.
 
-## Recovery status
+## Recovery limitations
 
-- The active Worker module has been recovered into a normal JavaScript file on the recovery branch.
-- The live D1 schema and migration ledger have been captured under `schema-snapshots/` for compatibility checks only. The existing production D1 is to be preserved; these snapshots are not executable migrations and must not be replayed.
-- Observed Cloudflare configuration and remaining recovery steps are recorded in `docs/CLOUDFLARE_RECOVERY.md`.
-- The byte-level comparison with the live Worker, the backup branch artifact, and the cron/code mismatch are documented in `docs/CLOUDFLARE_LIVE_VS_REPOSITORY_DIFF.md`.
-- A local Wrangler configuration was recovered with Durable Object migration declarations for `v1`–`v5`. A reconstruction is preserved in `wrangler.toml` on this recovery branch, with the current recovered source entrypoint and observed live bindings/settings. Review the file and run Wrangler's configuration validation before any deployment.
-- The migration declarations are grounded in the recovered local configuration and the live Worker’s observed `v5` tag. The version API does not expose the original migration arrays, so this is a strong recovery artifact, not independent proof of every historical deployment operation.
-- The original D1 migration SQL `0001`–`0007` is still missing. This is a disaster-recovery gap, not a reason to rebuild the current database. The old `migrations/0001_initial.sql` snapshot has been moved out of the executable migrations directory.
-- Recovered migrations `0001`–`0007` are present, with exact historical provenance still unverified. The reconstructed folder-schema migration `migrations/pending/0008_folders_schema_reconstructed.sql` and YAOS outbox migration `migrations/pending/0009_yaos_sync_jobs.sql` remain pending while production schema/ledger reconciliation and staging tests are outstanding.
-- R2 is intentionally not configured; its removal was previously confirmed as intentional.
+- The exact historical SQL source for migrations `0001`–`0007` has not been recovered. The production D1 ledger contains those historical names, but the repository does not yet provide a verified clean-database migration chain.
+- `migrations/0009_yaos_sync_jobs.sql` documents the production outbox schema extension. The reconstructed folders migration is kept under `migrations/pending/` because its DDL already existed in production before its ledger entry was reconciled.
+- The recovered `wrangler.toml` reflects observed live settings and Durable Object migration tags `v1`–`v5`; the Cloudflare version API does not independently expose the full historical migration arrays.
+- R2 is intentionally not configured.
 
 ## Development
 
@@ -26,6 +25,4 @@ Use Node.js and run:
 npm run check
 ```
 
-The check verifies JavaScript syntax only. It does not validate Cloudflare bindings, Durable Object migration state, or database migrations.
-
-**Do not deploy this recovery branch to production yet.** Validate the Wrangler config and review the existing SQL compatibility fixes first. Keep the existing production D1 unchanged; a fresh-database bootstrap is a separate disaster-recovery task, not a prerequisite for preserving the current service.
+This verifies JavaScript syntax only. It does not validate Cloudflare bindings, Durable Object migration state, or live YAOS integration. A clean-database bootstrap remains a separate disaster-recovery task and must not be attempted against the existing production D1.
