@@ -10408,23 +10408,31 @@ var YjsClientDO = class extends DurableObject {
     if (initial.getMap("sys").get("initialized") !== true) return { ok: true, skipped: "vault_not_initialized" };
     const paths = new Map();
     const vaultUuidOwners = new Map();
+    const deletedPaths = new Set();
+    const deletedUuids = new Set();
     let vaultFiles = 0;
     meta.forEach((value, fileId) => {
       const path = value instanceof YMap ? value.get("path") : value?.path;
-      const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
-      vaultFiles++;
-      const key = norm(path);
-      const entries = paths.get(key) || [];
-      entries.push({ fileId, path });
-      paths.set(key, entries);
+      if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
       const textValue = idToText.get(fileId);
       const uuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
+      const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+      if (deleted) {
+        deletedPaths.add(norm(path));
+        if (isValidSyncUuid(uuid)) deletedUuids.add(uuid);
+        return;
+      }
       if (isValidSyncUuid(uuid)) {
         const owners = vaultUuidOwners.get(uuid) || [];
         owners.push({ fileId, path, uuid });
         vaultUuidOwners.set(uuid, owners);
       }
+      if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
+      vaultFiles++;
+      const key = norm(path);
+      const entries = paths.get(key) || [];
+      entries.push({ fileId, path });
+      paths.set(key, entries);
     });
     if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return { ok: true, skipped: "vault_looks_empty", vaultFiles };
     const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
@@ -10435,7 +10443,14 @@ var YjsClientDO = class extends DurableObject {
       owners.push(row.id);
       dbUuidOwners.set(row.sync_uuid, owners);
     }
-    const comparable = (value) => String(value ?? "").replace(/\r\n/g, "\n").replace(/^---\n([\s\S]*?)\n---/, (_all, frontmatter) => "---\n" + frontmatter.split("\n").filter((line) => !/^id:\s*/i.test(line)).join("\n") + "\n---");
+    const comparable = (value) => {
+      const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      const match = normalized.match(/^---\n([\s\S]*?)\n---\n*/);
+      if (!match) return normalized;
+      const lines = match[1].split("\n").filter((line) => !/^id:\s*/i.test(line));
+      const prefix = lines.length ? "---\n" + lines.join("\n") + "\n---\n" : "";
+      return prefix + normalized.slice(match[0].length);
+    };
     const withUuid = (content, uuid) => {
       const text = String(content ?? "");
       if (/^---\r?\n[\s\S]*?\r?\n---/.test(text)) {
@@ -10448,10 +10463,20 @@ var YjsClientDO = class extends DurableObject {
     };
     const candidates = [];
     const edits = [];
-    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0;
+    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0, tombstonedInVault = 0, uuidPathMismatch = 0, unsafeMissingPaths = 0;
+    const missingNoteIds = [];
     for (const row of rows) {
       const entries = paths.get(norm(row.path)) || [];
-      if (entries.length === 0) { missingInVault++; continue; }
+      if (entries.length === 0) {
+        const rowUuid = isValidSyncUuid(row.sync_uuid) ? row.sync_uuid : null;
+        if (deletedPaths.has(norm(row.path)) || (rowUuid && deletedUuids.has(rowUuid))) { tombstonedInVault++; continue; }
+        if (rowUuid && (vaultUuidOwners.get(rowUuid) || []).length > 0) { uuidPathMismatch++; continue; }
+        const pathParts = String(row.path || "").split("/");
+        if (!String(row.path || "").toLowerCase().endsWith(".md") || String(row.path || "").startsWith(RESERVED_ROOT + "/") || pathParts.slice(0, -1).some((part) => part.startsWith("."))) { unsafeMissingPaths++; continue; }
+        missingInVault++;
+        missingNoteIds.push(row.id);
+        continue;
+      }
       if (entries.length !== 1) { duplicatePaths++; continue; }
       const entry = entries[0];
       const textValue = idToText.get(entry.fileId);
@@ -10529,7 +10554,7 @@ var YjsClientDO = class extends DurableObject {
       const batch = statements.slice(i, i + 60);
       if (batch.length) await this.env.DB.batch(batch);
     }
-    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, duplicatePaths, contentConflicts, uuidConflicts };
+    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, missingNoteIds, tombstonedInVault, uuidPathMismatch, unsafeMissingPaths, duplicatePaths, contentConflicts, uuidConflicts };
   }
 
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
@@ -10777,7 +10802,7 @@ var YjsClientDO = class extends DurableObject {
     const hash16 = telegram ? (await sha256Hex(payload.id)).slice(0, 16) : null;
     const slug = (payload.title || "Telegram note").normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[-. ]+|[-. ]+$/g, "").slice(0, 64) || "Telegram-note";
     const desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + "-" + hash16 + ".md" : norm(payload.path || "");
-    if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
+    if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").slice(0, -1).some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
     let desiredContent = payload.content;
     const contentUuid = readUuid(desiredContent);
     const uuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : await deterministicUuid(telegram ? payload.id : "notes:" + payload.id));
@@ -10789,7 +10814,14 @@ var YjsClientDO = class extends DurableObject {
       else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
     }
     const desiredUuid = readUuid(desiredContent);
-    const comparableContent = (value) => String(value ?? "").replace(/\r\n/g, "\n").replace(/^---\n([\s\S]*?)\n---/, (_all, frontmatter) => "---\n" + frontmatter.split("\n").filter((line) => !/^id:\s*/i.test(line)).join("\n") + "\n---");
+    const comparableContent = (value) => {
+      const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      const match = normalized.match(/^---\n([\s\S]*?)\n---\n*/);
+      if (!match) return normalized;
+      const lines = match[1].split("\n").filter((line) => !/^id:\s*/i.test(line));
+      const prefix = lines.length ? "---\n" + lines.join("\n") + "\n---\n" : "";
+      return prefix + normalized.slice(match[0].length);
+    };
     const locate = (doc) => {
       const found = [];
       const idToText = doc.getMap("idToText");
@@ -10960,6 +10992,16 @@ async function isAuthorized(request, env) {
   return diff === 0;
 }
 __name(isAuthorized, "isAuthorized");
+async function persistRecoveryDiagnostics(env, result) {
+  if (!env.DB) return;
+  const fields = ["ok", "skipped", "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned", "d1FrontmatterMissing", "missingInVault", "queuedForRestore", "restoreQueueErrors", "skippedExistingJobs", "restoreSent", "restoreFailed", "tombstonedInVault", "uuidPathMismatch", "unsafeMissingPaths", "duplicatePaths", "contentConflicts", "uuidConflicts", "error"];
+  const summary = { recordedAt: new Date().toISOString() };
+  for (const key of fields) if (result && Object.hasOwn(result, key)) summary[key] = result[key];
+  const now = summary.recordedAt;
+  await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES ('yaos_recovery_latest', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .bind(JSON.stringify(summary), now).run();
+}
+__name(persistRecoveryDiagnostics, "persistRecoveryDiagnostics");
 function doFetch(env, action) {
   return env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}`));
 }
@@ -11024,13 +11066,14 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
-    if (event.cron === PULL_CRON) {
+    if (event.cron === RECOVERY_CRO    if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
         if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, error: result.error } }));
         const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        await persistRecoveryDiagnostics(env, reconcile);
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
         }
