@@ -5,6 +5,6 @@
   "description": "Cloudflare Worker and D1-backed knowledge service",
   "scripts": {
     "check": "node --check src/index.js && npm run check:sync && node scripts/check-wrangler-config.mjs",
-    "check:sync": "node scripts/check-sync-contract.mjs && node scripts/test-sync-identity.mjs && node scripts/test-sync-conflicts.mjs"
+    "check:sync": "node scripts/check-sync-contract.mjs && node scripts/test-sync-identity.mjs && node scripts/test-sync-conflicts.mjs && node scripts/test-safe-note-id-recovery.mjs"
   }
 }
