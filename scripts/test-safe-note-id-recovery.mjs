@@ -65,6 +65,12 @@ function setup(rows, vaultFiles) {
                   if (row) Object.assign(row, { content, content_hash: contentHash, sync_uuid: syncUuid, imported_at: importedAt, updated_at: updatedAt });
                   return { meta: { changes: row ? 1 : 0 } };
                 }
+                if (sql.startsWith("UPDATE notes SET sync_uuid = NULL")) {
+                  const [id] = args;
+                  const row = rows.find((item) => item.id === id);
+                  if (row) row.sync_uuid = null;
+                  return { meta: { changes: row ? 1 : 0 } };
+                }
                 if (sql.startsWith("UPDATE notes SET sync_uuid =")) {
                   const [syncUuid, id] = args;
                   const row = rows.find((item) => item.id === id);
@@ -139,6 +145,19 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   assert.equal(readUuid(texts.get("file-0").toString()), uuid);
   assert.equal(readUuid(rows[0].content), uuid);
   assert.equal(revisions.length, 1);
+}
+
+{
+  const templateBody = `---\nid: "${uuid}"\ntags: ["#template"]\n---\n\nreusable template`;
+  const expected = `---\ntags: ["#template"]\n---\n\nreusable template`;
+  const { instance, rows, texts, revisions } = setup([{ id: "Templates/example.md", path: "Templates/example.md", title: "Template", content: templateBody, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Templates/example.md", content: templateBody }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.equal(result.ok, true);
+  assert.equal(result.templatesCleaned, 1);
+  assert.equal(readUuid(texts.get("file-0").toString()), null, "Reusable templates must not retain a copyable stable ID");
+  assert.equal(rows[0].content, expected);
+  assert.equal(rows[0].sync_uuid, null);
+  assert.equal(revisions.length, 1, "Template frontmatter cleanup must retain the previous content");
 }
 
 console.log("Safe existing-note ID recovery tests passed.");
