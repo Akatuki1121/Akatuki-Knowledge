@@ -10961,6 +10961,16 @@ async function isAuthorized(request, env) {
   return diff === 0;
 }
 __name(isAuthorized, "isAuthorized");
+async function persistRecoveryDiagnostics(env, result) {
+  if (!env.DB) return;
+  const fields = ["ok", "skipped", "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned", "d1FrontmatterMissing", "missingInVault", "duplicatePaths", "contentConflicts", "uuidConflicts", "error"];
+  const summary = { recordedAt: new Date().toISOString() };
+  for (const key of fields) if (result && Object.hasOwn(result, key)) summary[key] = result[key];
+  const now = summary.recordedAt;
+  await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES ('yaos_recovery_latest', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .bind(JSON.stringify(summary), now).run();
+}
+__name(persistRecoveryDiagnostics, "persistRecoveryDiagnostics");
 function doFetch(env, action) {
   return env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}`));
 }
@@ -11029,6 +11039,7 @@ var wrapper_default = {
       try {
         const response = await doFetch(env, "reconcile-existing-note-ids");
         const recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        await persistRecoveryDiagnostics(env, recovery);
         if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
         }
@@ -11044,6 +11055,7 @@ var wrapper_default = {
         if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, error: result.error } }));
         const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+        await persistRecoveryDiagnostics(env, reconcile);
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
         }
