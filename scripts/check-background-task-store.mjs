@@ -5,6 +5,10 @@ import { toSqliteDateTime } from "../src/background-task-store.mjs";
 const source = await readFile(new URL("../src/background-task-store.mjs", import.meta.url), "utf8");
 for (const required of [
   "ON CONFLICT(idempotency_key) DO NOTHING",
+  "budget_reserved = 1",
+  "SET budget_reserved = 1",
+  "agent_task_insert_conflict",
+  "agent_task_admission_not_confirmed",
   "notify_chat_id, notification_status, notification_next_attempt_at",
   "UPDATE agent_tasks",
   "lease_expires_at <= ?",
@@ -35,5 +39,9 @@ for (const required of [
   assert.ok(source.includes(required), "Missing background task store contract: " + required);
 }
 assert.ok(!source.includes("input.error.message"), "Raw exception messages must not be persisted");
+const insertIndex = source.indexOf("INSERT INTO agent_tasks (");
+const reservationIndex = source.indexOf("INSERT INTO agent_task_daily_budget (");
+assert.ok(insertIndex >= 0 && reservationIndex > insertIndex, "Task insertion must precede daily budget reservation");
+assert.ok(source.indexOf("if (result?.meta?.changes === 0)") < reservationIndex, "Duplicate inserts must return before reserving daily budget");
 assert.equal(toSqliteDateTime(Date.UTC(2026, 9, 20, 12, 34, 56)), "2026-10-20 12:34:56");
 console.log("Background task store contract checks passed.");
