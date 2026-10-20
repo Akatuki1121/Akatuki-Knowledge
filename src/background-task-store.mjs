@@ -143,23 +143,29 @@ export async function enqueueAgentTask(db, input) {
           WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000)
       ON CONFLICT(task_id) DO NOTHING
     `).bind(budgetDay, taskId, budgetDay),
+    // Claim only while capacity remains, then increment and finalize in this
+    // transactional batch. State 2 means the counter increment has completed.
+    db.prepare(`
+      UPDATE agent_task_budget_reservations SET counted = 1
+      WHERE task_id = ? AND budget_day = ? AND counted = 0
+        AND EXISTS (SELECT 1 FROM agent_task_daily_budget
+          WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000)
+    `).bind(taskId, budgetDay, budgetDay),
     db.prepare(`
       UPDATE agent_task_daily_budget
       SET tasks_reserved = tasks_reserved + 1, workflow_steps_reserved = workflow_steps_reserved + 32, updated_at = ?
       WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
         AND EXISTS (SELECT 1 FROM agent_task_budget_reservations
-          WHERE task_id = ? AND budget_day = ? AND counted = 0)
+          WHERE task_id = ? AND budget_day = ? AND counted = 1)
     `).bind(now, budgetDay, taskId, budgetDay),
     db.prepare(`
-      UPDATE agent_task_budget_reservations SET counted = 1
-      WHERE task_id = ? AND budget_day = ? AND counted = 0
-        AND EXISTS (SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved > 0 AND workflow_steps_reserved >= 32)
-    `).bind(taskId, budgetDay, budgetDay),
+      UPDATE agent_task_budget_reservations SET counted = 2
+      WHERE task_id = ? AND budget_day = ? AND counted = 1
+    `).bind(taskId, budgetDay),
     db.prepare(`
       UPDATE agent_tasks SET budget_reserved = 1, updated_at = ?
       WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
-        AND EXISTS (SELECT 1 FROM agent_task_budget_reservations WHERE task_id = ? AND counted = 1)
+        AND EXISTS (SELECT 1 FROM agent_task_budget_reservations WHERE task_id = ? AND counted = 2)
     `).bind(now, taskId, taskId),
   ];
   const results = await db.batch(statements);
