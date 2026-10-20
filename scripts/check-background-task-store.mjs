@@ -37,6 +37,7 @@ for (const required of [
   "counted = 0",
   "counted = 1",
   "counted = 2",
+  "SET counted = 2",
   "const results = await db.batch(statements)",
   "tasks_reserved < 60",
   "workflow_steps_reserved + 32 <= 2000",
@@ -53,6 +54,9 @@ const reservationIndex = source.indexOf("INSERT INTO agent_task_daily_budget (")
 assert.ok(insertIndex >= 0 && reservationIndex > insertIndex, "Task insertion must precede daily budget reservation");
 assert.ok(source.includes("const results = await db.batch(statements)"), "Task creation and budget reservation must run in one D1 batch");
 assert.ok(source.includes("WHERE task_id = ? AND budget_day = ? AND counted = 0"), "A task's daily reservation must be counted at most once");
+assert.ok(source.includes("WHERE task_id = ? AND counted = 2"), "A task must be admitted only after its budget counter increment completes");
+assert.ok(source.indexOf("SET counted = 1") < source.indexOf("SET tasks_reserved = tasks_reserved + 1"), "Reservation must be claimed before the daily counter increment");
+assert.ok(source.indexOf("SET tasks_reserved = tasks_reserved + 1") < source.indexOf("SET counted = 2"), "Reservation must be finalized after the daily counter increment");
 assert.ok(source.includes("ON CONFLICT(task_id) DO NOTHING"), "Duplicate admission must not create a second reservation");
 assert.equal(toSqliteDateTime(Date.UTC(2026, 9, 20, 12, 34, 56)), "2026-10-20 12:34:56");
 console.log("Background task store contract checks passed.");
