@@ -307,7 +307,7 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "\u666E\u901A\u306B\u8A71\u3057\u304B\u3051\u3066\u306D\u3002\u4F1A\u8A71\u304B\u3089\u6B8B\u3057\u3066\u304A\u304F\u3068\u5F79\u7ACB\u3064\u77E5\u8B58\u306F\u81EA\u7136\u306B\u8A18\u9332\u3059\u308B\u3088\u3002\u300E\u4ECA\u306E\u306A\u3057\u300F\u3067\u76F4\u524D\u306E\u8A18\u9332\u3092\u623B\u305B\u308B\u3002\u6539\u5584\u306E\u63D0\u6848\u306F\u5019\u88DC\u306B\u3057\u3066\u3001\u3042\u306A\u305F\u304C\u53CD\u6620\u3092\u6C7A\u3081\u308B\u307E\u3067\u52D5\u4F5C\u306F\u5909\u3048\u306A\u3044\u3088\u3002\u8A8D\u8A3C\u60C5\u5831\u3089\u3057\u3044\u5024\u306FAI\u3078\u9001\u3089\u306A\u3044\u3002";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。";
     } else if (isFolderOrganizationApproval(text2)) {
       reply = await applyLatestFolderOrganization(env, chatId);
     } else if (isFolderOrganizationRejection(text2)) {
