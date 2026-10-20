@@ -36,6 +36,7 @@ for (const required of [
   "agent_task_budget_reservations",
   "counted = 0",
   "counted = 1",
+  "counted = 2",
   "const results = await db.batch(statements)",
   "tasks_reserved < 60",
   "workflow_steps_reserved + 32 <= 2000",
