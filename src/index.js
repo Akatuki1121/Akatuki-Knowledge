@@ -406,11 +406,11 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
 
   const task = queued.task;
   const now = toSqliteDateTime(Date.now());
-  if (task.status === "queued"
+  if (task.budget_reserved === 1 && (task.status === "queued"
     || (task.status === "waiting" && task.next_attempt_at <= now)
-    || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
+    || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
     try {
-      const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { forceRestart: task.status === "running" });
+      const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
       if (dispatchState === "restart_deferred") {
         return "タスクは保存済みですが、既存の実行が停止しているため自動復旧待ちです。しばらくして /task_status " + task.task_id + " で確認してください。";
       }
@@ -11518,11 +11518,11 @@ var wrapper_default = {
       const task = queued.task;
       let dispatchPending = false;
       const now = toSqliteDateTime(Date.now());
-      if (task.status === "queued"
+      if (task.budget_reserved === 1 && (task.status === "queued"
         || (task.status === "waiting" && task.next_attempt_at <= now)
-        || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
+        || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
         try {
-          const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { forceRestart: task.status === "running" });
+          const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
           if (dispatchState === "restart_deferred") dispatchPending = true;
         } catch {
           dispatchPending = true;
