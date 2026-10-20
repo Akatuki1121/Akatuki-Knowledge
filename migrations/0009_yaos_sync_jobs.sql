@@ -1,6 +1,8 @@
--- Pending migration for YAOS event-driven synchronization.
--- Do not move into the executable migrations directory until the original
--- applied migrations 0001-0007 and a clean-database migration chain are restored.
+-- Production schema extension for YAOS event-driven synchronization.
+-- Applied to the existing production D1 on 2026-10-20 after verifying the folder schema was already present.
+-- The production migration ledger records 0008_folders_schema_reconstructed.sql and this 0009 migration.
+-- This migration depends on the existing notes/note_revisions tables and is not a clean-database bootstrap.
+-- Original historical migrations 0001-0007 remain unrecovered; do not treat the repository as a fresh-DB bootstrap yet.
 
 -- UUID index used to reconcile Obsidian path moves without changing the stable D1 row ID.
 ALTER TABLE notes ADD COLUMN sync_uuid TEXT;
