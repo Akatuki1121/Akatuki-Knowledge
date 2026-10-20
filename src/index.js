@@ -11380,6 +11380,10 @@ var wrapper_default = {
       if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 100) {
         return Response.json({ error: "invalid_idempotency_key" }, { status: 400, headers: JSON_HEADERS2 });
       }
+      const inspection = inspectAndRedact(body.prompt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
+      if (!inspection.ok || inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+        return Response.json({ error: "sensitive_input_blocked" }, { status: 422, headers: JSON_HEADERS2 });
+      }
       const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 512;
       const maxOutputTokens = Math.max(128, Math.min(1024, requestedTokens));
       let queued;
@@ -11388,7 +11392,7 @@ var wrapper_default = {
           taskId: crypto.randomUUID(),
           taskType: "ai_prompt",
           idempotencyKey: body.idempotencyKey,
-          payload: { prompt: body.prompt, maxOutputTokens },
+          payload: { prompt: inspection.text, maxOutputTokens },
           nowMs: Date.now()
         });
       } catch {
