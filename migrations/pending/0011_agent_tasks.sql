@@ -25,7 +25,14 @@ CREATE TABLE agent_tasks (
     completed_at TEXT,
     last_error_class TEXT,
     last_error TEXT,
-    stop_reason TEXT
+    stop_reason TEXT,
+    notify_chat_id TEXT,
+    notification_status TEXT NOT NULL DEFAULT 'none'
+        CHECK (notification_status IN ('none', 'pending', 'sending', 'sent', 'failed')),
+    notification_attempts INTEGER NOT NULL DEFAULT 0 CHECK (notification_attempts >= 0),
+    notification_next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    notification_lease_expires_at TEXT,
+    notification_last_error_class TEXT
 );
 
 CREATE INDEX idx_agent_tasks_ready
