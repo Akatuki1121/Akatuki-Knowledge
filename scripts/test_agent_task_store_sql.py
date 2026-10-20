@@ -31,12 +31,14 @@ print(f"Background task store SQL compilation passed ({len(statements)} statemen
 
 # Regression: execute the real enqueue SQL batch at both independent daily caps.
 # This tests the production statements, rather than a simplified copy of the guard.
-source_statements = [
+enqueue_start = source.index("export async function enqueueAgentTask")
+enqueue_end = source.index("export async function claimNextAgentTask", enqueue_start)
+enqueue_source = source[enqueue_start:enqueue_end]
+enqueue_statements = [
     textwrap.dedent(match.group(1)).strip()
-    for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", source)
+    for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", enqueue_source)
 ]
-enqueue_statements = source_statements[:7]
-assert len(enqueue_statements) == 7, "Expected all seven admission-batch statements"
+assert len(enqueue_statements) == 7, f"Expected all seven admission-batch statements, found {len(enqueue_statements)}"
 
 def assert_budget_cap_rejects_task(day, task_cap, step_cap):
     connection.execute(
