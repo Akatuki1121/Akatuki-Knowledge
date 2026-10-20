@@ -18,6 +18,13 @@ Cloudflare Worker and D1-backed knowledge service.
 - The recovered `wrangler.toml` reflects observed live settings and Durable Object migration tags `v1`–`v5`; the Cloudflare version API does not independently expose the full historical migration arrays.
 - R2 is intentionally not configured.
 
+## Telegram agent improvements
+
+- Telegram can propose a move for one AI-permitted Obsidian note at a time. It does not move notes until the user explicitly replies `フォルダ整理案を反映して`; `フォルダ整理案を却下して` rejects the pending proposal.
+- Before proposing, the Worker excludes notes with detected credentials and sends only note IDs, titles, paths, and short summaries to Gemini. It validates proposed paths, checks collisions, and verifies the note has not changed since the proposal.
+- Approved moves save a note revision and enqueue the existing YAOS sync outbox. The bot's behavior-improvement proposals remain separately approval-gated.
+- The new table is defined in `migrations/pending/0010_bot_organization_candidates.sql`. This is a pending schema migration: do not deploy the Worker changes to production until the migration has been reviewed and applied to the production D1. This change does not apply the migration or deploy production.
+
 ## Development
 
 Use Node.js and run:
