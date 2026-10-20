@@ -10946,7 +10946,6 @@ var YjsClientDO = class extends DurableObject {
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
-var RECOVERY_CRON = "*/5 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11025,18 +11024,6 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
-    if (event.cron === RECOVERY_CRON) {
-      try {
-        const response = await doFetch(env, "reconcile-existing-note-ids");
-        const recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
-        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
-          console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
-        }
-      } catch (error) {
-        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false, error: String(error).slice(0, 200) } }));
-      }
-      return;
-    }
     if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
