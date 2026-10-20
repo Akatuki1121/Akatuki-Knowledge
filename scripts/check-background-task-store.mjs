@@ -8,7 +8,6 @@ for (const required of [
   "budget_reserved = 1",
   "SET budget_reserved = 1",
   "agent_task_insert_conflict",
-  "agent_task_admission_not_confirmed",
   "notify_chat_id, notification_status, notification_next_attempt_at",
   "UPDATE agent_tasks",
   "lease_expires_at <= ?",
@@ -32,6 +31,10 @@ for (const required of [
   "AND lease_expires_at > ?",
   "AND deadline_at > ?",
   "agent_task_daily_budget",
+  "agent_task_budget_reservations",
+  "counted = 0",
+  "counted = 1",
+  "const results = await db.batch(statements)",
   "tasks_reserved < 60",
   "workflow_steps_reserved + 32 <= 2000",
   "daily_workflow_budget_exhausted",
@@ -42,6 +45,8 @@ assert.ok(!source.includes("input.error.message"), "Raw exception messages must 
 const insertIndex = source.indexOf("INSERT INTO agent_tasks (");
 const reservationIndex = source.indexOf("INSERT INTO agent_task_daily_budget (");
 assert.ok(insertIndex >= 0 && reservationIndex > insertIndex, "Task insertion must precede daily budget reservation");
-assert.ok(source.indexOf("if (result?.meta?.changes === 0)") < reservationIndex, "Duplicate inserts must return before reserving daily budget");
+assert.ok(source.includes("const results = await db.batch(statements)"), "Task creation and budget reservation must run in one D1 batch");
+assert.ok(source.includes("WHERE task_id = ? AND budget_day = ? AND counted = 0"), "A task's daily reservation must be counted at most once");
+assert.ok(source.includes("ON CONFLICT(task_id) DO NOTHING"), "Duplicate admission must not create a second reservation");
 assert.equal(toSqliteDateTime(Date.UTC(2026, 9, 20, 12, 34, 56)), "2026-10-20 12:34:56");
 console.log("Background task store contract checks passed.");
