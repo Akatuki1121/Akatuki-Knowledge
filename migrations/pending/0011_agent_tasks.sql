@@ -7,6 +7,7 @@ CREATE TABLE agent_tasks (
     task_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled')),
+    budget_reserved INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved IN (0, 1)),
     payload_json TEXT NOT NULL DEFAULT '{}',
     checkpoint_json TEXT NOT NULL DEFAULT '{}',
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
