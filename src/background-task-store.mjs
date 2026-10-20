@@ -238,7 +238,7 @@ export async function enqueueAgentTask(db, input) {
       WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
         AND EXISTS (
           SELECT 1 FROM agent_task_budget_reservations
-          WHERE task_id = ? AND counted = 1
+          WHERE task_id = ? AND counted = 2
         )
     `).bind(now, taskId, taskId),
   ];
