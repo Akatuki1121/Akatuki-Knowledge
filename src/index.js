@@ -11342,6 +11342,9 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
       });
       if (!claim.claimed) {
         const current = await getAgentTask(this.env.DB, taskId);
+        if (["succeeded", "failed", "cancelled"].includes(current?.status)) {
+          await step.do("notify-existing-terminal", { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+        }
         return { taskId, status: current?.status || "missing", stopReason: current?.stop_reason || null };
       }
 
@@ -11402,7 +11405,10 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         const completed = await step.do("complete-" + attempt, { retries: { limit: 0 } }, async () => {
           return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
         });
-        if (completed) return { taskId, status: "succeeded" };
+        if (completed) {
+          await step.do("notify-complete-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+          return { taskId, status: "succeeded" };
+        }
         const current = await getAgentTask(this.env.DB, taskId);
         return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
       } catch (error) {
@@ -11419,9 +11425,11 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           await step.sleepUntil("retry-" + attempt, failure.decision.retryAtMs);
           continue;
         }
+        await step.do("notify-failure-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
         return { taskId, status: "failed", stopReason: failure.decision?.stopReason || "non_retryable_or_unknown_error" };
       }
     }
+    await step.do("notify-attempt-budget-exhausted", { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
     return { taskId, status: "failed", stopReason: "attempt_budget_exhausted" };
   }
 }
