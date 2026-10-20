@@ -146,7 +146,7 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
 
 {
   const path = "Notes/renamed.md";
-  const existing = `---\\nid: "${uuid}"\\ntags: ["#example"]\\n---\\n\\noriginal note`;
+  const existing = `---\nid: "${uuid}"\ntags: ["#example"]\n---\n\noriginal note`;
   const { instance } = setup([{ id: path, path, content: body, sync_uuid: uuid }], [{ path: "Notes/current-name.md", content: existing }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.uuidPathMismatch, 1, "A UUID at a different path must not be recreated or renamed automatically");
