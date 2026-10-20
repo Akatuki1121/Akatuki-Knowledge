@@ -607,7 +607,7 @@ async function inspectBulkAiPermissionCandidates(env) {
 }
 async function proposeBulkAiPermission(env) {
   const scan = await inspectBulkAiPermissionCandidates(env);
-  if (!scan.eligible.length) {
+  if (!scan.eligible.length && !scan.credentialAllowed.length) {
     return `AI送信許可の一括確認が完了しました。対象ノート: ${scan.total}件 / 新たに許可できるノート: 0件 / 認証情報を検出: ${scan.credentials}件 / 既に許可済み（安全確認済み）: ${scan.alreadyAllowed}件。ノートは変更していません。`;
   }
   return `AI送信許可の一括反映待ちです。
