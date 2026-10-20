@@ -36,3 +36,13 @@ CREATE INDEX idx_agent_tasks_lease
 
 CREATE INDEX idx_agent_tasks_deadline
     ON agent_tasks(status, deadline_at);
+
+-- Conservative daily admission budget: reserve 32 Workflow steps per task,
+-- allow at most 60 tasks / 2,000 reserved steps per UTC day, leaving margin
+-- under the published 3,000 Workflow steps/day Free allowance.
+CREATE TABLE agent_task_daily_budget (
+    budget_day TEXT PRIMARY KEY,
+    tasks_reserved INTEGER NOT NULL DEFAULT 0 CHECK (tasks_reserved BETWEEN 0 AND 60),
+    workflow_steps_reserved INTEGER NOT NULL DEFAULT 0 CHECK (workflow_steps_reserved BETWEEN 0 AND 2000),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -125,6 +125,25 @@ export async function enqueueAgentTask(db, input) {
   const deadline = toSqliteDateTime(deadlineAtMs);
   const payloadJson = safeJson(input.payload, "payload");
 
+  if (idempotencyKey) {
+    const existing = await db.prepare("SELECT * FROM agent_tasks WHERE idempotency_key = ?")
+      .bind(idempotencyKey).first();
+    if (existing) return { created: false, task: presentTask(existing) };
+  }
+
+  const dailyReservation = await db.prepare(`
+    INSERT INTO agent_task_daily_budget (
+      budget_day, tasks_reserved, workflow_steps_reserved, updated_at
+    ) VALUES (?, 1, 32, ?)
+    ON CONFLICT(budget_day) DO UPDATE SET
+      tasks_reserved = tasks_reserved + 1,
+      workflow_steps_reserved = workflow_steps_reserved + 32,
+      updated_at = excluded.updated_at
+    WHERE tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
+    RETURNING tasks_reserved, workflow_steps_reserved
+  `).bind(now.slice(0, 10), now).first();
+  if (!dailyReservation) throw new Error("daily_workflow_budget_exhausted");
+
   const result = await db.prepare(`
     INSERT INTO agent_tasks (
       task_id, idempotency_key, task_type, status, payload_json, checkpoint_json,

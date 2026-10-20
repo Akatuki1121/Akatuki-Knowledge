@@ -63,5 +63,27 @@ except sqlite3.IntegrityError:
 else:
     raise AssertionError("Negative attempts were not rejected")
 
+tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+assert "agent_task_daily_budget" in tables, "Daily Workflow budget table is missing"
+
+reserve_sql = """
+INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at)
+VALUES (?, 1, 32, ?)
+ON CONFLICT(budget_day) DO UPDATE SET
+  tasks_reserved = tasks_reserved + 1,
+  workflow_steps_reserved = workflow_steps_reserved + 32,
+  updated_at = excluded.updated_at
+WHERE tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
+RETURNING tasks_reserved, workflow_steps_reserved
+"""
+connection.execute(
+    "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, 59, 1888, ?)",
+    ("2026-10-20", "2026-10-20 00:00:00"),
+)
+reserved = connection.execute(reserve_sql, ("2026-10-20", "2026-10-20 12:00:00")).fetchone()
+assert reserved == (60, 1920), f"Daily budget reservation mismatch: {reserved}"
+blocked = connection.execute(reserve_sql, ("2026-10-20", "2026-10-20 12:01:00")).fetchone()
+assert blocked is None, "Daily Workflow budget did not stop at the hard cap"
+
 assert not list(connection.execute("PRAGMA foreign_key_check"))
 print("Pending agent task migration passes isolated SQLite schema and constraint checks.")

@@ -23,6 +23,7 @@ Terminal alternatives: `failed` and `cancelled`. Lease expiry permits recovery o
 - Maximum task age: 1 hour.
 - Maximum AI calls per task: 20.
 - Maximum estimated AI tokens per task: 40,000.
+- Daily admission cap: 60 tasks and 2,000 reserved Workflow steps (32 per task), leaving margin below the published 3,000 Workflow steps/day Free allowance. Reservations are conservative and are not refunded if dispatch fails.
 - Only explicit transient classes are retryable: network error, timeout, rate limit, upstream 5xx, executor interruption.
 - Unknown errors stop. Authentication/authorization, invalid input, credential detection, PII masking failures and policy errors stop immediately.
 - AI call and estimated-token budget is reserved atomically before the provider call; a failed provider call still consumes the reservation.

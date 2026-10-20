@@ -398,7 +398,8 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
       payload: { prompt: inspection.text, maxOutputTokens: 512 },
       nowMs: Date.now()
     });
-  } catch {
+  } catch (error) {
+    if (error?.message === "daily_workflow_budget_exhausted") return "本日の背景タスク上限（60件）に達しました。明日また依頼してください。";
     return "背景タスクを登録できませんでした。基盤の状態を確認してください。";
   }
 
@@ -11395,7 +11396,10 @@ var wrapper_default = {
           payload: { prompt: inspection.text, maxOutputTokens },
           nowMs: Date.now()
         });
-      } catch {
+      } catch (error) {
+        if (error?.message === "daily_workflow_budget_exhausted") {
+          return Response.json({ error: "daily_task_budget_exhausted" }, { status: 429, headers: JSON_HEADERS2 });
+        }
         return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
       }
       const task = queued.task;
