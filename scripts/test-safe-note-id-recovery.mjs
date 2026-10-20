@@ -179,7 +179,7 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
 
 {
   const path = "Notes/no-frontmatter.md";
-  const vaultContent = `---\\nid: "${uuid}"\\n---\\n\\nplain article`;
+  const vaultContent = `---\nid: "${uuid}"\n---\n\nplain article`;
   const { instance, rows, revisions } = setup([{ id: path, path, title: "No frontmatter", content: "plain article", content_hash: "old-hash", sync_uuid: uuid }], [{ path, content: vaultContent }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.ok, true);
