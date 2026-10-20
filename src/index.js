@@ -10978,7 +10978,6 @@ var YjsClientDO = class extends DurableObject {
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
-var RECOVERY_CRON = "*/5 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11067,37 +11066,7 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
-    if (event.cron === RECOVERY_CRON) {
-      try {
-        const response = await doFetch(env, "reconcile-existing-note-ids");
-        let recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
-        let queuedForRestore = 0, restoreQueueErrors = 0, skippedExistingJobs = 0;
-        for (const id of Array.isArray(recovery.missingNoteIds) ? recovery.missingNoteIds : []) {
-          try {
-            const existing = await env.DB.prepare("SELECT status FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? ORDER BY job_id DESC LIMIT 1").bind(id).first();
-            if (existing) { skippedExistingJobs++; continue; }
-            await enqueueSyncJob(env, "notes", id, "upsert");
-            queuedForRestore++;
-          } catch {
-            restoreQueueErrors++;
-          }
-        }
-        const restoreDrain = queuedForRestore ? await drainSyncOutbox(env, 10) : { sent: 0, failed: 0, processed: 0 };
-        if (queuedForRestore > 0) {
-          const verifyResponse = await doFetch(env, "reconcile-existing-note-ids");
-          recovery = await verifyResponse.json().catch(() => ({ ok: false, error: "invalid_post_restore_response" }));
-        }
-        recovery = { ...recovery, queuedForRestore, restoreQueueErrors, skippedExistingJobs, restoreSent: restoreDrain.sent || 0, restoreFailed: restoreDrain.failed || 0 };
-        await persistRecoveryDiagnostics(env, recovery);
-        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.tombstonedInVault > 0 || recovery.uuidPathMismatch > 0 || recovery.unsafeMissingPaths > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0 || restoreQueueErrors > 0 || restoreDrain.failed > 0) {
-          console.log(JSON.stringify({ safeNoteIdRecovery: { ...recovery, missingNoteIds: undefined } }));
-        }
-      } catch (error) {
-        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false, error: String(error).slice(0, 200) } }));
-      }
-      return;
-    }
-    if (event.cron === PULL_CRON) {
+    if (event.cron === RECOVERY_CRO    if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
