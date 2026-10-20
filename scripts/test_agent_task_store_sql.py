@@ -29,7 +29,8 @@ for index, statement in enumerate(statements, start=1):
 
 print(f"Background task store SQL compilation passed ({len(statements)} statements).")
 
-# Regression: the reservation cannot be marked complete when capacity is exhausted.
+# Regression: a reservation cannot be finalized or admitted when capacity is exhausted.
+assert "counted IN (0, 1, 2)" in MIGRATION.read_text(encoding="utf-8"), "Reservation state machine constraint is missing"
 connection.execute(
     "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, 60, 1920, ?)",
     ("2026-10-21", "2026-10-21 00:00:00"),
