@@ -1,0 +1,38 @@
+-- Candidate only. Do not apply to production until the historical migration ledger
+-- and pending migrations have been reviewed and an explicit rollout plan exists.
+-- See docs/BACKGROUND_TASKS.md and GitHub Issue #29.
+CREATE TABLE agent_tasks (
+    task_id TEXT PRIMARY KEY,
+    idempotency_key TEXT UNIQUE,
+    task_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts > 0),
+    ai_calls_used INTEGER NOT NULL DEFAULT 0 CHECK (ai_calls_used >= 0),
+    max_ai_calls INTEGER NOT NULL DEFAULT 20 CHECK (max_ai_calls > 0),
+    ai_tokens_used INTEGER NOT NULL DEFAULT 0 CHECK (ai_tokens_used >= 0),
+    max_ai_tokens INTEGER NOT NULL DEFAULT 40000 CHECK (max_ai_tokens > 0),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deadline_at TEXT NOT NULL,
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    last_error_class TEXT,
+    last_error TEXT,
+    stop_reason TEXT
+);
+
+CREATE INDEX idx_agent_tasks_ready
+    ON agent_tasks(status, next_attempt_at, created_at);
+
+CREATE INDEX idx_agent_tasks_lease
+    ON agent_tasks(status, lease_expires_at);
+
+CREATE INDEX idx_agent_tasks_deadline
+    ON agent_tasks(status, deadline_at);
