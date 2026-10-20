@@ -581,7 +581,7 @@ function isFolderOrganizationRejection(message) {
 function validateOrganizationPath(value) {
   if (typeof value !== "string") return null;
   const path = value.normalize("NFC").replaceAll("\\", "/").trim();
-  if (!path || path.length > 300 || path.startsWith("/") || /^[A-Za-z]:/u.test(path) || path.split("/").some((part) => !part || part === "." || part === ".." || /[<>:"|?*\\u0000-\\u001f]/u.test(part))) return null;
+  if (!path || path.length > 300 || path.startsWith("/") || /^[A-Za-z]:/u.test(path) || path.split("/").some((part) => !part || part === "." || part === ".." || /[<>:"|?*\u0000-\u001f]/u.test(part))) return null;
   return path.toLowerCase().endsWith(".md") ? path : path + ".md";
 }
 async function proposeFolderOrganization(env, chatId, now) {
