@@ -46,6 +46,7 @@ function setup(rows, vaultFiles) {
     const fileId = "file-" + i;
     const entry = new YMap();
     entry.set("path", file.path);
+    if (file.deleted) entry.set("deletedAt", 1);
     meta.set(fileId, entry);
     texts.set(fileId, new YText(file.content));
   }
@@ -104,6 +105,7 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   const { instance, texts } = setup([{ id: "Notes/missing.md", path: "Notes/missing.md", content: body, sync_uuid: uuid }], [{ path: "Notes/other.md", content: body }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.missingInVault, 1);
+  assert.deepEqual(result.missingNoteIds, ["Notes/missing.md"]);
   assert.equal(result.changed, 0);
   assert.equal(texts.get("file-0").toString(), body, "Missing Vault files must never be recreated");
 }
@@ -139,6 +141,40 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   assert.equal(readUuid(texts.get("file-0").toString()), uuid);
   assert.equal(readUuid(rows[0].content), uuid);
   assert.equal(revisions.length, 1);
+}
+
+
+{
+  const path = "Notes/renamed.md";
+  const existing = `---\\nid: "${uuid}"\\ntags: ["#example"]\\n---\\n\\noriginal note`;
+  const { instance } = setup([{ id: path, path, content: body, sync_uuid: uuid }], [{ path: "Notes/current-name.md", content: existing }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.equal(result.uuidPathMismatch, 1, "A UUID at a different path must not be recreated or renamed automatically");
+  assert.deepEqual(result.missingNoteIds, []);
+}
+
+{
+  const path = "Notes/.private/note.md";
+  const { instance } = setup([{ id: path, path, content: body, sync_uuid: uuid }], [{ path: "Notes/other.md", content: body }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.equal(result.unsafeMissingPaths, 1);
+  assert.deepEqual(result.missingNoteIds, [], "Hidden-directory paths must not be recreated");
+}
+
+{
+  const path = "Notes/プログラミング/知識/.gitattributes ファイル解説.md";
+  const { instance } = setup([{ id: path, path, content: "article", sync_uuid: uuid }], [{ path: "Notes/other.md", content: body }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.deepEqual(result.missingNoteIds, [path], "A dot-prefixed filename in a visible directory is eligible for safe restoration");
+  assert.ok(source.includes('desiredPath.split("/").slice(0, -1).some((part) => part.startsWith("."))'), "Sync path validation must allow dot-prefixed filenames while blocking hidden directories");
+}
+
+{
+  const path = "Notes/deleted.md";
+  const { instance } = setup([{ id: path, path, content: body, sync_uuid: uuid }], [{ path, content: body, deleted: true }, { path: "Notes/other.md", content: body }]);
+  const result = await instance.reconcileExistingNoteIds();
+  assert.equal(result.tombstonedInVault, 1);
+  assert.deepEqual(result.missingNoteIds, [], "A YAOS tombstone must not be resurrected automatically");
 }
 
 console.log("Safe existing-note ID recovery tests passed.");
