@@ -10422,17 +10422,17 @@ var YjsClientDO = class extends DurableObject {
         if (isValidSyncUuid(uuid)) deletedUuids.add(uuid);
         return;
       }
+      if (isValidSyncUuid(uuid)) {
+        const owners = vaultUuidOwners.get(uuid) || [];
+        owners.push({ fileId, path, uuid });
+        vaultUuidOwners.set(uuid, owners);
+      }
       if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
       vaultFiles++;
       const key = norm(path);
       const entries = paths.get(key) || [];
       entries.push({ fileId, path });
       paths.set(key, entries);
-      if (isValidSyncUuid(uuid)) {
-        const owners = vaultUuidOwners.get(uuid) || [];
-        owners.push({ fileId, path, uuid });
-        vaultUuidOwners.set(uuid, owners);
-      }
     });
     if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return { ok: true, skipped: "vault_looks_empty", vaultFiles };
     const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
