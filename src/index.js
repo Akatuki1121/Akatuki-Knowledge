@@ -11066,7 +11066,7 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
-    if (event.cron === RECOVERY_CRO    if (event.cron === PULL_CRON) {
+    if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
