@@ -10412,7 +10412,7 @@ var YjsClientDO = class extends DurableObject {
     meta.forEach((value, fileId) => {
       const path = value instanceof YMap ? value.get("path") : value?.path;
       const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
+      if (deleted || typeof path !== "string" || !path.toLowerCase().endsWith(".md") || path.split("/").some((part) => part.startsWith(".")) || path.split("/")[0].toLowerCase() === "templates" || path.startsWith(RESERVED_ROOT + "/")) return;
       vaultFiles++;
       const key = norm(path);
       const entries = paths.get(key) || [];
@@ -11029,7 +11029,7 @@ var wrapper_default = {
       try {
         const response = await doFetch(env, "reconcile-existing-note-ids");
         const recovery = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
-        if (!response.ok || !recovery.ok || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
+        if (!response.ok || !recovery.ok || recovery.skipped || recovery.changed > 0 || recovery.d1FrontmatterMissing > 0 || recovery.contentConflicts > 0 || recovery.missingInVault > 0 || recovery.duplicatePaths > 0 || recovery.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: recovery }));
         }
       } catch (error) {
@@ -11044,7 +11044,7 @@ var wrapper_default = {
         if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, error: result.error } }));
         const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
-        if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
+        if (!reconcileResponse.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
         }
       } catch (error) {
