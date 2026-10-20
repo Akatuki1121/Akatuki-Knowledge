@@ -38,6 +38,43 @@ export async function getAgentTask(db, taskId) {
   return presentTask(row);
 }
 
+export async function listAgentTasks(db, input = {}) {
+  const status = typeof input.status === "string" ? input.status : "active";
+  if (!["active", "terminal", "failed", "succeeded", "cancelled", "all"].includes(status)) {
+    throw new TypeError("Unsupported task status filter");
+  }
+  const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
+    ? input.notifyChatId.trim() : null;
+  const limit = Math.max(1, Math.min(20, Math.floor(finiteNumber(input.limit, 10))));
+  const result = await db.prepare(`
+    SELECT task_id, task_type, status, attempts, max_attempts, created_at,
+      updated_at, next_attempt_at, stop_reason, last_error_class,
+      checkpoint_json, notify_chat_id, notification_status,
+      notification_attempts, notification_last_error_class
+    FROM agent_tasks
+    WHERE (
+      (? = 'active' AND status IN ('queued', 'running', 'waiting'))
+      OR (? = 'terminal' AND status IN ('succeeded', 'failed', 'cancelled'))
+      OR (? = 'failed' AND status = 'failed')
+      OR (? = 'succeeded' AND status = 'succeeded')
+      OR (? = 'cancelled' AND status = 'cancelled')
+      OR (? = 'all')
+    )
+      AND (? IS NULL OR notify_chat_id = ?)
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).bind(
+    status, status, status, status, status, status,
+    notifyChatId, notifyChatId, limit,
+  ).all();
+  return (result?.results || []).map((row) => ({
+    ...row,
+    checkpoint: parseJson(row.checkpoint_json, {})
+  }));
+}
+
+
+
 export async function expireAgentTasks(db, input = {}) {
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const result = await db.prepare(`
@@ -104,22 +141,35 @@ function boundedInteger(value, fallback, ceiling) {
 }
 
 export async function enqueueAgentTask(db, input) {
-  if (!input || typeof input.taskId !== "string" || !input.taskId.trim()) throw new TypeError("taskId is required");
-  if (typeof input.taskType !== "string" || !input.taskType.trim()) throw new TypeError("taskType is required");
+  if (!input || typeof input.taskId !== "string" || !input.taskId.trim()) {
+    throw new TypeError("taskId is required");
+  }
+  if (typeof input.taskType !== "string" || !input.taskType.trim()) {
+    throw new TypeError("taskType is required");
+  }
+
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const hardDeadline = nowMs + TASK_BUDGET_CEILINGS.maxTaskAgeMs;
   const deadlineAtMs = Math.min(finiteNumber(input.deadlineAtMs, hardDeadline), hardDeadline);
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
+
   const maxAttempts = boundedInteger(input.maxAttempts, 4, TASK_BUDGET_CEILINGS.maxAttempts);
   const maxAiCalls = boundedInteger(input.maxAiCalls, 20, TASK_BUDGET_CEILINGS.maxAiCalls);
   const maxAiTokens = boundedInteger(input.maxAiTokens, 40_000, TASK_BUDGET_CEILINGS.maxAiTokens);
-  const idempotencyKey = typeof input.idempotencyKey === "string" && input.idempotencyKey.trim() ? input.idempotencyKey.trim() : null;
-  const now = toSqliteDateTime(nowMs), deadline = toSqliteDateTime(deadlineAtMs), budgetDay = now.slice(0, 10);
-  const taskId = input.taskId.trim(), payloadJson = safeJson(input.payload, "payload");
-  const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim() ? input.notifyChatId.trim() : null;
+  const idempotencyKey = typeof input.idempotencyKey === "string" && input.idempotencyKey.trim()
+    ? input.idempotencyKey.trim()
+    : null;
+  const now = toSqliteDateTime(nowMs);
+  const deadline = toSqliteDateTime(deadlineAtMs);
+  const payloadJson = safeJson(input.payload, "payload");
+  const taskId = input.taskId.trim();
+  const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
+    ? input.notifyChatId.trim() : null;
+  const budgetDay = now.slice(0, 10);
 
-  // One transactional D1 batch makes admission restart-safe. The task-keyed
-  // ledger and counted marker prevent duplicate daily budget charges.
+  // D1 batch is transactional. The reservation ledger's unique task_id makes
+  // retries safe even if an earlier implementation left an unreserved task.
+  // The counted flag ensures the daily counters are incremented at most once.
   const statements = [
     db.prepare(`
       INSERT INTO agent_tasks (
@@ -130,58 +180,89 @@ export async function enqueueAgentTask(db, input) {
       ) VALUES (?, ?, ?, 'queued', 0, ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?,
         CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
       ON CONFLICT(idempotency_key) DO NOTHING
-    `).bind(taskId, idempotencyKey, input.taskType.trim(), payloadJson, maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now, notifyChatId, notifyChatId, now),
+    `).bind(
+      taskId, idempotencyKey, input.taskType.trim(), payloadJson,
+      maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now,
+      notifyChatId, notifyChatId, now,
+    ),
     db.prepare(`
-      INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at)
-      VALUES (?, 0, 0, ?) ON CONFLICT(budget_day) DO NOTHING
+      INSERT INTO agent_task_daily_budget (
+        budget_day, tasks_reserved, workflow_steps_reserved, updated_at
+      ) VALUES (?, 0, 0, ?)
+      ON CONFLICT(budget_day) DO NOTHING
     `).bind(budgetDay, now),
     db.prepare(`
       INSERT INTO agent_task_budget_reservations (task_id, budget_day, workflow_steps, counted)
-      SELECT task_id, ?, 32, 0 FROM agent_tasks
+      SELECT task_id, ?, 32, 0
+      FROM agent_tasks
       WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
-        AND EXISTS (SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000)
+        AND EXISTS (
+          SELECT 1 FROM agent_task_daily_budget
+          WHERE budget_day = ? AND tasks_reserved < 60
+            AND workflow_steps_reserved + 32 <= 2000
+        )
       ON CONFLICT(task_id) DO NOTHING
     `).bind(budgetDay, taskId, budgetDay),
     db.prepare(`
       UPDATE agent_task_daily_budget
-      SET tasks_reserved = tasks_reserved + 1, workflow_steps_reserved = workflow_steps_reserved + 32, updated_at = ?
-      WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
-        AND EXISTS (SELECT 1 FROM agent_task_budget_reservations
-          WHERE task_id = ? AND budget_day = ? AND counted = 0)
+      SET tasks_reserved = tasks_reserved + 1,
+          workflow_steps_reserved = workflow_steps_reserved + 32,
+          updated_at = ?
+      WHERE budget_day = ?
+        AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
+        AND EXISTS (
+          SELECT 1 FROM agent_task_budget_reservations
+          WHERE task_id = ? AND budget_day = ? AND counted = 0
+        )
     `).bind(now, budgetDay, taskId, budgetDay),
     db.prepare(`
-      UPDATE agent_task_budget_reservations SET counted = 1
+      UPDATE agent_task_budget_reservations
+      SET counted = 1
       WHERE task_id = ? AND budget_day = ? AND counted = 0
-        AND EXISTS (SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved > 0 AND workflow_steps_reserved >= 32)
+        AND EXISTS (
+          SELECT 1 FROM agent_task_daily_budget
+          WHERE budget_day = ? AND tasks_reserved > 0
+            AND workflow_steps_reserved >= 32
+        )
     `).bind(taskId, budgetDay, budgetDay),
     db.prepare(`
-      UPDATE agent_tasks SET budget_reserved = 1, updated_at = ?
+      UPDATE agent_tasks
+      SET budget_reserved = 1, updated_at = ?
       WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
-        AND EXISTS (SELECT 1 FROM agent_task_budget_reservations WHERE task_id = ? AND counted = 1)
+        AND EXISTS (
+          SELECT 1 FROM agent_task_budget_reservations
+          WHERE task_id = ? AND counted = 1
+        )
     `).bind(now, taskId, taskId),
   ];
+
   const results = await db.batch(statements);
   const inserted = Number(results?.[0]?.meta?.changes || 0) === 1;
-  let row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?").bind(taskId).first();
+  const row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?")
+    .bind(taskId).first();
   if (!row && idempotencyKey) {
-    const existing = await db.prepare("SELECT * FROM agent_tasks WHERE idempotency_key = ?").bind(idempotencyKey).first();
+    const existing = await db.prepare("SELECT * FROM agent_tasks WHERE idempotency_key = ?")
+      .bind(idempotencyKey).first();
     if (existing) return { created: false, task: presentTask(existing) };
   }
   if (!row) throw new Error("agent_task_insert_not_confirmed");
+
   if (row.budget_reserved !== 1 && row.status === "queued") {
     await db.prepare(`
-      UPDATE agent_tasks SET status = 'failed', stop_reason = 'daily_workflow_budget_exhausted',
-        completed_at = ?, updated_at = ?
+      UPDATE agent_tasks
+      SET status = 'failed', stop_reason = 'daily_workflow_budget_exhausted',
+          completed_at = ?, updated_at = ?
       WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
     `).bind(now, now, taskId).run();
     throw new Error("daily_workflow_budget_exhausted");
   }
-  if (row.budget_reserved !== 1 && row.status !== "queued") return { created: inserted, task: presentTask(row) };
-  row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?").bind(taskId).first();
-  if (!row) throw new Error("agent_task_insert_not_confirmed");
-  return { created: inserted, task: presentTask(row) };
+  if (row.budget_reserved !== 1 && row.status !== "queued") {
+    return { created: inserted, task: presentTask(row) };
+  }
+  const admitted = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?")
+    .bind(taskId).first();
+  if (!admitted) throw new Error("agent_task_insert_not_confirmed");
+  return { created: inserted, task: presentTask(admitted) };
 }
 
 /**
