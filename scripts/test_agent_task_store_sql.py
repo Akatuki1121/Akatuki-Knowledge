@@ -29,29 +29,47 @@ for index, statement in enumerate(statements, start=1):
 
 print(f"Background task store SQL compilation passed ({len(statements)} statements).")
 
-# Regression: an exhausted daily budget must not claim or admit another task.
-assert "counted IN (0, 1, 2)" in MIGRATION.read_text(encoding="utf-8"), "Reservation state machine constraint is missing"
-connection.execute(
-    "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, 60, 1920, ?)",
-    ("2026-10-21", "2026-10-21 00:00:00"),
-)
-connection.execute(
-    "INSERT INTO agent_tasks (task_id, task_type, status, budget_reserved, deadline_at) VALUES (?, ?, 'queued', 0, ?)",
-    ("over-cap-task", "test", "2099-01-01 00:00:00"),
-)
-connection.execute(
-    "INSERT INTO agent_task_budget_reservations (task_id, budget_day, workflow_steps, counted) VALUES (?, ?, 32, 0)",
-    ("over-cap-task", "2026-10-21"),
-)
-connection.execute("""
-UPDATE agent_task_budget_reservations SET counted = 1
-WHERE task_id = ? AND budget_day = ? AND counted = 0
-  AND EXISTS (SELECT 1 FROM agent_task_daily_budget
-    WHERE budget_day = ? AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000)
-""", ("over-cap-task", "2026-10-21", "2026-10-21"))
-assert connection.execute(
-    "SELECT counted FROM agent_task_budget_reservations WHERE task_id = ?", ("over-cap-task",)
-).fetchone() == (0,), "A reservation at the daily cap must remain unclaimed"
-assert connection.execute(
-    "SELECT budget_reserved FROM agent_tasks WHERE task_id = ?", ("over-cap-task",)
-).fetchone() == (0,), "A task without a completed reservation must not be admitted"
+# Regression: execute the real enqueue SQL batch at both independent daily caps.
+# This tests the production statements, rather than a simplified copy of the guard.
+source_statements = [
+    textwrap.dedent(match.group(1)).strip()
+    for match in re.finditer(r"db\\.prepare\\(\\s*`([\\s\\S]*?)`\\s*\\)", source)
+]
+enqueue_statements = source_statements[:7]
+assert len(enqueue_statements) == 7, "Expected all seven admission-batch statements"
+
+def assert_budget_cap_rejects_task(day, task_cap, step_cap):
+    connection.execute(
+        "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, ?, ?, ?)",
+        (day, task_cap, step_cap, day + " 00:00:00"),
+    )
+    now = day + " 12:00:00"
+    deadline = "2099-01-01 00:00:00"
+    task_id = "over-cap-" + day + "-" + str(task_cap) + "-" + str(step_cap)
+    params = [
+        (task_id, None, "test", "{}", 4, 20, 40000, now, now, deadline, now, None, None, now),
+        (day, now),
+        (day, task_id, day),
+        (task_id, day, day),
+        (now, day, task_id, day),
+        (task_id, day),
+        (now, task_id, task_id),
+    ]
+    for statement, bindings in zip(enqueue_statements, params):
+        connection.execute(statement, bindings)
+    row = connection.execute(
+        "SELECT status, budget_reserved FROM agent_tasks WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    assert row == ("queued", 0), f"Task at daily cap must not be admitted: {row}"
+    reservation = connection.execute(
+        "SELECT counted FROM agent_task_budget_reservations WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    assert reservation is None, f"Capacity rejection must not create a reservation: {reservation}"
+    counters = connection.execute(
+        "SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?",
+        (day,),
+    ).fetchone()
+    assert counters == (task_cap, step_cap), f"Rejected task must not increase daily counters: {counters}"
+
+assert_budget_cap_rejects_task("2026-10-21", 60, 1920)
+assert_budget_cap_rejects_task("2026-10-22", 59, 1984)
