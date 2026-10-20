@@ -1,33 +1,40 @@
-# Background task architecture (Issue #29)
+# Background task architecture
 
-## Decision in progress
+## Chosen first executor
 
-The interactive Worker must acknowledge task intake quickly and must not perform a long agent task inside the chat request. A persistent task record is the business source of truth; the executor is replaceable.
+The interactive Worker accepts a task, persists it in D1, starts a Cloudflare Workflow, and returns a task ID immediately. Workflow execution is independent of the chat request, so the caller can continue chatting while the task runs. GitHub Actions remains the execution path for repository/code work (checks and PR preparation), not the generic runtime for conversation tasks.
 
-- Intake: authenticated chat/API request validates and enqueues a task, then returns its stable task ID.
-- State of record: a dedicated D1 table for agent tasks, separate from `yaos_sync_jobs`. The YAOS outbox has a different delivery contract and must not be reused.
-- Executor candidate: Cloudflare Workflows for durable, checkpointed orchestration, after validating Free-plan constraints; GitHub Actions is reserved for repository/code tasks such as checks and PR preparation.
-- Recovery: task state, attempt budget, deadline, checkpoint and failure reason remain in D1 even if an executor instance expires.
-- Production safety: this document and the candidate migration do not authorize production D1 writes, migration application, Worker deployment, or secret changes.
+- D1 is the business source of truth for task state, checkpoint, attempt count, deadlines, usage budgets and stop reasons.
+- The dedicated `agent_tasks` table is separate from `yaos_sync_jobs`; the latter remains a delivery outbox for YAOS sync.
+- The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It currently accepts a bounded AI-prompt task and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt.
+- Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. The existing hourly sync/maintenance Cron remains separate.
+- Workflow IDs reuse the stable task ID. Restarting a Workflow never resets D1 attempt/usage budgets.
 
-## Required state machine
+## State machine
 
 `queued -> running -> waiting -> running -> succeeded`
 
-Terminal alternatives: `failed` and `cancelled`. A lease expiry may return a task to `queued` only if its retry budget and deadline still permit it. A terminal task must never be automatically re-enqueued.
+Terminal alternatives: `failed` and `cancelled`. Lease expiry permits recovery only if the deadline and budgets still allow it. A terminal task is not automatically re-enqueued.
 
-## Retry policy
+## Hard retry and usage limits
 
-Retry is permitted only for errors explicitly classified as transient. Authentication/authorization errors, invalid input, policy/safety guard failures, credential detection, and PII-masking failures stop immediately. Every retry consumes the persisted attempt budget. Exponential delay is capped. A task also stops when its wall-clock deadline, AI-call budget, or token budget is exhausted. Manual restart must not silently reset the failed operation's budget.
-
-Initial conservative defaults (tune only with test evidence):
-- Maximum attempts per operation: 4 total attempts.
-- Backoff: 30 seconds, then 60, then 120 seconds; capped at 30 minutes.
-- Maximum task wall-clock age: 1 hour.
+- Maximum attempts per task: 4 total claims.
+- Backoff: 30, 60, then 120 seconds; capped at 30 minutes.
+- Maximum task age: 1 hour.
 - Maximum AI calls per task: 20.
-- Maximum AI tokens per task: 40,000 (count actual provider usage when available; conservatively account for estimated input/output otherwise).
+- Maximum estimated AI tokens per task: 40,000.
+- Only explicit transient classes are retryable: network error, timeout, rate limit, upstream 5xx, executor interruption.
+- Unknown errors stop. Authentication/authorization, invalid input, credential detection, PII masking failures and policy errors stop immediately.
+- AI call and estimated-token budget is reserved atomically before the provider call; a failed provider call still consumes the reservation.
+- Raw exception messages are not persisted. Only classified error codes are stored.
 
-These are application-level ceilings, not a claim that Cloudflare's retry configuration enforces them.
+## Safety invariants
+
+- Inspect AI-bound content immediately before the provider call. Credential detection blocks the call.
+- Redact direct identifiers such as email, phone, address and account/card identifiers before sending.
+- Health/financial/location-sensitive content that the current redactor cannot safely mask is blocked rather than sent unredacted.
+- No `ai_allowed` switch or per-operation AI permission gate is added.
+- The API endpoint is authenticated and bounds request size, prompt length and output tokens.
 
 ## Cloudflare Free-plan constraints checked 2026-10-20
 
@@ -36,20 +43,11 @@ Official docs:
 - Workflows limits: https://developers.cloudflare.com/workflows/reference/limits/
 - Workers limits: https://developers.cloudflare.com/workers/platform/limits/
 
-Current published Free allowances include 3,000 Workflow steps/day and 1 GB-month of persisted Workflow state. Workflows Free steps have a 10 ms CPU limit; a step may wait on network I/O without consuming CPU during the wait. Workers Free also has 100,000 requests/day and 10 ms CPU per invocation. Default Workflow state retention on Free is 3 days. The design must keep steps small, minimize step count, avoid busy polling, and persist user-visible status independently in D1. Usage above the Free limits must fail safely rather than silently switch to paid usage.
+Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow executions/day shared with Workers request limits, 100 active concurrent Workflow instances, 10 ms CPU per step, 1 MiB per non-stream step result, and 3-day Workflow state retention. Workflow steps can wait on network I/O without consuming CPU during the wait. The design keeps steps small, caps task execution and output size, and uses D1 as durable business state. The recovery Cron handles at most five tasks per run to limit CPU and subrequests.
 
-## Implementation sequence
+## Implementation / rollout boundary
 
-1. Add a standalone retry-policy module and deterministic unit tests.
-2. Add the pending D1 schema for task records; do not execute it against production.
-3. Add claim/lease/checkpoint/state-transition functions with concurrency tests.
-4. Add a Workflow binding and intake endpoint only after the schema and deployment constraints are reviewed.
-5. Verify restart/recovery and retry exhaustion locally; document production migration/rollback separately.
-
-## Non-negotiable safety rules
-
-- Inspect assembled AI-bound content for credentials immediately before sending; block if detected.
-- Mask personal information before sending to AI.
-- Do not add an `ai_allowed` switch or per-operation AI permission gate.
-- Telegram may modify behavioral specifications, but cannot modify these mandatory security rules.
-- No automatic production deploy, D1 migration, or live note mutation as part of the initial implementation PR.
+- Retry policy, pending D1 schema, claim/lease/checkpoint store, and Workflow/API wiring are developed on a feature branch and validated with Actions.
+- `migrations/pending/0011_agent_tasks.sql` is not applied to production.
+- No production D1 migration, Worker deployment, secret change, or live note mutation is performed by this PR.
+- Before production rollout, review the pending migration chain, apply the migration explicitly, run an authenticated smoke test, and document rollback.

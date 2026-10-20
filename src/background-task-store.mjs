@@ -31,6 +31,61 @@ function presentTask(row) {
   };
 }
 
+export async function getAgentTask(db, taskId) {
+  if (typeof taskId !== "string" || !taskId.trim()) return null;
+  const row = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?")
+    .bind(taskId.trim()).first();
+  return presentTask(row);
+}
+
+export async function expireAgentTasks(db, input = {}) {
+  const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET status = 'failed',
+        stop_reason = CASE
+          WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
+          WHEN attempts >= max_attempts THEN 'attempt_budget_exhausted'
+          WHEN ai_calls_used >= max_ai_calls THEN 'ai_call_budget_exhausted'
+          ELSE 'ai_token_budget_exhausted'
+        END,
+        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
+    WHERE status IN ('queued', 'waiting', 'running')
+      AND (
+        deadline_at <= ?
+        OR (
+          (status IN ('queued', 'waiting') OR (status = 'running' AND lease_expires_at <= ?))
+          AND (attempts >= max_attempts OR ai_calls_used >= max_ai_calls OR ai_tokens_used >= max_ai_tokens)
+        )
+      )
+  `).bind(now, now, now, now, now).run();
+  return Number(result?.meta?.changes || 0);
+}
+
+export async function listRecoverableAgentTasks(db, input = {}) {
+  const nowMs = finiteNumber(input.nowMs, Date.now());
+  const now = toSqliteDateTime(nowMs);
+  const limit = Math.max(1, Math.min(10, Math.floor(finiteNumber(input.limit, 5))));
+  await expireAgentTasks(db, { nowMs });
+  const result = await db.prepare(`
+    SELECT task_id, status, next_attempt_at, lease_expires_at
+    FROM agent_tasks
+    WHERE status IN ('queued', 'waiting', 'running')
+      AND deadline_at > ?
+      AND attempts < max_attempts
+      AND ai_calls_used < max_ai_calls
+      AND ai_tokens_used < max_ai_tokens
+      AND (
+        status = 'queued'
+        OR (status = 'waiting' AND next_attempt_at <= ?)
+        OR (status = 'running' AND lease_expires_at <= ?)
+      )
+    ORDER BY created_at
+    LIMIT ?
+  `).bind(now, now, now, limit).all();
+  return result?.results || [];
+}
+
 function safeJson(value, fieldName) {
   let serialized;
   try {
@@ -106,25 +161,7 @@ export async function claimNextAgentTask(db, input = {}) {
   if (!leaseToken.trim()) throw new TypeError("leaseToken is required");
   const leaseSeconds = Math.max(5, Math.min(300, Math.floor(finiteNumber(input.leaseSeconds, 60))));
 
-  await db.prepare(`
-    UPDATE agent_tasks
-    SET status = 'failed',
-        stop_reason = CASE
-          WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
-          WHEN attempts >= max_attempts THEN 'attempt_budget_exhausted'
-          WHEN ai_calls_used >= max_ai_calls THEN 'ai_call_budget_exhausted'
-          ELSE 'ai_token_budget_exhausted'
-        END,
-        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
-    WHERE status IN ('queued', 'waiting', 'running')
-      AND (
-        deadline_at <= ?
-        OR (
-          (status IN ('queued', 'waiting') OR (status = 'running' AND lease_expires_at <= ?))
-          AND (attempts >= max_attempts OR ai_calls_used >= max_ai_calls OR ai_tokens_used >= max_ai_tokens)
-        )
-      )
-  `).bind(now, now, now, now, now).run();
+  await expireAgentTasks(db, { nowMs });
 
   const row = await db.prepare(`
     UPDATE agent_tasks
@@ -144,11 +181,16 @@ export async function claimNextAgentTask(db, input = {}) {
         AND attempts < max_attempts
         AND ai_calls_used < max_ai_calls
         AND ai_tokens_used < max_ai_tokens
+        AND (? IS NULL OR task_id = ?)
       ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, created_at
       LIMIT 1
     )
     RETURNING *
-  `).bind(leaseToken, now, leaseSeconds, now, now, now, now, now).first();
+  `).bind(
+    leaseToken, now, leaseSeconds, now, now, now, now, now,
+    typeof input.taskId === "string" ? input.taskId : null,
+    typeof input.taskId === "string" ? input.taskId : null,
+  ).first();
 
   return presentTask(row);
 }

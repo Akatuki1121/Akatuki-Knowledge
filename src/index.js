@@ -2,7 +2,18 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // dist/wrapper.js
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
+import {
+  enqueueAgentTask,
+  getAgentTask,
+  claimNextAgentTask,
+  reserveAgentAiBudget,
+  saveAgentTaskCheckpoint,
+  completeAgentTask,
+  recordAgentTaskFailure,
+  listRecoverableAgentTasks,
+  toSqliteDateTime
+} from "./background-task-store.mjs";
 var UI_HTML = `<!doctype html>
 <html lang="ja">
 <head>
@@ -1458,13 +1469,14 @@ function parseJsonObject(raw) {
   return JSON.parse(text2.slice(start, end + 1));
 }
 __name(parseJsonObject, "parseJsonObject");
-async function callGemini(env, prompt, maxOutputTokens) {
+async function callGemini(env, prompt, maxOutputTokens, options = {}) {
   const model = maxOutputTokens <= 500
     ? (env.GEMINI_LIGHT_MODEL || "gemini-3.1-flash-lite")
     : (env.GEMINI_MODEL || "gemini-3.5-flash-lite");
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const response = await fetch(endpoint, {
     method: "POST",
+    signal: options.signal,
     headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens } })
   });
@@ -11057,6 +11069,7 @@ var YjsClientDO = class extends DurableObject {
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
+var TASK_RECOVERY_CRON = "*/15 * * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11071,6 +11084,168 @@ async function isAuthorized(request, env) {
   return diff === 0;
 }
 __name(isAuthorized, "isAuthorized");
+
+async function ensureAgentTaskWorkflow(env, taskId, forceRestart = false) {
+  let instance = null;
+  try {
+    instance = await env.AGENT_TASK_WORKFLOW.get(taskId);
+  } catch {
+    instance = null;
+  }
+  if (!instance) {
+    await env.AGENT_TASK_WORKFLOW.create({
+      id: taskId,
+      params: { taskId },
+      retention: { successRetention: "1 day", errorRetention: "3 days" }
+    });
+    return "created";
+  }
+  const status = await instance.status();
+  if (forceRestart || ["errored", "terminated", "complete"].includes(status.status)) {
+    await instance.restart();
+    return "restarted";
+  }
+  return status.status;
+}
+__name(ensureAgentTaskWorkflow, "ensureAgentTaskWorkflow");
+
+async function recoverAgentTaskWorkflows(env, limit = 5) {
+  const nowMs = Date.now();
+  const now = toSqliteDateTime(nowMs);
+  try {
+    await env.DB.prepare("SELECT 1 FROM agent_tasks LIMIT 1").first();
+  } catch {
+    return { checked: 0, dispatched: 0, deferred: 0, skipped: "task_table_unavailable" };
+  }
+  const tasks = await listRecoverableAgentTasks(env.DB, { nowMs, limit });
+  let dispatched = 0;
+  let deferred = 0;
+  for (const task of tasks) {
+    const staleLease = task.status === "running"
+      && typeof task.lease_expires_at === "string"
+      && task.lease_expires_at <= now;
+    try {
+      await ensureAgentTaskWorkflow(env, task.task_id, staleLease);
+      dispatched++;
+    } catch {
+      deferred++;
+    }
+  }
+  return { checked: tasks.length, dispatched, deferred };
+}
+__name(recoverAgentTaskWorkflows, "recoverAgentTaskWorkflows");
+
+function classifyAgentTaskError(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden"]) {
+    if (message.includes(fixed)) return fixed;
+  }
+  if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
+  if (/Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
+  if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
+  if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
+  return "unknown";
+}
+__name(classifyAgentTaskError, "classifyAgentTaskError");
+
+class AgentTaskWorkflow extends WorkflowEntrypoint {
+  async run(event, step) {
+    const taskId = typeof event?.payload?.taskId === "string" ? event.payload.taskId : "";
+    if (!taskId) throw new Error("invalid_input");
+    const leaseToken = await step.do("create-lease-token", { retries: { limit: 0 } }, async () => crypto.randomUUID());
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const claim = await step.do("claim-" + attempt, { retries: { limit: 0 } }, async () => {
+        const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: 120 });
+        return task ? { claimed: true, attempts: task.attempts } : { claimed: false };
+      });
+      if (!claim.claimed) {
+        const current = await getAgentTask(this.env.DB, taskId);
+        return { taskId, status: current?.status || "missing", stopReason: current?.stop_reason || null };
+      }
+
+      try {
+        const prepared = await step.do("prepare-" + attempt, { retries: { limit: 0 } }, async () => {
+          const task = await getAgentTask(this.env.DB, taskId);
+          if (!task || task.status !== "running" || task.lease_token !== leaseToken) throw new Error("lease_lost");
+          if (task.task_type !== "ai_prompt" || typeof task.payload?.prompt !== "string") throw new Error("invalid_input");
+          const inspection = inspectAndRedact(task.payload.prompt);
+          if (!inspection.ok) {
+            throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
+          }
+          if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+            throw new Error("pii_masking_failed");
+          }
+          const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 512;
+          const maxOutputTokens = Math.max(128, Math.min(1024, requested));
+          return {
+            safePrompt: inspection.text,
+            maxOutputTokens,
+            estimatedTokens: Math.max(1, Math.ceil(inspection.text.length / 4) + maxOutputTokens)
+          };
+        });
+
+        const reservation = await step.do("reserve-budget-" + attempt, { retries: { limit: 0 } }, async () => {
+          const reserved = await reserveAgentAiBudget(this.env.DB, {
+            taskId, leaseToken, estimatedTokens: prepared.estimatedTokens
+          });
+          if (reserved) return { reserved: true };
+          const current = await getAgentTask(this.env.DB, taskId);
+          return {
+            reserved: false,
+            status: current?.status || "missing",
+            stopReason: current?.stop_reason || "lease_lost"
+          };
+        });
+        if (!reservation.reserved) {
+          return { taskId, status: reservation.status, stopReason: reservation.stopReason };
+        }
+
+        const output = await step.do("generate-" + attempt, { retries: { limit: 0 } }, async () => {
+          return callGemini(this.env, prepared.safePrompt, prepared.maxOutputTokens, {
+            signal: AbortSignal.timeout(30_000)
+          });
+        });
+
+        const saved = await step.do("save-output-" + attempt, { retries: { limit: 0 } }, async () => {
+          return saveAgentTaskCheckpoint(this.env.DB, {
+            taskId, leaseToken, nowMs: Date.now(),
+            checkpoint: { stage: "completed", result: output }
+          });
+        });
+        if (!saved) {
+          const current = await getAgentTask(this.env.DB, taskId);
+          return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+        }
+
+        const completed = await step.do("complete-" + attempt, { retries: { limit: 0 } }, async () => {
+          return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
+        });
+        if (completed) return { taskId, status: "succeeded" };
+        const current = await getAgentTask(this.env.DB, taskId);
+        return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+      } catch (error) {
+        const errorClass = classifyAgentTaskError(error);
+        const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted"].includes(errorClass);
+        const failure = await step.do("record-failure-" + attempt, { retries: { limit: 0 } }, async () => {
+          return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, retryable, nowMs: Date.now() });
+        });
+        if (!failure.applied) {
+          const current = await getAgentTask(this.env.DB, taskId);
+          return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+        }
+        if (failure.decision?.action === "retry") {
+          await step.sleepUntil("retry-" + attempt, failure.decision.retryAtMs);
+          continue;
+        }
+        return { taskId, status: "failed", stopReason: failure.decision?.stopReason || "non_retryable_or_unknown_error" };
+      }
+    }
+    return { taskId, status: "failed", stopReason: "attempt_budget_exhausted" };
+  }
+}
+__name(AgentTaskWorkflow, "AgentTaskWorkflow");
+
 async function persistRecoveryDiagnostics(env, result) {
   if (!env.DB) return;
   const fields = ["ok", "skipped", "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned", "d1FrontmatterMissing", "missingInVault", "queuedForRestore", "restoreQueueErrors", "skippedExistingJobs", "restoreSent", "restoreFailed", "tombstonedInVault", "uuidPathMismatch", "unsafeMissingPaths", "duplicatePaths", "contentConflicts", "uuidConflicts", "error"];
@@ -11108,6 +11283,84 @@ __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/agent-tasks" && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB || !env.AGENT_TASK_WORKFLOW) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      const contentLength = Number(request.headers.get("content-length") || 0);
+      if (contentLength > 16384) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
+      let body;
+      try {
+        const raw = await request.text();
+        if (raw.length > 16384) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
+        body = JSON.parse(raw);
+      } catch {
+        return Response.json({ error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      if (typeof body?.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 8000) {
+        return Response.json({ error: "invalid_prompt" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 100) {
+        return Response.json({ error: "invalid_idempotency_key" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 512;
+      const maxOutputTokens = Math.max(128, Math.min(1024, requestedTokens));
+      let queued;
+      try {
+        queued = await enqueueAgentTask(env.DB, {
+          taskId: crypto.randomUUID(),
+          taskType: "ai_prompt",
+          idempotencyKey: body.idempotencyKey,
+          payload: { prompt: body.prompt, maxOutputTokens },
+          nowMs: Date.now()
+        });
+      } catch {
+        return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+      const task = queued.task;
+      let dispatchPending = false;
+      const now = toSqliteDateTime(Date.now());
+      if (task.status === "queued"
+        || (task.status === "waiting" && task.next_attempt_at <= now)
+        || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now)) {
+        try {
+          await ensureAgentTaskWorkflow(env, task.task_id, task.status === "running");
+        } catch {
+          dispatchPending = true;
+        }
+      }
+      const terminal = ["succeeded", "failed", "cancelled"].includes(task.status);
+      return Response.json({
+        taskId: task.task_id,
+        status: task.status,
+        dispatchPending
+      }, { status: terminal ? 200 : 202, headers: JSON_HEADERS2 });
+    }
+
+    const taskMatch = url.pathname.match(/^\/api\/agent-tasks\/([A-Za-z0-9_-]{1,100})$/);
+    if (taskMatch && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      let task;
+      try {
+        task = await getAgentTask(env.DB, taskMatch[1]);
+      } catch {
+        return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+      if (!task) return Response.json({ error: "task_not_found" }, { status: 404, headers: JSON_HEADERS2 });
+      return Response.json({
+        taskId: task.task_id,
+        status: task.status,
+        attempts: Number(task.attempts || 0),
+        maxAttempts: Number(task.max_attempts || 0),
+        nextAttemptAt: task.next_attempt_at,
+        stopReason: task.stop_reason,
+        lastErrorClass: task.last_error_class,
+        createdAt: task.created_at,
+        updatedAt: task.updated_at,
+        result: task.checkpoint?.result ?? null
+      }, { status: 200, headers: JSON_HEADERS2 });
+    }
+
     if (url.pathname === "/sync/status" && request.method === "GET") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       const response = await doFetch(env, "status");
@@ -11145,6 +11398,15 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === TASK_RECOVERY_CRON) {
+      try {
+        const recovery = await recoverAgentTaskWorkflows(env, 5);
+        if (recovery.dispatched > 0 || recovery.deferred > 0) console.log(JSON.stringify({ agentTaskRecovery: recovery }));
+      } catch {
+        console.log(JSON.stringify({ agentTaskRecovery: { ok: false } }));
+      }
+      return;
+    }
     if (event.cron === PULL_CRON) {
       try {
         await drainSyncOutbox(env, 10);
@@ -11164,7 +11426,4 @@ var wrapper_default = {
     return worker_default.scheduled(event, env, ctx);
   }
 };
-export {
-  YjsClientDO,
-  wrapper_default as default
-};
+export {\n  AgentTaskWorkflow,\n  YjsClientDO,\n  wrapper_default as default\n};
