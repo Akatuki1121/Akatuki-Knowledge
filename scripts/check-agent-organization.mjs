@@ -20,7 +20,9 @@ for (const contract of [
   "expires_at",
   "Date.parse(preview.expires_at) <= Date.now()",
   "確認時点の対象ノートだけを反映します",
-  "candidates.length > 1000"
+  "candidates.length > 1000",
+  "AND id IN (",
+  "env.DB.batch(statements)"
 ]) {
   assert.ok(source.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
 }

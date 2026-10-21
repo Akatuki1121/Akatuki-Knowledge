@@ -784,33 +784,46 @@ async function applyBulkAiPermission(env, chatId) {
   let credentials = 0;
   let skipped = 0;
   let alreadyAllowed = 0;
-  for (const candidate of candidates) {
-    const note = await env.DB.prepare("SELECT id, content, content_hash, ai_allowed FROM notes WHERE id = ? AND deleted_at IS NULL AND path IS NOT NULL").bind(candidate.id).first();
-    if (!note || typeof note.content !== "string" || await hashBulkAiPermissionContent(note.content) !== candidate.hash) {
-      skipped++;
-      continue;
+  for (let offset = 0; offset < candidates.length; offset += 50) {
+    const chunk = candidates.slice(offset, offset + 50);
+    const { results: rows } = await env.DB.prepare("SELECT id, content, content_hash, ai_allowed FROM notes WHERE deleted_at IS NULL AND path IS NOT NULL AND id IN (" + chunk.map(() => "?").join(", ") + ")").bind(...chunk.map((item) => item.id)).all();
+    const notesById = new Map((rows || []).map((row) => [String(row.id), row]));
+    const statements = [];
+    const actions = [];
+    for (const candidate of chunk) {
+      const note = notesById.get(candidate.id);
+      if (!note || typeof note.content !== "string" || await hashBulkAiPermissionContent(note.content) !== candidate.hash) {
+        skipped++;
+        continue;
+      }
+      const hasCredentials = inspectWholeContent(note.content, env).credentials;
+      if (hasCredentials) credentials++;
+      if (candidate.action === "allow" && (hasCredentials || note.ai_allowed === 1)) {
+        if (!hasCredentials) alreadyAllowed++;
+        skipped++;
+        continue;
+      }
+      if (candidate.action === "revoke" && (!hasCredentials || note.ai_allowed !== 1)) {
+        skipped++;
+        continue;
+      }
+      const statement = candidate.action === "allow"
+        ? env.DB.prepare("UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0 AND content_hash IS ? AND content = ?")
+            .bind(note.id, note.content_hash ?? null, note.content)
+        : env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?")
+            .bind(note.id, note.content_hash ?? null, note.content);
+      statements.push(statement);
+      actions.push(candidate.action);
     }
-    const hasCredentials = inspectWholeContent(note.content, env).credentials;
-    if (hasCredentials) credentials++;
-    if (candidate.action === "allow" && (hasCredentials || note.ai_allowed === 1)) {
-      if (!hasCredentials) alreadyAllowed++;
-      skipped++;
-      continue;
+    if (statements.length) {
+      const batchResults = await env.DB.batch(statements);
+      batchResults.forEach((result, index) => {
+        if (result.meta?.changes) {
+          if (actions[index] === "allow") changed++;
+          else revoked++;
+        } else skipped++;
+      });
     }
-    if (candidate.action === "revoke" && (!hasCredentials || note.ai_allowed !== 1)) {
-      skipped++;
-      continue;
-    }
-    const statement = candidate.action === "allow"
-      ? env.DB.prepare("UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0 AND content_hash IS ? AND content = ?")
-          .bind(note.id, note.content_hash ?? null, note.content)
-      : env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?")
-          .bind(note.id, note.content_hash ?? null, note.content);
-    const result = await statement.run();
-    if (result.meta?.changes) {
-      if (candidate.action === "allow") changed++;
-      else revoked++;
-    } else skipped++;
   }
   await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ? AND status = 'pending'").bind(chatId).run();
   return "AI送信許可の一括反映が完了しました。\n"
