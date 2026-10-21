@@ -758,6 +758,11 @@ async function applyBulkAiPermission(env, chatId) {
   if (!preview || preview.status !== "pending") {
     return "先に「AI送信許可を一括確認して」で対象件数を確認してください。許可設定は変更していません。";
   }
+  const latestAssistant = await env.DB.prepare("SELECT content, created_at FROM telegram_messages WHERE chat_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1").bind(chatId).first();
+  if (!latestAssistant?.content?.includes("AI送信許可の一括反映待ちです")
+    || Date.parse(latestAssistant.created_at) < Date.parse(preview.created_at)) {
+    return "直近の確認結果と一致しないため、反映を中止しました。もう一度「AI送信許可を一括確認して」と送ってください。ノートは変更していません。";
+  }
   if (Date.parse(preview.expires_at) <= Date.now()) {
     await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ?").bind(chatId).run();
     return "一括許可の確認が期限切れです。もう一度「AI送信許可を一括確認して」と送ってください。ノートは変更していません。";
