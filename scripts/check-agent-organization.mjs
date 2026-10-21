@@ -25,6 +25,18 @@ for (const contract of [
   assert.ok(source.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
 }
 
+const previewMigration = await readFile(new URL("../migrations/pending/0012_bot_ai_permission_previews.sql", import.meta.url), "utf8");
+for (const contract of [
+  "CREATE TABLE bot_ai_permission_previews",
+  "chat_id TEXT PRIMARY KEY",
+  "candidates_json TEXT NOT NULL",
+  "expires_at TEXT NOT NULL",
+  "CHECK (status IN ('pending'))",
+  "idx_bot_ai_permission_previews_expiry"
+]) {
+  assert.ok(previewMigration.includes(contract), "Missing bulk AI permission preview schema contract: " + contract);
+}
+
 const migration = await readFile(new URL("../migrations/pending/0010_bot_organization_candidates.sql", import.meta.url), "utf8");
 
 for (const contract of [
