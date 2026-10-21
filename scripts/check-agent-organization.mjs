@@ -10,12 +10,17 @@ for (const contract of [
   "inspectWholeContent(content, env).credentials",
   "AI送信許可の一括反映待ちです",
   "AI送信許可を一括反映して",
-  "env.DB.batch(batch)",
   "sensitivity = 'user-approved'",
   "sensitivity = 'credentials'",
   "content_hash IS ? AND content = ?",
   "反映前に内容が変更され、処理を見送ったノート",
-  "AI送信許可の一括確認が完了しました"
+  "AI送信許可の一括確認が完了しました",
+  "bot_ai_permission_previews",
+  "hashBulkAiPermissionContent",
+  "expires_at",
+  "Date.parse(preview.expires_at) <= Date.now()",
+  "確認時点の対象ノートだけを反映します",
+  "candidates.length > 1000"
 ]) {
   assert.ok(source.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
 }
