@@ -29,6 +29,10 @@ const UUID = randomUUID();
 const TEST_PATH = "Integration/roundtrip.md";
 const RENAMED_PATH = "Integration/Renamed-roundtrip.md";
 const WRANGLER = ["--yes", "wrangler@4.69.0"];
+const TEST_STARTED_AT = Date.now();
+function markPhase(label) {
+  console.log(`[integration timing +${((Date.now() - TEST_STARTED_AT) / 1000).toFixed(1)}s] ${label}`);
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -252,6 +256,7 @@ function noteContent(text) {
 }
 
 async function main() {
+  markPhase("開始");
   const stateDir = await mkdtemp(join(tmpdir(), "knowledge-yaos-e2e-"));
   let worker;
   let yaosWorker;
@@ -344,6 +349,7 @@ SYNC_TOKEN = "${TOKEN}"
       "--local", "--file=./migrations/pending/0009_yaos_sync_jobs.sql",
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
+    markPhase("ローカルD1の準備完了");
 
     async function startWorker() {
       worker = spawn("npx", [
@@ -431,6 +437,7 @@ SYNC_TOKEN = "${TOKEN}"
     }
 
     await startWorker();
+    markPhase("Knowledge Worker起動完了");
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
@@ -473,6 +480,7 @@ SYNC_TOKEN = "${TOKEN}"
 
     notes = await getNotes();
     assert.ok(notes.some(item => item.id === noteId && item.path === RENAMED_PATH), "restored note remains under renamed path");
+    markPhase("作成・更新・改名・削除・復元完了");
 
     // Prove retry behavior with a controlled, temporary local auth failure.
     // The first attempt must remain pending; after restoring the local YAOS
@@ -505,6 +513,7 @@ SYNC_TOKEN = "${TOKEN}"
     }, "outbox job to retry after YAOS auth is restored", 30000).catch(error => {
       throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}`);
     });
+    markPhase("認証失敗後の再試行完了");
 
     // Connect the independent Yjs client directly to the YAOS Worker. The
     // Knowledge Worker exposes only its own routes on the public local port;
@@ -523,6 +532,7 @@ SYNC_TOKEN = "${TOKEN}"
     const deadBeforeConflict = await currentDeadCount();
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
+    markPhase("競合拒否の検証完了");
     console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
   } finally {
     await stopProcessTree(worker);
