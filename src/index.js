@@ -318,12 +318,18 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。背景タスクは /task 内容、状態確認は /task_status ID でできます。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。背景タスクは /task 内容、状態確認は /task_status ID でできます。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
     } else if (/^\/task(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2);
     } else if (/^\/task_status(?:@\w+)?(?:\s|$)/u.test(text2)) {
       const taskIdMatch = text2.match(/^\/task_status(?:@\w+)?(?:\s+([A-Za-z0-9_-]{1,100}))?\s*$/u);
       reply = await getTelegramBackgroundTaskStatus(env, taskIdMatch?.[1] || "");
+    } else if (isBulkAiPermissionApproval(text2)) {
+      reply = await applyBulkAiPermission(env, chatId);
+    } else if (isBulkAiPermissionRejection(text2)) {
+      reply = await rejectBulkAiPermission(env, chatId);
+    } else if (isBulkAiPermissionRequest(text2)) {
+      reply = await proposeBulkAiPermission(env);
     } else if (isFolderOrganizationApproval(text2)) {
       reply = await applyLatestFolderOrganization(env, chatId);
     } else if (isFolderOrganizationRejection(text2)) {
@@ -668,6 +674,86 @@ ${saved}`.slice(0, 3500);
 __name(summarizeConversationToKnowledge, "summarizeConversationToKnowledge");
 function isFolderOrganizationRequest(message) {
   return /(?:フォルダ|フォルダー|ディレクトリ).{0,12}(?:整理|分類|構成を見直|再編)|(?:ノート|メモ).{0,12}(?:フォルダ|フォルダー).{0,12}(?:整理|移動案)/u.test(message.trim());
+}
+function isBulkAiPermissionRequest(message) {
+  return /^(?:AI送信許可|AI許可)を?(?:安全に)?一括(?:確認|設定|許可)(?:して)?[。.!！]?$/u.test(message.trim());
+}
+function isBulkAiPermissionApproval(message) {
+  return /^(?:AI送信許可|AI許可)を一括反映して[。.!！]?$/u.test(message.trim());
+}
+function isBulkAiPermissionRejection(message) {
+  return /^(?:AI送信許可|AI許可)の一括許可案を(?:却下して|取り下げて|やめて)[。.!！]?$/u.test(message.trim());
+}
+async function inspectBulkAiPermissionCandidates(env) {
+  const { results } = await env.DB.prepare("SELECT id, content, content_hash, ai_allowed FROM notes WHERE deleted_at IS NULL AND path IS NOT NULL").all();
+  let credentials = 0;
+  let alreadyAllowed = 0;
+  const eligible = [];
+  const credentialAllowed = [];
+  for (const note of results || []) {
+    const content = typeof note.content === "string" ? note.content : "";
+    const candidate = { id: note.id, content, contentHash: note.content_hash ?? null };
+    if (inspectWholeContent(content, env).credentials) {
+      credentials++;
+      if (note.ai_allowed === 1) credentialAllowed.push(candidate);
+      continue;
+    }
+    if (note.ai_allowed === 1) alreadyAllowed++;
+    else eligible.push(candidate);
+  }
+  return { total: (results || []).length, eligible, credentials, credentialAllowed, alreadyAllowed };
+}
+async function proposeBulkAiPermission(env) {
+  const scan = await inspectBulkAiPermissionCandidates(env);
+  if (!scan.eligible.length && !scan.credentialAllowed.length) {
+    return "AI送信許可の一括確認が完了しました。対象ノート: " + scan.total + "件 / 新たに許可できるノート: 0件 / 認証情報を検出: " + scan.credentials + "件 / 既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件。ノートは変更していません。";
+  }
+  return "AI送信許可の一括反映待ちです。\n"
+    + "対象ノート: " + scan.total + "件\n"
+    + "新たに許可できるノート: " + scan.eligible.length + "件\n"
+    + "認証情報を検出: " + scan.credentials + "件（許可対象から除外し、既に許可済みなら許可を解除）\n"
+    + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n\n"
+    + "この時点では設定を変更していません。許可対象を確認し、反映する場合だけ「AI送信許可を一括反映して」と送ってください。反映時にも全ノートを再検査します。";
+}
+async function applyBulkAiPermission(env, chatId) {
+  const latestAssistant = await env.DB.prepare("SELECT content FROM telegram_messages WHERE chat_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1").bind(chatId).first();
+  if (!latestAssistant?.content?.includes("AI送信許可の一括反映待ちです")) {
+    return "先に「AI送信許可を一括確認して」で対象件数を確認してください。許可設定は変更していません。";
+  }
+  const scan = await inspectBulkAiPermissionCandidates(env);
+  let revoked = 0;
+  for (let offset = 0; offset < scan.credentialAllowed.length; offset += 50) {
+    const candidates = scan.credentialAllowed.slice(offset, offset + 50);
+    const batch = candidates.map((candidate) => env.DB.prepare(
+      "UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?"
+    ).bind(candidate.id, candidate.contentHash, candidate.content));
+    const results = await env.DB.batch(batch);
+    revoked += results.reduce((sum, result) => sum + (result.meta?.changes || 0), 0);
+  }
+  let changed = 0;
+  for (let offset = 0; offset < scan.eligible.length; offset += 50) {
+    const candidates = scan.eligible.slice(offset, offset + 50);
+    const batch = candidates.map((candidate) => env.DB.prepare(
+      "UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0 AND content_hash IS ? AND content = ?"
+    ).bind(candidate.id, candidate.contentHash, candidate.content));
+    const results = await env.DB.batch(batch);
+    changed += results.reduce((sum, result) => sum + (result.meta?.changes || 0), 0);
+  }
+  const skippedChanged = scan.eligible.length - changed;
+  const skippedRevocation = scan.credentialAllowed.length - revoked;
+  return "AI送信許可の一括反映が完了しました。\n"
+    + "新たに許可: " + changed + "件\n"
+    + "認証情報を検出: " + scan.credentials + "件\n"
+    + "認証情報検出により許可解除: " + revoked + "件\n"
+    + "反映前に内容が変更され、処理を見送ったノート: " + (skippedChanged + skippedRevocation) + "件\n"
+    + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n"
+    + "対象ノート総数: " + scan.total + "件\n\n"
+    + "各ノートは検査時の本文と更新直前の本文が一致する場合だけ変更しました。";
+}
+async function rejectBulkAiPermission(env, chatId) {
+  const latestAssistant = await env.DB.prepare("SELECT content FROM telegram_messages WHERE chat_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1").bind(chatId).first();
+  if (!latestAssistant?.content?.includes("AI送信許可の一括反映待ちです")) return "取り下げる一括許可案はありません。ノートは変更していません。";
+  return "AI送信許可の一括許可案を取り下げました。ノートは変更していません。";
 }
 function isFolderOrganizationApproval(message) {
   return /^(?:フォルダ|フォルダー)整理案を(?:反映して|実行して|適用して)[。.!！]?$/u.test(message.trim());
