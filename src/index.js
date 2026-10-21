@@ -15,105 +15,6 @@ import {
   listRecoverableAgentTasks,
   toSqliteDateTime
 } from "./background-task-store.mjs";
-var UI_HTML = `<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark"><title>Akatuki Knowledge</title>
-  <style>
-    :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.55;color-scheme:light dark}*{box-sizing:border-box}body{margin:0 auto;padding:24px;max-width:900px}h1{font-size:1.5rem;margin-bottom:.25rem}.muted{opacity:.72;font-size:.92rem}label{display:block;font-weight:600;margin:14px 0 6px}input,textarea,button{font:inherit;border-radius:8px;border:1px solid #888;padding:10px;width:100%}textarea{min-height:100px;resize:vertical}button{width:auto;cursor:pointer;margin-top:8px}.row{display:flex;gap:8px;align-items:center}.row input{flex:1}.panel{border:1px solid #8887;border-radius:12px;padding:16px;margin-top:18px}.result{border-top:1px solid #8885;padding:12px 0}.result:first-child{border-top:0}.path{font-size:.85rem;opacity:.75;overflow-wrap:anywhere}.answer{white-space:pre-wrap;overflow-wrap:anywhere}.status{min-height:1.5em;margin-top:8px}.source{font-size:.9rem;margin:8px 0}.hidden{display:none}@media(max-width:600px){body{padding:14px}.row{align-items:stretch;flex-direction:column}.row button{width:100%}}
-  </style>
-</head>
-<body>
-  <h1>Akatuki Knowledge</h1>
-  <p class="muted">Obsidian\u30E1\u30E2\u306E\u691C\u7D22\u3068\u8CEA\u554F\u3002API\u30C8\u30FC\u30AF\u30F3\u306F\u3053\u306E\u753B\u9762\u306E\u30E1\u30E2\u30EA\u5185\u3060\u3051\u3067\u6271\u3044\u3001\u4FDD\u5B58\u3057\u307E\u305B\u3093\u3002</p>
-  <p class="muted">Obsidian\u3068Telegram\u306E\u30CE\u30FC\u30C8\u3092\u691C\u7D22\u3067\u304D\u307E\u3059\u3002\u8B58\u5225\u60C5\u5831\u3068\u8A2D\u5B9A\u3057\u305F\u30D6\u30ED\u30C3\u30AF\u30EA\u30B9\u30C8\u8A9E\u306F\u7F6E\u63DB\u3057\u3066AI\u6574\u7406\u3057\u3001\u8A8D\u8A3C\u60C5\u5831\u3092\u542B\u3080\u30CE\u30FC\u30C8\u306FAI\u3078\u9001\u308A\u307E\u305B\u3093\u3002</p>
-  <section class="panel">
-    <label for="token">API\u30C8\u30FC\u30AF\u30F3</label>
-    <input id="token" type="password" autocomplete="off" placeholder="Cloudflare\u306B\u8A2D\u5B9A\u3057\u305F API_TOKEN">
-    <label for="query">\u30E1\u30E2\u3092\u691C\u7D22</label>
-    <div class="row"><input id="query" placeholder="\u4F8B\uFF1AObsidian \u81EA\u52D5\u6574\u7406"><button id="search">\u691C\u7D22</button></div>
-    <div id="results" aria-live="polite"></div>
-  </section>
-  <section class="panel">
-    <div class="row"><div style="flex:1"><strong>AI\u9001\u4FE1\u306E\u8A31\u53EF\u7BA1\u7406</strong><div class="muted">\u30CE\u30FC\u30C8\u306F\u521D\u671F\u72B6\u614B\u3067\u9001\u4FE1\u4E0D\u53EF\u3002\u8A31\u53EF\u3057\u305F\u3082\u306E\u3060\u3051AI\u6A5F\u80FD\u306B\u4F7F\u3044\u307E\u3059\u3002</div></div><button id="loadNotes">\u4E00\u89A7\u3092\u8AAD\u307F\u8FBC\u3080</button></div>
-    <div id="notesForAi"></div>
-  </section>
-  <section class="panel">
-    <label for="question">\u30E1\u30E2\u3092\u3082\u3068\u306B\u8CEA\u554F\u3059\u308B</label>
-    <textarea id="question" placeholder="\u4F8B\uFF1A\u4EE5\u524D\u6C7A\u3081\u305F\u77E5\u8B58\u6574\u7406\u306E\u65B9\u91DD\u306F\uFF1F"></textarea>
-    <button id="previewAsk">\u9001\u4FE1\u5185\u5BB9\u3092\u78BA\u8A8D</button>
-    <div id="previewArea" class="hidden">
-      <p class="muted">\u4EE5\u4E0B\u304CGemini\u3078\u9001\u3089\u308C\u308B\u6700\u7D42\u30D7\u30ED\u30F3\u30D7\u30C8\u3067\u3059\u3002\u5185\u5BB9\u3092\u78BA\u8A8D\u3057\u3066\u304B\u3089\u9001\u4FE1\u3057\u3066\u304F\u3060\u3055\u3044\u3002</p>
-      <pre id="payloadPreview" class="answer" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
-      <p id="riskInfo" class="muted"></p>
-      <button id="confirmAsk" disabled>\u3053\u306E\u5185\u5BB9\u3092Gemini\u306B\u9001\u4FE1</button>
-    </div>
-    <div id="answer" class="answer" aria-live="polite"></div>
-    <div id="sources"></div>
-  </section>
-  <section class="panel">
-    <div class="row"><div style="flex:1"><strong>\u624B\u52D5\u3067\u81EA\u52D5\u6574\u7406\u3092\u5B9F\u884C</strong><div class="muted">AI\u9001\u4FE1\u3092\u8A31\u53EF\u3057\u305F\u30CE\u30FC\u30C8\u3060\u3051\u3092\u6700\u59275\u4EF6\u51E6\u7406\u3057\u307E\u3059\u3002</div></div><button id="organize">\u4ECA\u3059\u3050\u6574\u7406</button></div>
-    <p class="muted">\u5B9A\u671F\u51E6\u7406\u306F\u521D\u671F\u72B6\u614B\u3067\u7121\u52B9\u3067\u3059\u3002\u6709\u52B9\u5316\u3059\u308B\u5834\u5408\u306F\u3001\u9001\u4FE1\u5BFE\u8C61\u3068\u7121\u6599\u67A0\u3092\u78BA\u8A8D\u3057\u3066\u304B\u3089\u8A2D\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002</p>
-  </section>
-  <p id="status" class="status muted" role="status"></p>
-<script>
-  const $ = (id) => document.getElementById(id);
-  function token(){ return $('token').value.trim(); }
-  async function api(path, options={}){
-    if(!token()) throw new Error('API\u30C8\u30FC\u30AF\u30F3\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002');
-    const response = await fetch(path,{...options,headers:{authorization:\`Bearer \${token()}\`,'content-type':'application/json',...(options.headers||{})}});
-    const data = await response.json().catch(()=>({}));
-    if(!response.ok) throw new Error(data.error || \`HTTP \${response.status}\`);
-    return data;
-  }
-  function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-  function status(message){$('status').textContent=message;}
-  $('search').addEventListener('click',async()=>{
-    const q=$('query').value.trim(); if(q.length<2){status('2\u6587\u5B57\u4EE5\u4E0A\u3067\u691C\u7D22\u3057\u3066\u304F\u3060\u3055\u3044\u3002');return;}
-    status('\u691C\u7D22\u4E2D\u2026');$('results').innerHTML='';
-    try{const data=await api(\`/api/search?q=\${encodeURIComponent(q)}\`);$('results').innerHTML=data.results.length?data.results.map(n=>\`<article class="result"><strong>\${esc(n.title)}</strong><div class="path">\${esc(n.source==='telegram'?'Telegram':n.path||'')}</div><p>\${esc(n.summary||n.excerpt||'')}</p><div class="muted">\${esc((n.tags||[]).map(t=>'#'+t).join(' '))}</div><button data-related-id="\${esc(n.id)}">\u95A2\u9023\u30CE\u30FC\u30C8\u3092\u8868\u793A</button><div data-related-list="\${esc(n.id)}"></div></article>\`).join(''):'\u8A72\u5F53\u3059\u308B\u30E1\u30E2\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F\u3002';bindRelatedButtons();status(\`\${data.results.length}\u4EF6\`);}catch(e){status(e.message);}
-  });
-  let previewReady = false;
-  let confirmationToken = '';
-  $('previewAsk').addEventListener('click',async()=>{
-    const question=$('question').value.trim();if(!question){status('\u8CEA\u554F\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002');return;}
-    previewReady=false;$('confirmAsk').disabled=true;$('previewArea').classList.remove('hidden');$('payloadPreview').textContent='';$('answer').textContent='';$('sources').innerHTML='';
-    status('\u9001\u4FE1\u5185\u5BB9\u3092\u691C\u67FB\u4E2D\u2026');
-    try{
-      const data=await api('/api/ai-preview',{method:'POST',body:JSON.stringify({question})});
-      $('payloadPreview').textContent=data.payloadPreview||data.message||'\u9001\u4FE1\u3067\u304D\u307E\u305B\u3093\u3002';
-      const findings=(data.findings||[]).join(', ')||'\u30D1\u30BF\u30FC\u30F3\u691C\u51FA\u306A\u3057';
-      $('riskInfo').textContent=\`\u9001\u4FE1\u53EF\u80FD: \${data.sendable?'\u306F\u3044':'\u3044\u3044\u3048'} / \u691C\u51FA: \${findings}\${data.blockedNotes?.length?\` / \u9664\u5916\u30CE\u30FC\u30C8: \${data.blockedNotes.length}\u4EF6\`:''}\`;
-      previewReady=Boolean(data.sendable);confirmationToken=data.confirmationToken||'';$('confirmAsk').disabled=!previewReady||!confirmationToken;
-      status(previewReady?'\u5185\u5BB9\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002':'\u9001\u4FE1\u3067\u304D\u306A\u3044\u5834\u5408\u306F\u3001\u672A\u8A31\u53EF\u30CE\u30FC\u30C8\u3084\u8A8D\u8A3C\u60C5\u5831\u306E\u691C\u51FA\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002');
-    }catch(e){$('payloadPreview').textContent=e.message;status(e.message);}
-  });
-  $('confirmAsk').addEventListener('click',async()=>{
-    if(!previewReady)return;
-    $('confirmAsk').disabled=true;status('Gemini\u3078\u9001\u4FE1\u4E2D\u2026');$('answer').textContent='';$('sources').innerHTML='';
-    try{const data=await api('/api/ask',{method:'POST',body:JSON.stringify({question:$('question').value.trim(),confirmSend:true,confirmationToken})});$('answer').textContent=data.answer||'';$('sources').innerHTML=(data.sources||[]).map((s,i)=>\`<div class="source">[\${i+1}] \${esc(s.title)}<div class="path">\${esc(s.id)}</div></div>\`).join('');status('\u56DE\u7B54\u3057\u307E\u3057\u305F\u3002');}
-    catch(e){status(e.message);if(e.message.includes('\u30D7\u30EC\u30D3\u30E5\u30FC\u5F8C\u306B\u9001\u4FE1\u5185\u5BB9\u304C\u5909\u308F\u3063\u305F')){$('confirmAsk').disabled=true;}}finally{previewReady=false;confirmationToken='';}
-  });
-  $('loadNotes').addEventListener('click',async()=>{
-    status('\u30CE\u30FC\u30C8\u4E00\u89A7\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026');
-    try{
-      const data=await api('/api/notes?limit=100');
-      $('notesForAi').innerHTML=data.notes.length?data.notes.map(n=>\`<div class="result"><strong>\${esc(n.title)}</strong><div class="path">\${esc(n.source==='telegram'?'Telegram':n.path||'')} / \${esc(n.reviewState)}</div><div class="muted">\${esc((n.tags||[]).map(t=>'#'+t).join(' '))}\${n.aiTags?.length?\` / AI: \${esc(n.aiTags.map(t=>'#'+t).join(' '))}\`:''}</div><label style="font-weight:400"><input type="checkbox" data-note-id="\${esc(n.id)}" \${n.aiAllowed?'checked':''} style="width:auto;margin-right:8px">AI\u9001\u4FE1\u3092\u8A31\u53EF\u3059\u308B</label><button data-related-id="\${esc(n.id)}">\u95A2\u9023\u30CE\u30FC\u30C8\u3092\u8868\u793A</button><div data-related-list="\${esc(n.id)}"></div></div>\`).join(''):'\u30CE\u30FC\u30C8\u304C\u3042\u308A\u307E\u305B\u3093\u3002';bindRelatedButtons();
-      $('notesForAi').querySelectorAll('input[data-note-id]').forEach(input=>input.addEventListener('change',async()=>{
-        const id=input.dataset.noteId;input.disabled=true;
-        try{await api(\`/api/notes/\${encodeURIComponent(id)}/ai-permission\`,{method:'POST',body:JSON.stringify({allowed:input.checked})});status('\u8A31\u53EF\u72B6\u614B\u3092\u66F4\u65B0\u3057\u307E\u3057\u305F\u3002');}
-        catch(e){input.checked=!input.checked;status(e.message);}finally{input.disabled=false;}
-      }));
-      status(\`\${data.notes.length}\u4EF6\u306E\u30CE\u30FC\u30C8\`);
-    }catch(e){status(e.message);}
-  });
-  $('organize').addEventListener('click',async()=>{status('\u6574\u7406\u4E2D\u2026');try{const data=await api('/api/organize',{method:'POST',body:JSON.stringify({})});status(\`\u6574\u7406\u5BFE\u8C61 \${data.considered}\u4EF6 / \u6210\u529F \${data.organized}\u4EF6 / \u5931\u6557 \${data.failed}\u4EF6\`);}catch(e){status(e.message);}});
-  function bindRelatedButtons(){document.querySelectorAll('button[data-related-id]').forEach(button=>button.onclick=async()=>{const id=button.dataset.relatedId;const list=document.querySelector(\`[data-related-list="\${CSS.escape(id)}"]\`);button.disabled=true;try{const data=await api(\`/api/notes/\${encodeURIComponent(id)}/related\`);list.innerHTML=data.related.length?data.related.map(n=>\`<div class="source"><strong>\${esc(n.title)}</strong><div class="path">\${esc(n.source==='telegram'?'Telegram':n.path||'')}</div></div>\`).join(''):'\u95A2\u9023\u30CE\u30FC\u30C8\u306F\u307E\u3060\u3042\u308A\u307E\u305B\u3093\u3002';}catch(e){list.textContent=e.message;}finally{button.disabled=false;}});}
-<\/script>
-</body>
-</html>
-`;
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 var MAX_BODY_BYTES = 1024 * 1024;
 var MAX_NOTES_PER_SYNC = 20;
@@ -155,9 +56,6 @@ var worker_default = {
         console.error("request failed");
         return json({ error: "Request failed. Check Worker logs for details." }, 500);
       }
-    }
-    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-      return new Response(UI_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" } });
     }
     return new Response("Not found", { status: 404 });
   },
