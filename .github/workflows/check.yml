@@ -95,8 +95,11 @@ jobs:
         run: python3 scripts/test_worker_sql_compatibility.py
 
   yaos-worker-integration:
-    needs: [changed-files, syntax-and-contract]
-    if: needs.changed-files.outputs.integration == 'true' && needs.syntax-and-contract.result == 'success'
+    # Run independently to reduce wall-clock time; isolated integration tests
+    # do not deploy or mutate production resources. A failed contract job may
+    # still spend CI minutes here, trading some cost for faster feedback.
+    needs: changed-files
+    if: needs.changed-files.outputs.integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
