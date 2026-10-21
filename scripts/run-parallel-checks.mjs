@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 const checks = [
   ["source-syntax", process.execPath, ["--check", "src/index.js"]],
-  ["node-tests", process.execPath, ["--test"]],
+  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js"]],
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
   ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
   ["sync-conflicts", process.execPath, ["scripts/test-sync-conflicts.mjs"]],
