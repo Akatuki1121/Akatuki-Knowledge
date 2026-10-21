@@ -10825,7 +10825,7 @@ var YjsClientDO = class extends DurableObject {
         owners.push({ fileId, path, uuid });
         vaultUuidOwners.set(uuid, owners);
       }
-      if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
+      if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.split("/")[0].toLowerCase() === "templates" || path.startsWith(RESERVED_ROOT + "/")) return;
       vaultFiles++;
       const key = norm(path);
       const entries = paths.get(key) || [];
@@ -10944,7 +10944,7 @@ var YjsClientDO = class extends DurableObject {
         statements.push(this.env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(row.id, row.path, row.title, row.content, row.content_hash, now));
         statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, sync_uuid = ?, imported_at = ?, updated_at = ? WHERE id = ?").bind(candidate.desired, hash, candidate.uuid, now, now, row.id));
         d1Updated++;
-      } else {
+      } else if (row.sync_uuid !== candidate.uuid) {
         statements.push(this.env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(candidate.uuid, row.id));
       }
     }
@@ -11983,7 +11983,7 @@ var wrapper_default = {
         const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
         await persistRecoveryDiagnostics(env, reconcile);
-        if (!reconcileResponse.ok || !reconcile.ok || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
+        if (!reconcileResponse.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
         }
       } catch (error) {
