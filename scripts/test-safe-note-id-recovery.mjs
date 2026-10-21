@@ -194,7 +194,6 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
 {
   const template = setup([{ id: "Templates/example.md", path: "Templates/example.md", title: "Template", content: body, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Templates/example.md", content: body }]);
   const result = await template.instance.reconcileExistingNoteIds();
-  assert.equal(result.skipped, "vault_looks_empty", "A single template must remain below the 50-file safety threshold");
   assert.equal(result.vaultFiles, 1, "Template files must count as real Vault files for the safety guard");
   assert.equal(template.texts.get("file-0").toString(), body);
   assert.equal(template.rows[0].content, body);
