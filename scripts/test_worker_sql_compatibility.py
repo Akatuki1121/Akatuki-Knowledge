@@ -6,7 +6,7 @@ from pathlib import Path
 
 SOURCE = Path("src/index.js")
 SCHEMA = Path("schema-snapshots/live-d1-schema-2026-10-19.sql")
-PENDING_MIGRATIONS = [Path("migrations/pending/0009_yaos_sync_jobs.sql"), Path("migrations/pending/0010_bot_organization_candidates.sql"), Path("migrations/pending/0011_agent_tasks.sql")]
+PENDING_MIGRATIONS = [Path("migrations/pending/0009_yaos_sync_jobs.sql"), Path("migrations/pending/0010_bot_organization_candidates.sql"), Path("migrations/pending/0011_agent_tasks.sql"), Path("migrations/pending/0012_bot_ai_permission_previews.sql")]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
     r'"((?:\\.|[^"\\])*)"'
@@ -64,6 +64,14 @@ for match in CALL_RE.finditer(source):
     query = decode_js_string(raw).strip()
     if not SQL_WORD.search(query):
         continue
+    # A string literal continued with "+" is a dynamically built statement. The only
+    # supported shape is a trailing placeholder list: "... IN (" + placeholders + ")".
+    if source[match.end():].lstrip().startswith("+"):
+        if re.search(r"\bIN\s*\($", query, re.IGNORECASE):
+            query += "?)"
+        else:
+            skipped_dynamic += 1
+            continue
     query_variants = list(variants(query))
     if not query_variants:
         skipped_dynamic += 1
