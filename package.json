@@ -5,6 +5,6 @@
   "description": "Cloudflare Worker and D1-backed knowledge service",
   "scripts": {
     "check": "node scripts/run-parallel-checks.mjs",
-    "check:sync": "node scripts/run-parallel-checks.mjs"
+    "check:sync": "node scripts/run-parallel-checks.mjs --sync-only"
   }
 }
