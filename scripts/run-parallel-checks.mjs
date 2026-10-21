@@ -63,8 +63,6 @@ async function worker() {
 
 await Promise.all(Array.from({ length: limit }, () => worker()));
 const results = await Promise.all(running);
-const completedNames = new Set(results.map((result) => result.name));
-const passedOrFailed = checks.length - (failed ? 0 : 0);
 if (failed || results.some((result) => result.code !== 0)) {
   console.error("Parallel checks failed.");
   process.exitCode = 1;
