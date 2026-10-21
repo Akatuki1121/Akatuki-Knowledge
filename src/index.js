@@ -10361,6 +10361,10 @@ function buildFolderPath(folders, folderId) {
 __name(buildFolderPath, "buildFolderPath");
 var SCHEMA_VERSION = 3;
 var SYNC_TIMEOUT_MS = 2e4;
+function configuredSyncDelay(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1e4 ? parsed : fallback;
+}
 var IDLE_AFTER_SYNC_MS = 2e3;
 var MSG_SYNC = 0;
 var SYNC_STEP1 = 0;
@@ -10461,7 +10465,7 @@ var YjsClientDO = class extends DurableObject {
           const changed = mutate(doc2);
           if (changed > 0) {
             ws.send(encodeSyncFrame(SYNC_UPDATE, encodeStateAsUpdate(doc2, before)));
-            setTimeout(() => finish(null), PUSH_SETTLE_MS);
+            setTimeout(() => finish(null), configuredSyncDelay(this.env.SYNC_PUSH_SETTLE_MS, PUSH_SETTLE_MS));
           } else {
             finish(null);
           }
@@ -10490,7 +10494,7 @@ var YjsClientDO = class extends DurableObject {
           if (subType === SYNC_STEP2) gotStep2 = true;
           if (gotStep2) {
             clearTimeout(idleTimer);
-            idleTimer = setTimeout(settleOrPush, IDLE_AFTER_SYNC_MS);
+            idleTimer = setTimeout(settleOrPush, configuredSyncDelay(this.env.SYNC_IDLE_AFTER_MS, IDLE_AFTER_SYNC_MS));
           }
         } catch (err) {
           finish(new Error(`decode_failed_${String(err)}`));
