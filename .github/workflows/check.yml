@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
+      checks: ${{ steps.filter.outputs.checks }}
+      worker_build: ${{ steps.filter.outputs.worker_build }}
       integration: ${{ steps.filter.outputs.integration }}
     steps:
       # Pull-request path filtering uses the GitHub API; the checked-out
@@ -39,6 +41,23 @@ jobs:
         id: filter
         with:
           filters: |
+            checks:
+              - 'src/**'
+              - 'scripts/**'
+              - 'tests/**'
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'docs/**'
+              - '.github/workflows/**'
+            worker_build:
+              - 'src/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/check.yml'
             integration:
               - 'src/**'
               - 'scripts/test_yaos_worker_integration.mjs'
@@ -52,6 +71,8 @@ jobs:
               - '.github/workflows/check.yml'
 
   syntax-and-contract:
+    needs: changed-files
+    if: needs.changed-files.outputs.checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -66,6 +87,7 @@ jobs:
       - name: Validate recovered migration chain and full schema shape
         run: python3 scripts/test_recovered_migration_chain.py
       - name: Validate Wrangler config and build without deploying
+        if: needs.changed-files.outputs.worker_build == 'true'
         run: npx --yes wrangler@4.69.0 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
       - name: Validate reconstructed baseline in empty SQLite database
         run: python3 scripts/test_reconstructed_baseline.py
