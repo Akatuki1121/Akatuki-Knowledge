@@ -25,14 +25,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run check
-      # A merge must not deploy code that depends on a candidate D1 schema.
-      # Production migration and deployment are separate, explicitly reviewed steps.
+      # Check this before installing dependencies or running validation. If a
+      # reviewed D1 rollout is pending, this run cannot deploy and should exit
+      # without spending time on checks that cannot authorize deployment.
       - name: Gate deployment on pending D1 migrations
         id: migration_gate
         run: |
@@ -43,6 +38,15 @@ jobs:
           else
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/setup-node@v4
+        if: steps.migration_gate.outputs.allowed == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: steps.migration_gate.outputs.allowed == 'true'
+      - run: npm run check
+        if: steps.migration_gate.outputs.allowed == 'true'
       - name: Require Cloudflare deployment credential
         if: steps.migration_gate.outputs.allowed == 'true'
         env:
