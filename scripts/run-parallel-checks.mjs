@@ -10,6 +10,7 @@ const checks = [
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["background-task-store", process.execPath, ["scripts/check-background-task-store.mjs"]],
   ["background-task-workflow", process.execPath, ["scripts/check-background-task-workflow.mjs"]],
+  ["sync-telegram-agent-notifications", process.execPath, ["scripts/test-telegram-agent-notifications.mjs"]],
   ["agent-tasks-migration", "python3", ["scripts/test_agent_tasks_migration.py"]],
   ["agent-task-store-sql", "python3", ["scripts/test_agent_task_store_sql.py"]],
   ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
