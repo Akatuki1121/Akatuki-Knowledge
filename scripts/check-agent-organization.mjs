@@ -13,7 +13,7 @@ for (const contract of [
   "sensitivity = 'user-approved'",
   "sensitivity = 'credentials'",
   "content_hash IS ? AND content = ?",
-  "反映前に内容が変更され、処理を見送ったノート",
+  "内容変更・状態変化・競合で見送り",
   "AI送信許可の一括確認が完了しました",
   "bot_ai_permission_previews",
   "hashBulkAiPermissionContent",
