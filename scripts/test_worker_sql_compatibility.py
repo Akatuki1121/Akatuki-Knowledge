@@ -64,6 +64,14 @@ for match in CALL_RE.finditer(source):
     query = decode_js_string(raw).strip()
     if not SQL_WORD.search(query):
         continue
+    # A string literal continued with "+" is a dynamically built statement. The only
+    # supported shape is a trailing placeholder list: "... IN (" + placeholders + ")".
+    if source[match.end():].lstrip().startswith("+"):
+        if re.search(r"\bIN\s*\($", query, re.IGNORECASE):
+            query += "?)"
+        else:
+            skipped_dynamic += 1
+            continue
     query_variants = list(variants(query))
     if not query_variants:
         skipped_dynamic += 1
