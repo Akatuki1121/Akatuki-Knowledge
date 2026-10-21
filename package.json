@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Cloudflare Worker and D1-backed knowledge service",
   "scripts": {
-    "check": "node --check src/index.js && npm run check:sync && python3 scripts/test_agent_tasks_migration.py && python3 scripts/test_agent_task_store_sql.py && node scripts/check-agent-organization.mjs && node scripts/check-wrangler-config.mjs",
+    "check": "node --check src/index.js && node --test && npm run check:sync && python3 scripts/test_agent_tasks_migration.py && python3 scripts/test_agent_task_store_sql.py && node scripts/check-agent-organization.mjs && node scripts/check-wrangler-config.mjs",
     "check:sync": "node scripts/check-sync-contract.mjs && node scripts/test-sync-identity.mjs && node scripts/test-sync-conflicts.mjs && node scripts/test-safe-note-id-recovery.mjs && node scripts/test-background-task-policy.mjs && node scripts/check-background-task-store.mjs && node scripts/check-background-task-workflow.mjs"
   }
 }
