@@ -413,7 +413,10 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
     || (task.status === "waiting" && task.next_attempt_at <= now)
     || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
     try {
-      await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+      const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+      if (dispatchState === "restart_deferred") {
+        return "タスクは保存済みですが、既存の実行が停止しているため自動復旧待ちです。しばらくして /task_status " + task.task_id + " で確認してください。";
+      }
     } catch {
       return "タスクは保存しましたが、実行開始を確認できませんでした。しばらくして /task_status " + task.task_id + " で確認してください。";
     }
@@ -11669,7 +11672,8 @@ var wrapper_default = {
         || (task.status === "waiting" && task.next_attempt_at <= now)
         || (task.status === "running" && task.lease_expires_at && task.lease_expires_at <= now))) {
         try {
-          await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+          const dispatchState = await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+          if (dispatchState === "restart_deferred") dispatchPending = true;
         } catch {
           dispatchPending = true;
         }
