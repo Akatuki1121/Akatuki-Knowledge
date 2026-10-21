@@ -24,6 +24,7 @@ jobs:
       checks: ${{ steps.filter.outputs.checks }}
       worker_build: ${{ steps.filter.outputs.worker_build }}
       integration: ${{ steps.filter.outputs.integration }}
+      deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       # Pull-request path filtering uses the GitHub API; the checked-out
       # tree is enough for the remaining checks.
@@ -68,6 +69,12 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/check.yml'
+            deploy:
+              - 'src/index.js'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy.yml'
 
   syntax-and-contract:
     needs: changed-files
@@ -133,3 +140,57 @@ jobs:
         env:
           YAOS_REPO_PATH: ${{ github.workspace }}/yaos
         run: timeout --signal=TERM --kill-after=5s 3m node scripts/test_yaos_worker_integration.mjs
+
+
+  deploy-production:
+    needs:
+      - changed-files
+      - syntax-and-contract
+      - worker-build
+      - yaos-worker-integration
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changed-files.outputs.deploy == 'true' &&
+      needs.syntax-and-contract.result == 'success' &&
+      (needs.worker-build.result == 'success' || needs.worker-build.result == 'skipped') &&
+      (needs.yaos-worker-integration.result == 'success' || needs.yaos-worker-integration.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # All applicable CI checks have passed before this job can start.
+      # Keep the migration gate ahead of dependency installation and deployment.
+      - name: Gate deployment on pending D1 migrations
+        id: migration_gate
+        run: |
+          pending="$(find migrations/pending -maxdepth 1 -type f -name '*.sql' -print -quit 2>/dev/null || true)"
+          if [ -n "$pending" ]; then
+            echo "::notice::Production deployment skipped: pending migration $pending requires a separately reviewed rollout."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.migration_gate.outputs.allowed == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: steps.migration_gate.outputs.allowed == 'true'
+      - name: Require Cloudflare deployment credential
+        if: steps.migration_gate.outputs.allowed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Repository Actions secret CLOUDFLARE_API_TOKEN is required for production deployment."
+            exit 1
+          fi
+      - name: Deploy production Worker
+        if: steps.migration_gate.outputs.allowed == 'true'
+        run: npx --yes wrangler@4.69.0 deploy --config wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ea03cba73884bef04c37d1e21535e101
