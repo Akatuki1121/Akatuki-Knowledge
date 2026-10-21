@@ -329,7 +329,7 @@ async function telegramWebhook(request, env, ctx) {
     } else if (isBulkAiPermissionRejection(text2)) {
       reply = await rejectBulkAiPermission(env, chatId);
     } else if (isBulkAiPermissionRequest(text2)) {
-      reply = await proposeBulkAiPermission(env);
+      reply = await proposeBulkAiPermission(env, chatId);
     } else if (isFolderOrganizationApproval(text2)) {
       reply = await applyLatestFolderOrganization(env, chatId);
     } else if (isFolderOrganizationRejection(text2)) {
@@ -703,57 +703,128 @@ async function inspectBulkAiPermissionCandidates(env) {
   }
   return { total: (results || []).length, eligible, credentials, credentialAllowed, alreadyAllowed };
 }
-async function proposeBulkAiPermission(env) {
-  const scan = await inspectBulkAiPermissionCandidates(env);
-  if (!scan.eligible.length && !scan.credentialAllowed.length) {
+async function hashBulkAiPermissionContent(content) {
+  const bytes = new TextEncoder().encode(content);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+async function proposeBulkAiPermission(env, chatId) {
+  let scan;
+  try {
+    scan = await inspectBulkAiPermissionCandidates(env);
+  } catch {
+    return "一括許可の確認状態を保存できないため、処理を中止しました。データベースの準備が必要です。ノートは変更していません。";
+  }
+  const previewNotes = [];
+  for (const [action, notes] of [["allow", scan.eligible], ["revoke", scan.credentialAllowed]]) {
+    for (const note of notes) {
+      previewNotes.push({
+        id: String(note.id),
+        hash: await hashBulkAiPermissionContent(note.content),
+        action
+      });
+    }
+  }
+  if (previewNotes.length > 1000) {
+    return "対象ノートが1000件を超えたため、一括許可を安全に固定できませんでした。ノートは変更していません。対象を絞ってください。";
+  }
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+  try {
+    await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ?").bind(chatId).run();
+    await env.DB.prepare("INSERT INTO bot_ai_permission_previews (chat_id, candidates_json, created_at, expires_at, status) VALUES (?, ?, ?, ?, 'pending')")
+      .bind(chatId, JSON.stringify(previewNotes), now.toISOString(), expiresAt).run();
+  } catch {
+    return "一括許可の確認状態を保存できないため、処理を中止しました。必要なデータベース移行が未適用の可能性があります。ノートは変更していません。";
+  }
+  if (!previewNotes.length) {
     return "AI送信許可の一括確認が完了しました。対象ノート: " + scan.total + "件 / 新たに許可できるノート: 0件 / 認証情報を検出: " + scan.credentials + "件 / 既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件。ノートは変更していません。";
   }
   return "AI送信許可の一括反映待ちです。\n"
     + "対象ノート: " + scan.total + "件\n"
     + "新たに許可できるノート: " + scan.eligible.length + "件\n"
     + "認証情報を検出: " + scan.credentials + "件（許可対象から除外し、既に許可済みなら許可を解除）\n"
-    + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n\n"
-    + "この時点では設定を変更していません。許可対象を確認し、反映する場合だけ「AI送信許可を一括反映して」と送ってください。反映時にも全ノートを再検査します。";
+    + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n"
+    + "この確認は10分で失効します。\n\n"
+    + "この時点では設定を変更していません。許可対象を確認し、反映する場合だけ「AI送信許可を一括反映して」と送ってください。確認時点の対象ノートだけを反映します。";
 }
 async function applyBulkAiPermission(env, chatId) {
-  const latestAssistant = await env.DB.prepare("SELECT content FROM telegram_messages WHERE chat_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1").bind(chatId).first();
-  if (!latestAssistant?.content?.includes("AI送信許可の一括反映待ちです")) {
+  let preview;
+  try {
+    preview = await env.DB.prepare("SELECT candidates_json, expires_at, status FROM bot_ai_permission_previews WHERE chat_id = ?").bind(chatId).first();
+  } catch {
+    return "一括許可の確認状態を読み出せないため、処理を中止しました。ノートは変更していません。";
+  }
+  if (!preview || preview.status !== "pending") {
     return "先に「AI送信許可を一括確認して」で対象件数を確認してください。許可設定は変更していません。";
   }
-  const scan = await inspectBulkAiPermissionCandidates(env);
-  let revoked = 0;
-  for (let offset = 0; offset < scan.credentialAllowed.length; offset += 50) {
-    const candidates = scan.credentialAllowed.slice(offset, offset + 50);
-    const batch = candidates.map((candidate) => env.DB.prepare(
-      "UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?"
-    ).bind(candidate.id, candidate.contentHash, candidate.content));
-    const results = await env.DB.batch(batch);
-    revoked += results.reduce((sum, result) => sum + (result.meta?.changes || 0), 0);
+  if (Date.parse(preview.expires_at) <= Date.now()) {
+    await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ?").bind(chatId).run();
+    return "一括許可の確認が期限切れです。もう一度「AI送信許可を一括確認して」と送ってください。ノートは変更していません。";
   }
+  let candidates;
+  try {
+    candidates = JSON.parse(preview.candidates_json);
+    if (!Array.isArray(candidates) || candidates.length > 1000 || candidates.some((item) =>
+      !item || typeof item.id !== "string" || !/^[a-f0-9]{64}$/u.test(item.hash) || !["allow", "revoke"].includes(item.action))) {
+      throw new Error("invalid_preview");
+    }
+  } catch {
+    await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ?").bind(chatId).run();
+    return "一括許可の確認データが不正なため中止しました。もう一度確認してください。ノートは変更していません。";
+  }
+  const now = new Date().toISOString();
   let changed = 0;
-  for (let offset = 0; offset < scan.eligible.length; offset += 50) {
-    const candidates = scan.eligible.slice(offset, offset + 50);
-    const batch = candidates.map((candidate) => env.DB.prepare(
-      "UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0 AND content_hash IS ? AND content = ?"
-    ).bind(candidate.id, candidate.contentHash, candidate.content));
-    const results = await env.DB.batch(batch);
-    changed += results.reduce((sum, result) => sum + (result.meta?.changes || 0), 0);
+  let revoked = 0;
+  let credentials = 0;
+  let skipped = 0;
+  let alreadyAllowed = 0;
+  for (const candidate of candidates) {
+    const note = await env.DB.prepare("SELECT id, content, content_hash, ai_allowed FROM notes WHERE id = ? AND deleted_at IS NULL AND path IS NOT NULL").bind(candidate.id).first();
+    if (!note || typeof note.content !== "string" || await hashBulkAiPermissionContent(note.content) !== candidate.hash) {
+      skipped++;
+      continue;
+    }
+    const hasCredentials = inspectWholeContent(note.content, env).credentials;
+    if (candidate.action === "allow" && (hasCredentials || note.ai_allowed === 1)) {
+      if (hasCredentials) credentials++;
+      else alreadyAllowed++;
+      skipped++;
+      continue;
+    }
+    if (candidate.action === "revoke" && (!hasCredentials || note.ai_allowed !== 1)) {
+      skipped++;
+      continue;
+    }
+    const statement = candidate.action === "allow"
+      ? env.DB.prepare("UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0 AND content_hash IS ? AND content = ?")
+          .bind(note.id, note.content_hash ?? null, note.content)
+      : env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?")
+          .bind(note.id, note.content_hash ?? null, note.content);
+    const result = await statement.run();
+    if (result.meta?.changes) {
+      if (candidate.action === "allow") changed++;
+      else revoked++;
+    } else skipped++;
   }
-  const skippedChanged = scan.eligible.length - changed;
-  const skippedRevocation = scan.credentialAllowed.length - revoked;
+  await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ? AND status = 'pending'").bind(chatId).run();
   return "AI送信許可の一括反映が完了しました。\n"
     + "新たに許可: " + changed + "件\n"
-    + "認証情報を検出: " + scan.credentials + "件\n"
+    + "認証情報検出: " + credentials + "件\n"
     + "認証情報検出により許可解除: " + revoked + "件\n"
-    + "反映前に内容が変更され、処理を見送ったノート: " + (skippedChanged + skippedRevocation) + "件\n"
-    + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n"
-    + "対象ノート総数: " + scan.total + "件\n\n"
-    + "各ノートは検査時の本文と更新直前の本文が一致する場合だけ変更しました。";
+    + "内容変更・状態変化・競合で見送り: " + skipped + "件\n"
+    + "既に許可済み（安全確認済み）: " + alreadyAllowed + "件\n\n"
+    + "確認時点の対象だけを再検査し、本文が一致したノートだけを変更しました。";
 }
 async function rejectBulkAiPermission(env, chatId) {
-  const latestAssistant = await env.DB.prepare("SELECT content FROM telegram_messages WHERE chat_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1").bind(chatId).first();
-  if (!latestAssistant?.content?.includes("AI送信許可の一括反映待ちです")) return "取り下げる一括許可案はありません。ノートは変更していません。";
-  return "AI送信許可の一括許可案を取り下げました。ノートは変更していません。";
+  try {
+    const result = await env.DB.prepare("DELETE FROM bot_ai_permission_previews WHERE chat_id = ? AND status = 'pending'").bind(chatId).run();
+    return result.meta?.changes
+      ? "AI送信許可の一括許可案を取り下げました。ノートは変更していません。"
+      : "取り下げる一括許可案はありません。ノートは変更していません。";
+  } catch {
+    return "一括許可の確認状態を取り下げられませんでした。ノートは変更していません。";
+  }
 }
 function isFolderOrganizationApproval(message) {
   return /^(?:フォルダ|フォルダー)整理案を(?:反映して|実行して|適用して)[。.!！]?$/u.test(message.trim());
