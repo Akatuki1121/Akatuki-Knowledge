@@ -2,6 +2,24 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+for (const contract of [
+  "isBulkAiPermissionRequest",
+  "isBulkAiPermissionApproval",
+  "isBulkAiPermissionRejection",
+  "inspectBulkAiPermissionCandidates",
+  "inspectWholeContent(content, env).credentials",
+  "AI送信許可の一括反映待ちです",
+  "AI送信許可を一括反映して",
+  "env.DB.batch(batch)",
+  "sensitivity = 'user-approved'",
+  "sensitivity = 'credentials'",
+  "content_hash IS ? AND content = ?",
+  "反映前に内容が変更され、処理を見送ったノート",
+  "AI送信許可の一括確認が完了しました"
+]) {
+  assert.ok(source.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
+}
+
 const migration = await readFile(new URL("../migrations/pending/0010_bot_organization_candidates.sql", import.meta.url), "utf8");
 
 for (const contract of [
