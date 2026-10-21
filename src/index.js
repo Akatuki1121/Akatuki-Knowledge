@@ -791,9 +791,9 @@ async function applyBulkAiPermission(env, chatId) {
       continue;
     }
     const hasCredentials = inspectWholeContent(note.content, env).credentials;
+    if (hasCredentials) credentials++;
     if (candidate.action === "allow" && (hasCredentials || note.ai_allowed === 1)) {
-      if (hasCredentials) credentials++;
-      else alreadyAllowed++;
+      if (!hasCredentials) alreadyAllowed++;
       skipped++;
       continue;
     }
