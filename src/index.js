@@ -1556,6 +1556,10 @@ function parseJsonObject(raw) {
 }
 __name(parseJsonObject, "parseJsonObject");
 async function callGemini(env, prompt, maxOutputTokens, options = {}) {
+  const privacyCheck = inspectWholeContent(prompt, env);
+  if (!privacyCheck.ok) {
+    throw new Error("AI request blocked by credential detection");
+  }
   const model = maxOutputTokens <= 500
     ? (env.GEMINI_LIGHT_MODEL || "gemini-3.1-flash-lite")
     : (env.GEMINI_MODEL || "gemini-3.5-flash-lite");
@@ -1589,7 +1593,7 @@ var REDACTION_RULES = [
 ];
 var CREDENTIAL_RULES = [
   { id: "api_key", pattern: /\b(?:AIza[0-9A-Za-z_-]{25,}|sk-(?:live|test|proj)?-?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/gu },
-  { id: "credential_assignment", pattern: /\b(?:password|passwd|パスワード|api[_ -]?key|apiキー|access[_ -]?token|refresh[_ -]?token|secret|client_secret|秘密鍵|認証トークン)\b\s*[:=：]\s*["']?([^\s"',;]{8,})["']?/giu },
+  { id: "credential_assignment", pattern: /(?<![A-Za-z0-9_])["']?(?:password|passwd|passphrase|パスワード|api[_ -]?key|apiキー|access[_ -]?token|refresh[_ -]?token|secret|client_secret|private[_ -]?key|秘密鍵|認証トークン|authorization|auth[_ -]?token|token|credential|credentials|cookie|session)["']?(?![A-Za-z0-9_])\s*[:=：]\s*(?:"[^"\r\n]{1,}"|'[^'\r\n]{1,}'|[^\s"',;]{1,})/giu },
   { id: "bearer_token", pattern: /\bBearer\s+[A-Za-z0-9._~+\/-]{16,}={0,2}/giu },
   { id: "private_key_block", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]{20,}?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/gu }
 ];
