@@ -36,6 +36,8 @@ const WORKER_DEVICE = "test-worker";
 const MIN_VAULT_FILES_FOR_WRITE = 1;
 const deps = { YMap, YText, Doc, readUuid, isValidSyncUuid, deterministicUuid, sha256Hex, norm, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE, MAX_NOTE_CHARS };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + method + " }")(...Object.values(deps));
+const guardDeps = { ...deps, MIN_VAULT_FILES_FOR_WRITE: 50 };
+const GuardTestDO = new Function(...Object.keys(guardDeps), "return class GuardTestDO { " + method + " }")(...Object.values(guardDeps));
 
 function setup(rows, vaultFiles) {
   const revisions = [];
@@ -193,8 +195,12 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
 
 {
   const template = setup([{ id: "Templates/example.md", path: "Templates/example.md", title: "Template", content: body, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Templates/example.md", content: body }]);
-  const result = await template.instance.reconcileExistingNoteIds();
-  assert.equal(result.skipped, "vault_looks_empty", "Reusable templates must not make an empty vault look populated");
+  const guarded = new GuardTestDO();
+  guarded.env = template.instance.env;
+  guarded.pullVault = template.instance.pullVault;
+  const result = await guarded.reconcileExistingNoteIds();
+  assert.equal(result.skipped, "vault_looks_empty", "A one-file Vault must stay below the production safety threshold");
+  assert.equal(result.vaultFiles, 1, "Template files must count as real Vault files for the safety guard");
   assert.equal(template.texts.get("file-0").toString(), body);
   assert.equal(template.rows[0].content, body);
 }
