@@ -10825,7 +10825,7 @@ var YjsClientDO = class extends DurableObject {
         owners.push({ fileId, path, uuid });
         vaultUuidOwners.set(uuid, owners);
       }
-      if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.split("/")[0].toLowerCase() === "templates" || path.startsWith(RESERVED_ROOT + "/")) return;
+      if (path.split("/").slice(0, -1).some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) return;
       vaultFiles++;
       const key = norm(path);
       const entries = paths.get(key) || [];
