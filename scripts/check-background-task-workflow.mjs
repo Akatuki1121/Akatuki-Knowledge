@@ -9,6 +9,7 @@ for (const required of [
   'task.task_type !== "knowledge_query"',
   "findRelevantNotes(prepared.safePrompt, this.env, 8)",
   'step.do("retrieve-context-"',
+  "if (note.ai_allowed !== 1) continue;",
   'step.do("compose-prompt-"',
   'checkpoint: { stage: "context_ready", contextNotes: notes }',
   'stage: "prompt_ready"',

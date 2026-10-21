@@ -11447,6 +11447,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           const matches = await findRelevantNotes(prepared.safePrompt, this.env, 8);
           const notes = [];
           for (const note of matches) {
+            if (note.ai_allowed !== 1) continue;
             if (inspectWholeContent(note.content, this.env).credentials) continue;
             const safeTitle = inspectAndRedact(note.title || "", { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
             const safeExcerpt = inspectAndRedact(excerpt(note.content, prepared.safePrompt, 800), { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
