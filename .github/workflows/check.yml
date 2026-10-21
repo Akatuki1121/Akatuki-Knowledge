@@ -50,7 +50,6 @@ jobs:
               - 'wrangler.toml'
               - 'package.json'
               - 'package-lock.json'
-              - 'docs/**'
               - '.github/workflows/**'
             worker_build:
               - 'src/**'
@@ -86,13 +85,25 @@ jobs:
       - run: python3 scripts/test_pending_migration.py
       - name: Validate recovered migration chain and full schema shape
         run: python3 scripts/test_recovered_migration_chain.py
-      - name: Validate Wrangler config and build without deploying
-        if: needs.changed-files.outputs.worker_build == 'true'
-        run: npx --yes wrangler@4.69.0 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
       - name: Validate reconstructed baseline in empty SQLite database
         run: python3 scripts/test_reconstructed_baseline.py
       - name: Compile Worker SQL against captured D1 schema
         run: python3 scripts/test_worker_sql_compatibility.py
+
+  worker-build:
+    needs: changed-files
+    if: needs.changed-files.outputs.worker_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate Wrangler config and build without deploying
+        run: npx --yes wrangler@4.69.0 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
 
   yaos-worker-integration:
     # Run independently to reduce wall-clock time; isolated integration tests
