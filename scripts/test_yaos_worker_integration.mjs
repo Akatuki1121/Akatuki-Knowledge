@@ -290,6 +290,9 @@ service = "yaos"
 API_TOKEN = "${TOKEN}"
 VAULT_ID = "${VAULT_ID}"
 YAOS_TOKEN = "${TOKEN}"
+# Shorter settle windows are safe here because the integration suite uses local Workers only.
+SYNC_IDLE_AFTER_MS = 500
+SYNC_PUSH_SETTLE_MS = 500
 
 [[migrations]]
 tag = "v1"
