@@ -16,6 +16,10 @@ const checks = [
   ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
 ];
 
+const selectedChecks = process.argv.includes("--sync-only")
+  ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name.startsWith("background-task-"))
+  : checks;
+
 const limit = Math.max(1, Math.min(4, Number(process.env.CI_CHECK_CONCURRENCY) || 4));
 let next = 0;
 let failed = false;
@@ -57,8 +61,8 @@ function launch([name, command, args]) {
 async function worker() {
   while (!failed) {
     const index = next++;
-    if (index >= checks.length) return;
-    const promise = launch(checks[index]).then((result) => {
+    if (index >= selectedChecks.length) return;
+    const promise = launch(selectedChecks[index]).then((result) => {
       running.delete(promise);
       results.push(result);
       if (result.code !== 0) failed = true;
