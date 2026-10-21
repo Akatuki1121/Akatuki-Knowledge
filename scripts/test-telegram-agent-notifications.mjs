@@ -2,12 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const webhookStart = source.indexOf("async function handleTelegramUpdate");
-const webhookEnd = source.indexOf("__name(handleTelegramUpdate", webhookStart);
-const webhook = webhookStart >= 0 && webhookEnd > webhookStart
-  ? source.slice(webhookStart, webhookEnd)
-  : source.slice(source.indexOf('INSERT INTO telegram_updates'), source.indexOf('async function startTelegramBackgroundTask'));
-
 assert.ok(source.includes("telegram_updates (update_id, received_at, result_code)"), "Webhook updates must be persisted by update_id");
 assert.ok(source.includes("state?.result_code === \"retry\""), "Failed webhook updates must be eligible for retry");
 assert.ok(source.includes("state?.result_code === \"processing\" && state.received_at < staleBefore"), "Only stale processing updates may be reclaimed");
