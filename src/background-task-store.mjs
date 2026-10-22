@@ -297,10 +297,6 @@ export async function enqueueAgentTask(db, input) {
 }
 
 /**
- * Claim one eligible task with a single atomic UPDATE ... RETURNING statement.
- * Concurrent executors cannot claim the same queued task. Expired leases are recoverable.
- */
-/**
  * Cancel a task only when it belongs to the requesting Telegram chat and is
  * still active. Clearing the lease makes every in-flight checkpoint/completion
  * fail its conditional UPDATE, so a cancelled task cannot publish a result.
@@ -327,6 +323,10 @@ export async function cancelAgentTask(db, input = {}) {
   return { cancelled: false, reason: "already_terminal", status: task.status };
 }
 
+/**
+ * Claim one eligible task with a single atomic UPDATE ... RETURNING statement.
+ * Concurrent executors cannot claim the same queued task. Expired leases are recoverable.
+ */
 export async function claimNextAgentTask(db, input = {}) {
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const now = toSqliteDateTime(nowMs);
