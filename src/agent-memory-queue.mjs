@@ -48,6 +48,10 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
           (status = 'queued' AND next_attempt_at <= ?)
           OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_memory_jobs active
+          WHERE active.status = 'processing' AND active.lease_expires_at > ?
+        )
       ORDER BY created_at, job_id
       LIMIT 1
     )
@@ -56,8 +60,12 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
         (status = 'queued' AND next_attempt_at <= ?)
         OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_memory_jobs active
+        WHERE active.status = 'processing' AND active.lease_expires_at > ?
+      )
     RETURNING job_id, chat_id, message_id, message_text, attempts, max_attempts
-  `).bind(leaseUntil, now, now, now, now, now).first();
+  `).bind(leaseUntil, now, now, now, now, now, now, now).first();
 
   return row || null;
 }
