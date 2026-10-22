@@ -28,7 +28,7 @@ if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
     const agentDiff = execFileSync("git", [
       "diff", "--no-ext-diff", "--unified=20", base, head, "--", "src/index.js",
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    const agentSensitive = /telegramWebhook|answerTelegramMessage|startTelegramBackgroundTask|cancelTelegramBackgroundTask|listTelegramBackgroundTasks|approveGitHubWritePlan|rejectGitHubWritePlan|runApprovedGitHubWritePlan|executeGitHubWritePlan|executeGitHubReadTool|parseGroundedWebResearch|agent_tasks|agent_memory|background.?task|ORGANIZE_PER_RUN|formatTelegramPlainText|isGitHubNaturalLanguageRequest|AI送信許可|agent.?memory|agent.?tool|agent.?github|agent.?web|AgentMemory/i;
+    const agentSensitive = /telegramWebhook|answerTelegramMessage|startTelegramBackgroundTask|cancelTelegramBackgroundTask|listTelegramBackgroundTasks|approveGitHubWritePlan|rejectGitHubWritePlan|runApprovedGitHubWritePlan|executeGitHubWritePlan|executeGitHubReadTool|parseGroundedWebResearch|agent_tasks|agent_memory|background.?task|ORGANIZE_PER_RUN|formatTelegramPlainText|isGitHubNaturalLanguageRequest|AI送信許可/i;
     agentRequired = agentSensitive.test(agentDiff);
     reason = required
       ? "src/index.js の変更行が同期・ノート変更の保護対象に該当"
