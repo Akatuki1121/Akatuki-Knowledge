@@ -119,8 +119,16 @@ jobs:
       - run: npm run check:core
 
   agent-domain-tests:
-    needs: changed-files
-    if: needs.changed-files.outputs.agent_tests == 'true' || needs.changed-files.outputs.source == 'true'
+    needs:
+      - changed-files
+      - classify-yaos-integration
+    if: >-
+      always() &&
+      (needs.changed-files.outputs.agent_tests == 'true' ||
+       (needs.classify-yaos-integration.result == 'success' &&
+        needs.classify-yaos-integration.outputs.agent_required == 'true') ||
+       (needs.classify-yaos-integration.result != 'success' &&
+        needs.changed-files.outputs.source == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,6 +186,7 @@ jobs:
     timeout-minutes: 2
     outputs:
       required: ${{ steps.classify.outputs.required }}
+      agent_required: ${{ steps.classify.outputs.agent_required }}
     steps:
       - uses: actions/checkout@v4
         with:
