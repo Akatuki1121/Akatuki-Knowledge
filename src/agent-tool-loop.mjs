@@ -282,6 +282,7 @@ export async function runAgentToolLoop(input) {
           })(),
           modelCalls: state.modelCalls,
           toolCalls: state.toolCalls,
+          pendingGitHubWrite: state.toolCalls.find((call) => call.tool === "github_propose_write")?.result?.pendingGitHubWrite ?? null,
         };
         await save({ stage: "completed", ...final });
         return final;
