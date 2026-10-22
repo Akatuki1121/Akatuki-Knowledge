@@ -168,7 +168,10 @@ async function currentDeadCount() {
 
 async function latestOutboxFailure(stateDir) {
   const queryPath = join(stateDir, "outbox-failure.sql");
-  await writeFile(queryPath, "SELECT status, attempts, last_error FROM yaos_sync_jobs ORDER BY job_id DESC LIMIT 1;");
+  await writeFile(queryPath, [
+    "SELECT status, attempts, last_error, payload_json FROM yaos_sync_jobs ORDER BY job_id DESC LIMIT 1;",
+    "SELECT id, path, content FROM notes;",
+  ].join("\n"));
   return await run("npx", [
     ...WRANGLER, "d1", "execute", "knowledge-integration",
     "--local", `--file=${queryPath}`,
