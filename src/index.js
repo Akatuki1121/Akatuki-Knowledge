@@ -229,7 +229,7 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、GitHub の Issue・PR・ファイル調査は /github 依頼内容、Web調査は /research 内容、未完了一覧は /tasks、状態確認は /task_status ID。GitHub の読み取りはできるけれど、書き込みや PR 作成はまだ対応していないよ。ノート変更は通常の会話で依頼してね。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、GitHub作業は自然文または /github 依頼内容（変更は承認後）、Web調査は /research 内容、未完了一覧は /tasks、状態確認は /task_status ID。GitHubの変更計画は /github approve TASK_ID で承認、/github reject TASK_ID で拒否できるよ。マージとデプロイは別の明示的な判断が必要だよ。ノート変更は通常の会話で依頼してね。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
     } else if (/^\/tasks(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await listTelegramBackgroundTasks(env, chatId);
     } else if (/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u.test(text2)) {
@@ -11774,6 +11774,17 @@ async function flushAgentTaskNotifications(env, limit = 5) {
 
     try {
       await sendTelegramMessage(env, task.notify_chat_id, message);
+      const pendingWrite = checkpoint.pendingGitHubWrite;
+      if (task.status === "succeeded" && pendingWrite?.status === "pending" && pendingWrite.plan) {
+        const planText = JSON.stringify(pendingWrite.plan, null, 2);
+        const chunkSize = 3000;
+        const chunks = [];
+        for (let offset = 0; offset < planText.length; offset += chunkSize) chunks.push(planText.slice(offset, offset + chunkSize));
+        for (let index = 0; index < chunks.length; index++) {
+          await sendTelegramMessage(env, task.notify_chat_id,
+            "GitHub変更計画の詳細 " + (index + 1) + "/" + chunks.length + "（各本文を順につなぐと計画JSONになります）\n" + chunks[index]);
+        }
+      }
       await env.DB.prepare(`
         UPDATE agent_tasks
         SET notification_status = 'sent', notification_lease_expires_at = NULL,
