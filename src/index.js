@@ -11919,6 +11919,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               maxOutputTokens,
               allowWebResearch,
               allowGitHubRead: task.task_type === "github_query" && task.payload.allowGitHubRead === true,
+              allowGitHubWrite: task.task_type === "github_query" && task.payload.allowGitHubWrite === true,
               resumePrompt: checkpoint.prompt,
               contextNotes: Array.isArray(checkpoint.contextNotes) ? checkpoint.contextNotes : [],
               estimatedTokens: Number(checkpoint.estimatedTokens) || Math.max(1, Math.ceil(checkpoint.prompt.length / 4) + maxOutputTokens)
@@ -11930,6 +11931,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               maxOutputTokens,
               allowWebResearch,
               allowGitHubRead: task.task_type === "github_query" && task.payload.allowGitHubRead === true,
+              allowGitHubWrite: task.task_type === "github_query" && task.payload.allowGitHubWrite === true,
               resumePrompt: checkpoint.initialPrompt,
               contextNotes: Array.isArray(checkpoint.contextNotes) ? checkpoint.contextNotes : [],
               agentLoopCheckpoint: checkpoint
@@ -11949,6 +11951,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             maxOutputTokens,
             allowWebResearch,
             allowGitHubRead: task.task_type === "github_query" && task.payload.allowGitHubRead === true,
+            allowGitHubWrite: task.task_type === "github_query" && task.payload.allowGitHubWrite === true,
             contextNotes: checkpoint.stage === "context_ready" && Array.isArray(checkpoint.contextNotes) ? checkpoint.contextNotes : null
           };
         });
@@ -12029,6 +12032,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           contextNotes: context.notes,
           allowWebResearch: prepared.allowWebResearch,
           allowGitHubRead: prepared.allowGitHubRead,
+          allowGitHubWrite: prepared.allowGitHubWrite,
           callModel: async ({ prompt, modelCall }) => step.do(
             "agent-model-" + attempt + "-" + modelCall,
             { retries: { limit: 0 } },
@@ -12176,7 +12180,13 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         } else {
           reply = reply.slice(0, 3000);
         }
-        output.reply = reply || "関連ノートから回答を作成できませんでした。";
+        const pendingGitHubWrite = output.pendingGitHubWrite?.status === "pending" ? output.pendingGitHubWrite : null;
+        output.reply = pendingGitHubWrite
+          ? "GitHubへの変更計画を作成しました。まだ書き込みは行っていません。\\n計画: " + pendingGitHubWrite.plan.summary
+            + "\\n承認: /github approve " + taskId
+            + "\\n拒否: /github reject " + taskId
+            + "\\n承認期限: " + pendingGitHubWrite.expiresAt
+          : (reply || "関連ノートから回答を作成できませんでした。");
         const finalSaved = await step.do("save-formatted-output-" + attempt, { retries: { limit: 0 } }, async () => {
           return saveAgentTaskCheckpoint(this.env.DB, {
             taskId, leaseToken, nowMs: Date.now(),
@@ -12186,7 +12196,8 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               sourceIds: output.sourceIds,
               webSources: output.webSources,
               modelCalls: output.modelCalls,
-              toolCalls: output.toolCalls
+              toolCalls: output.toolCalls,
+              ...(pendingGitHubWrite ? { pendingGitHubWrite } : {})
             }
           });
         });
