@@ -1304,10 +1304,16 @@ async function processAgentMemoryJob(env, job) {
   const capture = parsed.capture || {};
   let notification = "";
   if (["create", "append"].includes(capture.action) && Number(capture.confidence) >= 0.85) {
-    const captured = await applyTelegramCapture(
-      env, chatId, messageId, new Date().toISOString(), safeMessage.text, capture, matches
-    );
-    if (captured) notification = captured;
+    const safeCapture = inspectAndRedact(typeof capture.content === "string" ? capture.content : "", {
+      blocklist: env.PRIVACY_BLOCKLIST || ""
+    });
+    if (safeCapture.ok && !inspectWholeContent(safeCapture.text, env).credentials) {
+      capture.content = safeCapture.text;
+      const captured = await applyTelegramCapture(
+        env, chatId, messageId, new Date().toISOString(), safeMessage.text, capture, matches
+      );
+      if (captured) notification = captured;
+    }
   }
 
   const improvement = parsed.improvement || {};
@@ -1326,7 +1332,7 @@ async function processAgentMemoryJob(env, job) {
       `).bind(chatId, messageId, category, proposal, new Date().toISOString(),
         chatId, messageId, category, proposal).run();
       if (Number(inserted?.meta?.changes || 0) > 0) {
-        notification += (notification ? "\\n\\n" : "") + `改善候補に記録したよ：「${proposal}」。反映してよければ「反映して」と言ってね。`;
+        notification += (notification ? "\n\n" : "") + `改善候補に記録したよ：「${proposal}」。反映してよければ「反映して」と言ってね。`;
       }
     }
   }
