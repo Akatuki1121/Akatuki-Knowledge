@@ -74,13 +74,15 @@ assert.equal(await failAgentMemoryJob(db, 7, { retryable: true, errorClass: "gem
 assert.equal(db.calls[0].method, "first");
 assert.equal(db.calls[1].params[0], "queued");
 assert.equal(db.calls[1].params[1], new Date(nowMs + 60000).toISOString());
-assert.equal(db.calls[1].params[2], "gemini_limit");
+assert.equal(db.calls[1].params[2], "queued");
+assert.equal(db.calls[1].params[3], "gemini_limit");
 
 db.calls.length = 0;
 db.firstResult = { attempts: 4, max_attempts: 4 };
 await failAgentMemoryJob(db, 7, { retryable: true, errorClass: "bad status!", nowMs });
 assert.equal(db.calls[1].params[0], "failed");
-assert.equal(db.calls[1].params[2], "badstatus");
+assert.equal(db.calls[1].params[2], "failed");
+assert.equal(db.calls[1].params[3], "badstatus");
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 assert.match(source, /await enqueueAgentMemoryJob\(env\.DB/u);
