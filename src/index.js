@@ -304,7 +304,7 @@ __name(telegramWebhook, "telegramWebhook");
 async 
 function isGitHubNaturalLanguageRequest(text) {
   if (typeof text !== "string" || text.startsWith("/")) return false;
-  const topic = /(?:github|github\.com|\bissue\b|\bissues\b|\bpr\b|pull request|プルリク|プルリクエスト|リポジトリ|ブランチ|コミット|\bcommit\b|\bCI\b|\bworkflow\b|\bActions\b)/iu.test(text);
+  const topic = /(?:github|github\.com|\bissue\b|\bissues\b|\bpr\b|pull request|プルリク|プルリクエスト|リポジトリ|ブランチ|コミット|\bcommit\b|\bCI\b|\bworkflow\b|\bActions\b|コード|バグ)/iu.test(text);
   const action = /(?:調べ|確認|見て|見直|修正|直し|作成|更新|コメント|レビュー|実装|テスト|変更|開い|閉じ|マージ|やって|対応|直して|追加|消して|書き込|PRに|issueに)/iu.test(text);
   const repo = /\b[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\b/u.test(text);
   return action && (topic || repo);
