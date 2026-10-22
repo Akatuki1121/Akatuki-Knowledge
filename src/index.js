@@ -1249,7 +1249,13 @@ async function drainAgentMemoryQueue(env, requestedLimit = 1) {
   if (!env?.DB || !env.GEMINI_API_KEY) return;
   const limit = Math.max(1, Math.min(2, Number(requestedLimit) || 1));
   for (let i = 0; i < limit; i++) {
-    const job = await claimNextAgentMemoryJob(env.DB);
+    let job;
+    try {
+      job = await claimNextAgentMemoryJob(env.DB);
+    } catch {
+      console.error("agent memory queue claim failed");
+      return;
+    }
     if (!job) return;
     try {
       await processAgentMemoryJob(env, job);
@@ -1262,10 +1268,12 @@ async function drainAgentMemoryQueue(env, requestedLimit = 1) {
         : status >= 500 ? "gemini_server_error"
           : error?.name === "TimeoutError" || error?.name === "AbortError" ? "timeout"
             : error instanceof TypeError ? "network_error" : "memory_processing_failed";
-      await failAgentMemoryJob(env.DB, Number(job.job_id), {
-        retryable,
-        errorClass
-      });
+      try {
+        await failAgentMemoryJob(env.DB, Number(job.job_id), { retryable, errorClass });
+      } catch {
+        console.error("agent memory job state update failed");
+        return;
+      }
       console.error("agent memory job failed");
     }
   }
