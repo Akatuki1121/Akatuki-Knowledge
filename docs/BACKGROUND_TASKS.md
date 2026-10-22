@@ -53,9 +53,9 @@ The first task type is `knowledge_query`: a read-only multi-stage note search an
 ## Implementation / rollout boundary
 
 - Retry policy, pending D1 schema, claim/lease/checkpoint store, and Workflow/API wiring are developed on a feature branch and validated with Actions.
-- `migrations/pending/0011_agent_tasks.sql` is not applied to production.
+- `migrations/0011_agent_tasks.sql` is recorded in the production ledger (applied 2026-10-21) and the live schema matched it on 2026-10-22.
 - No production D1 migration, Worker deployment, secret change, or live note mutation is performed by this PR.
-- Before production rollout, review the pending migration chain, apply the migration explicitly, run an authenticated smoke test, and document rollback.
+- Schema rollout is done; before enabling more task types, run an authenticated smoke test and document rollback.
 
 
 ## Terminal notification and recovery

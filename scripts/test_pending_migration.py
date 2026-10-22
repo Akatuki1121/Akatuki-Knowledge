@@ -3,7 +3,7 @@ import sqlite3
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "schema-snapshots" / "live-d1-schema-2026-10-19.sql"
-MIGRATION = ROOT / "migrations" / "pending" / "0009_yaos_sync_jobs.sql"
+MIGRATION = ROOT / "migrations" / "0009_yaos_sync_jobs.sql"
 
 connection = sqlite3.connect(":memory:")
 connection.execute("PRAGMA foreign_keys = ON")
@@ -57,4 +57,4 @@ else:
 foreign_key_errors = list(connection.execute("PRAGMA foreign_key_check"))
 assert not foreign_key_errors, f"Foreign-key violations after migration: {foreign_key_errors}"
 
-print("Pending outbox migration applies cleanly to the captured schema in isolated SQLite.")
+print("Outbox migration (0009) applies cleanly to the captured schema in isolated SQLite.")

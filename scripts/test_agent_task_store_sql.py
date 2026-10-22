@@ -6,7 +6,7 @@ import textwrap
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "background-task-store.mjs"
 SCHEMA = ROOT / "schema-snapshots" / "live-d1-schema-2026-10-19.sql"
-MIGRATION = ROOT / "migrations" / "pending" / "0011_agent_tasks.sql"
+MIGRATION = ROOT / "migrations" / "0011_agent_tasks.sql"
 
 connection = sqlite3.connect(":memory:")
 connection.execute("PRAGMA foreign_keys = ON")

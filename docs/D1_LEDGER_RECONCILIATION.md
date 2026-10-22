@@ -2,6 +2,8 @@
 
 Status: **procedure only; not executed against production**. This runbook is for the recovery branch and the live D1 capture dated 2026-10-19.
 
+> **Update 2026-10-22:** the live ledger already records `0008`–`0012` (`0008`/`0009` on 2026-10-20, `0011`/`0012` then `0010` on 2026-10-21). A read-only comparison of the live schema with `0001`–`0012` applied to an empty SQLite found no differences in tables, columns, foreign keys or indexes. The files were moved from `migrations/pending/` to `migrations/`. The procedure below is kept as the historical record of how the gap was handled.
+
 ## Known state
 
 - The live `d1_migrations` ledger records `0001` through `0007`.

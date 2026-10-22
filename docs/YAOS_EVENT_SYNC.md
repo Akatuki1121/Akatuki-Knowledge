@@ -37,7 +37,7 @@ The authenticated `GET /sync/status` endpoint reports pending, processing, sent,
 ## Migration and recovery safety
 
 - The additive outbox schema is applied in production and recorded by `migrations/0009_yaos_sync_jobs.sql`.
-- The reconstructed folders migration remains under `migrations/pending/` because the DDL existed in production before its ledger entry was reconciled.
+- The reconstructed folders migration (`migrations/0008_folders_schema_reconstructed.sql`) is recorded in the production ledger (2026-10-20). The DDL existed in production before that; it must not be re-run. Migrations that are not yet applied belong in `migrations/pending/`, which blocks the GitHub Actions production deploy while it holds any SQL.
 - The exact historical SQL for migrations `0001`–`0007` has not been recovered byte-for-byte. The repository therefore does not yet provide a verified clean-database migration chain. Do not use a clean-database bootstrap against the existing production D1.
 - No initial bulk outbox enqueue was performed for the 602 existing notes, to avoid recreating Vault files that may have been independently deleted. Safe reconciliation confirmed those notes already aligned, and stable frontmatter IDs were restored without changing note bodies.
 - R2 is intentionally not configured. YAOS Worker source/configuration was not modified as part of this rollout.

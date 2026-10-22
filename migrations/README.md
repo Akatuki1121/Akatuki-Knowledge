@@ -4,18 +4,16 @@ The recovered SQL files `0001` through `0007` are present in this directory and 
 
 **Important provenance limit:** the recovered files have not been independently compared byte-for-byte with the exact SQL text originally applied to production. Passing the clean-database test proves that this recovered sequence executes; it does not prove historical identity.
 
-## Pending folder-schema reconstruction
+## Applied migrations 0008-0012
 
-The live schema contains a `folders` table and a `notes.folder_id` column that are absent from migrations `0001`–`0007`. The origin of this schema change is unknown. A new forward migration candidate is preserved at `pending/0008_folders_schema_reconstructed.sql`; it is explicitly not claimed to be the original historical change.
+The live ledger records `0008` through `0012`. On 2026-10-22 the live schema was compared with `0001`-`0012` applied in order to an empty SQLite database; tables, columns, foreign keys and indexes were identical.
 
-The candidate applies cleanly after `0001`–`0007` on an empty SQLite database and makes the resulting table/column shape match the captured live schema. CI compares tables, column definitions, foreign keys, and index definitions against the captured schema. It does not establish when the production schema was added.
+- `0008_folders_schema_reconstructed.sql` is a reconstruction, not the original historical change. Production already had the `folders` table and `notes.folder_id` before the ledger recorded it. Do not run it against production again: `ALTER TABLE notes ADD COLUMN folder_id` would fail on the existing column.
+- `0009`, `0011` and `0012` were applied on 2026-10-20 and 2026-10-21; `0010` was applied after `0011` and `0012`. Wrangler decides by name, so the order in the ledger does not matter.
 
-**Do not move this migration into the executable `migrations/` directory or run it against production yet.** Production already has `folders` and `notes.folder_id`, but the ledger does not record the migration. Running the candidate normally against production would fail on the existing `folder_id` column. A reviewed procedure must first verify the live schema and reconcile the ledger without rerunning the DDL.
+## `pending/`
 
-## Pending YAOS event-sync migration
-
-`pending/0009_yaos_sync_jobs.sql` adds `notes.sync_uuid` and the `yaos_sync_jobs` outbox table. It remains pending until the folder-schema/ledger reconciliation and deployment sequence have been reviewed. Do not apply it to production yet.
-
+Put a migration that has not been applied to production in `migrations/pending/`. While that directory holds any `.sql` file, the GitHub Actions production deploy is skipped. Move the file up to `migrations/` after it has been applied and recorded in `d1_migrations`.
 ## Schema snapshots
 
 - `../schema-snapshots/live-d1-schema-2026-10-19.sql` is a read-only capture of table/index definitions, not an ordered migration.
