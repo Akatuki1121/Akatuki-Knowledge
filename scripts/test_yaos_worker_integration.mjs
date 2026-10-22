@@ -176,6 +176,7 @@ import WebSocket from "ws";
 const host = "http://127.0.0.1:8787";
 const doc = new Y.Doc();
 const idToText = doc.getMap("idToText");
+const meta = doc.getMap("meta");
 const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
   prefix: ${JSON.stringify("/vault/sync/" + encodeURIComponent(VAULT_ID))},
   params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
@@ -206,12 +207,25 @@ const timeout = setTimeout(() => {
 }, 10000);
 provider.on("sync", synced => {
   if (!synced || finished) return;
-  const id = Array.from(idToText.entries()).find(([, text]) =>
+  const matches = Array.from(idToText.entries()).filter(([, text]) =>
     text.toString().includes(${JSON.stringify(UUID)})
-  )?.[0];
+  );
+  const id = matches.length === 1 ? matches[0][0] : null;
   const text = id && idToText.get(id);
   if (!text) {
-    console.error("YAOS note not found at path " + ${JSON.stringify(path)});
+    const pathMatches = Array.from(meta.values()).filter(value => {
+      const notePath = value instanceof Y.Map
+        ? value.get("path")
+        : value && typeof value === "object" ? value.path : null;
+      return notePath === ${JSON.stringify(path)};
+    }).length;
+    console.error("YAOS lookup failed: " + JSON.stringify({
+      path: ${JSON.stringify(path)},
+      metadataEntries: meta.size,
+      textEntries: idToText.size,
+      pathMatches,
+      uuidMatches: matches.length,
+    }));
     clearTimeout(timeout);
     done(1);
     return;
