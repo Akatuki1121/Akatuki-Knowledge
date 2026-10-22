@@ -410,7 +410,7 @@ async function rejectGitHubWritePlan(env, chatId, taskId) {
   return Number(result?.meta?.changes || 0) === 1 ? "変更計画を拒否しました。GitHubへの書き込みは行っていません。" : "承認状態が変わったため、拒否を反映できませんでした。";
 }
 
-function startTelegramBackgroundTask(env, chatId, messageId, commandText, options = {}) {
+async function startTelegramBackgroundTask(env, chatId, messageId, commandText, options = {}) {
   const allowWebResearch = options.allowWebResearch === true;
   const allowGitHubRead = options.allowGitHubRead === true;
   const allowGitHubWrite = options.allowGitHubWrite === true;
