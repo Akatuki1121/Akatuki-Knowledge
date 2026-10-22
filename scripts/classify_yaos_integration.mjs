@@ -7,7 +7,6 @@ const head = process.env.HEAD_SHA ?? "";
 const outputFile = process.env.GITHUB_OUTPUT;
 const sourceChanged = process.env.SOURCE_CHANGED !== "false";
 let required = sourceChanged;
-let agentRequired = sourceChanged;
 let reason = sourceChanged
   ? "比較対象を確認できないため安全側で結合テストを実行"
   : "ソースコード変更がないため分類対象外";
@@ -23,26 +22,14 @@ if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
     // handling. If this classifier cannot inspect the diff, it fails closed.
     const syncSensitive = /enqueueSyncJob|drainSyncOutbox|yaos_sync_jobs|sync[_-]?uuid|syncOutbox|outbox|sync\/status|api\/sync|api\/notes|YJS_CLIENT|\bYAOS\b|vault_content_conflict|ambiguous_sync_(?:identity|uuid)|unsafe_path|note_revisions|telegram_note_revisions|applyKnowledgeSyncJob|knowledge-sync|source_modified_at|deleted_at|readUuid|isValidSyncUuid|syncIdentity|sync_identity|correction|restore|archive|SYNC_/i;
     required = syncSensitive.test(diff);
-    // Keep agent tests independent from sync-only edits in the legacy entry point.
-    // Import-only context is deliberately excluded from the agent markers below.
-    const agentDiff = execFileSync("git", [
-      "diff", "--no-ext-diff", "--unified=20", base, head, "--", "src/index.js",
-    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    const agentDiffWithoutImports = agentDiff.split(/\r?\n/).filter((line) => {
-      const text = line.replace(/^[ +\-]/, "").trim();
-      return !/^(?:import\b|(?:}\s*)?from\s+["']\.\/(?:agent-|background-task-))/i.test(text);
-    }).join("\n");
-    const agentSensitive = /telegramWebhook|answerTelegramMessage|startTelegramBackgroundTask|cancelTelegramBackgroundTask|listTelegramBackgroundTasks|approveGitHubWritePlan|rejectGitHubWritePlan|runApprovedGitHubWritePlan|executeGitHubWritePlan|executeGitHubReadTool|parseGroundedWebResearch|agent_tasks|agent_memory|background.?task|ORGANIZE_PER_RUN|formatTelegramPlainText|isGitHubNaturalLanguageRequest|AI送信許可/i;
-    agentRequired = agentSensitive.test(agentDiffWithoutImports);
     reason = required
       ? "src/index.js の変更行が同期・ノート変更の保護対象に該当"
       : "src/index.js の変更行に同期・ノート変更の保護対象は見つからず";
   } catch (error) {
     required = true;
-    agentRequired = true;
-    reason = "差分判定に失敗したため安全側で関連テストを実行";
+    reason = "差分判定に失敗したため安全側で結合テストを実行";
   }
 }
 
-if (outputFile) appendFileSync(outputFile, `required=${required}\nagent_required=${agentRequired}\n`);
-console.log(`YAOS integration required: ${required}. Agent domain tests required: ${agentRequired}. ${reason}`);
+if (outputFile) appendFileSync(outputFile, `required=${required}\n`);
+console.log(`YAOS integration required: ${required}. ${reason}`);
