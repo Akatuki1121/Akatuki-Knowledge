@@ -1,4 +1,6 @@
-import knowledgeWorker from "../src/index.js";
+import knowledgeWorker, { YjsClientDO } from "../src/index.js";
+
+export { YjsClientDO };
 
 const YAOS_PROXY_PREFIX = "/__integration/yaos/";
 

@@ -394,12 +394,16 @@ SYNC_TOKEN = "${TOKEN}"
       };
       worker.stdout.on("data", collect);
       worker.stderr.on("data", collect);
-      await waitFor(async () => {
-        try {
-          const response = await fetch(HOST + "/health");
-          return response.ok;
-        } catch { return false; }
-      }, "local Knowledge Worker startup");
+      try {
+        await waitFor(async () => {
+          try {
+            const response = await fetch(HOST + "/health");
+            return response.ok;
+          } catch { return false; }
+        }, "local Knowledge Worker startup");
+      } catch (error) {
+        throw new Error(`${error.message}\n${workerOutput}`);
+      }
     }
 
     async function stopWorker() {
