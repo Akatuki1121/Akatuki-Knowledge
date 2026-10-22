@@ -15,6 +15,16 @@ const fetchImpl = async (url, init) => {
       updated_at: "2026-01-02T00:00:00Z", labels: [{ name: "bug" }],
     });
   }
+  if (String(url).includes("/pulls/8")) {
+    return response(200, { number: 8, title: "Fix", state: "open", draft: true, merged_at: null,
+      head: { ref: "fix/bug", sha: "head-sha" }, base: { ref: "main" },
+      html_url: "https://github.com/example/project/pull/8", updated_at: "2026-01-03T00:00:00Z",
+      changed_files: 1, additions: 2, deletions: 1 });
+  }
+  if (String(url).includes("/check-runs")) {
+    return response(200, { total_count: 1, check_runs: [{ name: "tests", status: "completed",
+      conclusion: "success", html_url: "https://github.com/example/project/actions/runs/1" }] });
+  }
   if (String(url).includes("/pulls?")) {
     return response(200, [{ number: 8, title: "Fix", state: "open", draft: true, merged_at: null,
       head: { ref: "fix/bug" }, base: { ref: "main" }, html_url: "https://github.com/example/project/pull/8",
@@ -29,7 +39,7 @@ const fetchImpl = async (url, init) => {
 };
 
 assert.deepEqual(Object.keys(GITHUB_READ_TOOLS).sort(), [
-  "github_get_issue", "github_get_pull_request", "github_list_pull_requests", "github_read_file",
+  "github_get_issue", "github_get_pr_checks", "github_get_pull_request", "github_list_pull_requests", "github_read_file",
 ].sort());
 const issue = await executeGitHubReadTool("github_get_issue", {
   repository: "example/project", number: 12,
@@ -44,6 +54,13 @@ const pulls = await executeGitHubReadTool("github_list_pull_requests", {
 }, { fetchImpl });
 assert.equal(pulls.pullRequests[0].number, 8);
 assert.equal(pulls.pullRequests[0].draft, true);
+const checks = await executeGitHubReadTool("github_get_pr_checks", {
+  repository: "example/project", number: 8,
+}, { fetchImpl });
+assert.equal(checks.checks[0].name, "tests");
+assert.equal(checks.checks[0].conclusion, "success");
+assert.ok(calls.some((call) => call.url.endsWith("/commits/head-sha/check-runs?per_page=20")));
+
 
 const file = await executeGitHubReadTool("github_read_file", {
   repository: "example/project", path: "README.md", ref: "main",
