@@ -117,6 +117,11 @@ function validateShortText(value, max, field) {
   return value.trim();
 }
 
+function validateContent(value, max) {
+  if (typeof value !== "string" || value.length > max) throw new Error("invalid_input");
+  return value;
+}
+
 export function validateGitHubWritePlan(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).sort().join(",") !== "operations,repository,summary") throw new Error("invalid_input");
@@ -135,7 +140,7 @@ export function validateGitHubWritePlan(input) {
       case "create_file": {
         if (!exactObjectKeys(op, ["type", "branch", "path", "content", "message"])) throw new Error("invalid_input");
         return { type: op.type, branch: validateBranch(op.branch), path: validateWritePath(op.path),
-          content: validateShortText(op.content, 20_000, "content"),
+          content: validateContent(op.content, 20_000),
           message: validateShortText(op.message, 200, "message") };
       }
       case "update_file": {
