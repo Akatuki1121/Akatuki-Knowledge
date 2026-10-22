@@ -42,6 +42,7 @@ for (const required of [
   "cancelAgentTask",
   "/cancel タスクID",
   "assertAgentTaskRunning",
+  "instance.terminate()",
   "task_cancelled",
   "listTelegramBackgroundTasks",
   "listAgentTasks",
