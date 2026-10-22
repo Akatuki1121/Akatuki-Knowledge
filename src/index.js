@@ -1059,6 +1059,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   }
   let contextMs = 0;
   let generationMs = 0;
+  let promptChars = 0;
   const contextStartedAt = Date.now();
   const [history, matches, policy] = await Promise.all([
     env.DB.prepare("SELECT role, content FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 12").bind(chatId).all(),
@@ -1107,6 +1108,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     "Telegramのreplyはプレーンテキストにし、Markdown記号を使わないでください。関連ノートを探す依頼では、各候補が関連する理由と本文の要点を短く説明してください。source_idsには実際に根拠として使ったノートIDだけを入れてください。",
     `今回のメッセージ:\n${safeMessage.text}`
   ].filter(Boolean).join("\n\n");
+  promptChars = prompt.length;
   try {
     const generationStartedAt = Date.now();
     let rawAnswer;
@@ -1131,12 +1133,12 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     if (cited.length) reply += `
 
 \u51FA\u5178: ${cited.map((note) => note.title).join("\u3001")}`;
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars: prompt.length, result: "success" }));
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings, ...safeResponse.findings], prompt.length, "success");
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
     return reply.slice(0, 3500);
   } catch (error) {
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars: 0, result: "failed" }));
-    await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], 0, "failed");
+    await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], promptChars, "failed");
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
     await enqueueBotAlert(env, classifyOperationalFailure(error));
     console.error("Telegram chat response failed");
     return classifyOperationalFailure(error) === "gemini_limit" ? "AI\u306E\u5229\u7528\u4E0A\u9650\u306B\u9054\u3057\u305F\u3088\u3046\u3067\u3001\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u306A\u304B\u3063\u305F\u3088\u3002\u5C11\u3057\u6642\u9593\u3092\u7F6E\u3044\u3066\u8A66\u3057\u3066\u306D\u3002" : "\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30A8\u30E9\u30FC\u3092\u8A18\u9332\u3057\u305F\u306E\u3067\u3001\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u3082\u3046\u4E00\u5EA6\u9001\u3063\u3066\u307F\u3066\u306D\u3002";
