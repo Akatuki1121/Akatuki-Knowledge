@@ -54,7 +54,7 @@ SOURCE = ROOT / "src" / "agent-memory-queue.mjs"
 source = SOURCE.read_text(encoding="utf-8")
 statements = [
     textwrap.dedent(match.group(1)).strip()
-    for match in re.finditer(r"db\\.prepare\\(\\s*`([\\s\\S]*?)`\\s*\\)", source)
+    for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", source)
 ]
 assert len(statements) >= 5, f"Expected queue SQL statements, found {len(statements)}"
 for index, statement in enumerate(statements, start=1):
