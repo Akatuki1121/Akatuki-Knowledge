@@ -59,6 +59,8 @@ assert.equal(claimed.job_id, 7);
 assert.match(db.calls[0].sql, /attempts >= max_attempts/u);
 assert.match(db.calls[1].sql, /RETURNING job_id, chat_id, message_id, message_text/u);
 assert.match(db.calls[1].sql, /lease_expires_at IS NULL OR lease_expires_at <=/u);
+assert.match(db.calls[1].sql, /active.status = 'processing'/u);
+assert.equal(db.calls[1].params.length, 8);
 assert.equal(db.calls[1].params[0], new Date(nowMs + 120000).toISOString());
 
 db.calls.length = 0;
