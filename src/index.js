@@ -303,9 +303,11 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText, 
   const taskType = options.taskType === "github_query" && allowGitHubRead ? "github_query" : "knowledge_query";
   const prompt = commandText.replace(/^\/(?:task|research|github)(?:@\w+)?\s*/u, "").trim();
   if (!prompt) {
-    return allowWebResearch
-      ? "Web調査の依頼を書いてね。例: /research 最新の公式仕様を複数の出典で比較して"
-      : "ナレッジ検索・要約の依頼を書いてね。例: /task Purgeのリリース手順をまとめて";
+    return allowGitHubRead
+      ? "GitHubで調べる内容を書いてね。例: /github Akatuki1121/Purge の未完了Issueと関連PRを調べて"
+      : allowWebResearch
+        ? "Web調査の依頼を書いてね。例: /research 最新の公式仕様を複数の出典で比較して"
+        : "ナレッジ検索・要約の依頼を書いてね。例: /task Purgeのリリース手順をまとめて";
   }
   if (!env.AGENT_TASK_WORKFLOW || !env.DB) return "背景実行基盤はまだ利用できません。";
   if (allowWebResearch && env.GEMINI_WEB_RESEARCH_ENABLED !== "true") {
