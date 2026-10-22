@@ -313,7 +313,8 @@ export async function cancelAgentTask(db, input = {}) {
   const result = await db.prepare(`
     UPDATE agent_tasks
     SET status = 'cancelled', stop_reason = 'user_cancelled',
-        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
+        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL,
+        notification_status = 'sent', notification_lease_expires_at = NULL
     WHERE task_id = ? AND notify_chat_id = ?
       AND status IN ('queued', 'running', 'waiting')
     RETURNING task_id
