@@ -165,7 +165,7 @@ export function validateGitHubWritePlan(input) {
     }
   });
   const normalized = { repository, summary, operations };
-  if (JSON.stringify(normalized).length > 12_000) throw new Error("github_write_plan_too_large");
+  if (JSON.stringify(normalized).length > 9_000) throw new Error("github_write_plan_too_large");
   return normalized;
 }
 
