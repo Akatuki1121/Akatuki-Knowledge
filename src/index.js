@@ -1485,6 +1485,22 @@ async function askQuestion(request, env) {
   }
 }
 __name(askQuestion, "askQuestion");
+var D1_LIKE_PATTERN_MAX_BYTES = 50;
+function describeOrganizeFailure(stage, source, error) {
+  const message = String(error?.message || "");
+  const reason = message === "Gemini returned no text" ? "empty_response" : message === "AI response did not contain JSON" ? "no_json" : error instanceof SyntaxError ? "invalid_json" : void 0;
+  return {
+    stage,
+    source,
+    kind: classifyOperationalFailure(error),
+    errorName: typeof error?.name === "string" ? error.name : "Error",
+    httpStatus: Number.isInteger(error?.httpStatus) ? error.httpStatus : void 0,
+    apiStatus: typeof error?.apiStatus === "string" ? error.apiStatus.slice(0, 40) : void 0,
+    sqlite: message.match(/SQLITE_[A-Z_]+/)?.[0],
+    reason
+  };
+}
+__name(describeOrganizeFailure, "describeOrganizeFailure");
 async function organizePending(env, requestedLimit = 2, requestedIds = null) {
   if (!env.GEMINI_API_KEY || !env.DB) return json({ error: "GEMINI_API_KEY is not configured" }, 503);
   const limit = Math.max(1, Math.min(5, Number(requestedLimit) || 2));
@@ -1535,7 +1551,7 @@ ${excerptForAi.text}`;
       organized++;
     } catch (error) {
       await enqueueBotAlert(env, classifyOperationalFailure(error));
-      console.error("organize failed");
+      console.error("organize failed", JSON.stringify(describeOrganizeFailure(stage, note.source, error)));
       const failedCount = await env.DB.prepare(`SELECT organization_failures FROM ${table} WHERE id = ?`).bind(note.id).first();
       const attempts = Math.min(10, Number(failedCount?.organization_failures || 0) + 1);
       const delayMinutes = Math.min(24 * 60, 15 * 2 ** (attempts - 1));
@@ -1550,7 +1566,9 @@ ${excerptForAi.text}`;
 __name(organizePending, "organizePending");
 async function linkRelatedNotes(env, note, relatedTerms) {
   const ids = /* @__PURE__ */ new Map();
-  const terms = relatedTerms.slice(0, 4).map((term) => `%${term.replace(/[\\%_]/g, "\\$&")}%`);
+  const likePattern = (term) => `%${term.replace(/[\\%_]/g, "\\$&")}%`;
+  const usableTerms = relatedTerms.filter((term) => new TextEncoder().encode(likePattern(term)).length <= D1_LIKE_PATTERN_MAX_BYTES).slice(0, 4);
+  const terms = usableTerms.map(likePattern);
   if (terms.length) {
     const conditions = terms.map(() => "(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')").join(" OR ");
     const bindings = terms.flatMap((term) => [term, term, term]);
@@ -1561,7 +1579,7 @@ async function linkRelatedNotes(env, note, relatedTerms) {
     for (const match2 of [...matches.results, ...telegramMatches.results]) {
       const text2 = `${match2.title}
 ${match2.content}`;
-      const score = relatedTerms.slice(0, 4).filter((term) => text2.toLocaleLowerCase().includes(term.toLocaleLowerCase())).length;
+      const score = usableTerms.filter((term) => text2.toLocaleLowerCase().includes(term.toLocaleLowerCase())).length;
       if (score) ids.set(match2.id, score);
     }
   }
@@ -1688,7 +1706,10 @@ async function callGemini(env, prompt, maxOutputTokens, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = data?.error?.message || `Gemini API returned ${response.status}`;
-    throw new Error(message.slice(0, 300));
+    const failure = new Error(message.slice(0, 300));
+    failure.httpStatus = response.status;
+    failure.apiStatus = typeof data?.error?.status === "string" ? data.error.status : void 0;
+    throw failure;
   }
   const text2 = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim();
   if (!text2) throw new Error("Gemini returned no text");
