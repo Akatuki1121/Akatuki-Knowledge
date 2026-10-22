@@ -8,7 +8,11 @@ const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf
 
 for (const required of [
   "class AgentTaskWorkflow extends WorkflowEntrypoint",
-  'task.task_type !== "knowledge_query"',
+  '!["knowledge_query", "github_query"].includes(task.task_type)',
+  'task.task_type === "github_query"',
+  "executeGitHubReadTool",
+  "allowGitHubRead",
+  '^\\\\/github(?:@\\\\w+)?',
   "searchAgentTaskNotes(prepared.safePrompt, this.env)",
   'step.do("retrieve-context-"',
   "if (note.ai_allowed !== 1) continue;",
