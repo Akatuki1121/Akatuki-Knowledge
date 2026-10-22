@@ -10,6 +10,7 @@ const checks = [
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
   ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
+  ["agent-memory", process.execPath, ["scripts/test_agent_memory.mjs"]],
   ["background-task-store", process.execPath, ["scripts/check-background-task-store.mjs"]],
   ["background-task-workflow", process.execPath, ["scripts/check-background-task-workflow.mjs"]],
   ["agent-task-idempotency", process.execPath, ["scripts/test_agent_task_idempotency.mjs"]],
@@ -17,6 +18,7 @@ const checks = [
   ["agent-tasks-migration", "python3", ["scripts/test_agent_tasks_migration.py"]],
   ["agent-task-store-sql", "python3", ["scripts/test_agent_task_store_sql.py"]],
   ["agent-task-recovery", "python3", ["scripts/test_agent_task_recovery.py"]],
+  ["agent-memory-migration", "python3", ["scripts/test_agent_memory_migration.py"]],
   ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
   ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
 ];

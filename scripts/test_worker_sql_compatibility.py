@@ -4,9 +4,15 @@ import re
 import sqlite3
 from pathlib import Path
 
-SOURCE = Path("src/index.js")
+SOURCES = [Path("src/index.js"), Path("src/agent-memory.mjs")]
 SCHEMA = Path("schema-snapshots/live-d1-schema-2026-10-19.sql")
-PENDING_MIGRATIONS = [Path("migrations/0009_yaos_sync_jobs.sql"), Path("migrations/0010_bot_organization_candidates.sql"), Path("migrations/0011_agent_tasks.sql"), Path("migrations/0012_bot_ai_permission_previews.sql")]
+PENDING_MIGRATIONS = [
+    Path("migrations/0009_yaos_sync_jobs.sql"),
+    Path("migrations/0010_bot_organization_candidates.sql"),
+    Path("migrations/0011_agent_tasks.sql"),
+    Path("migrations/0012_bot_ai_permission_previews.sql"),
+    Path("migrations/pending/0013_agent_memory_metadata.sql"),
+]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
     r'"((?:\\.|[^"\\])*)"'
@@ -53,42 +59,43 @@ db.executescript(SCHEMA.read_text(encoding="utf-8"))
 # Validate Worker SQL against the captured live schema plus additive pending migrations.
 for migration in PENDING_MIGRATIONS:
     db.executescript(migration.read_text(encoding="utf-8"))
-source = SOURCE.read_text(encoding="utf-8")
+sources = [path.read_text(encoding="utf-8") for path in SOURCES]
 checked = 0
 skipped_dynamic = 0
 failures = []
 seen = set()
 
-for match in CALL_RE.finditer(source):
-    raw = next(group for group in match.groups() if group is not None)
-    query = decode_js_string(raw).strip()
-    if not SQL_WORD.search(query):
-        continue
-    # A string literal continued with "+" is a dynamically built statement. The only
-    # supported shape is a trailing placeholder list: "... IN (" + placeholders + ")".
-    if source[match.end():].lstrip().startswith("+"):
-        if re.search(r"\bIN\s*\($", query, re.IGNORECASE):
-            query += "?)"
-        else:
+for source in sources:
+    for match in CALL_RE.finditer(source):
+        raw = next(group for group in match.groups() if group is not None)
+        query = decode_js_string(raw).strip()
+        if not SQL_WORD.search(query):
+            continue
+        # A string literal continued with "+" is a dynamically built statement. The only
+        # supported shape is a trailing placeholder list: "... IN (" + placeholders + ")".
+        if source[match.end():].lstrip().startswith("+"):
+            if re.search(r"\bIN\s*\($", query, re.IGNORECASE):
+                query += "?)"
+            else:
+                skipped_dynamic += 1
+                continue
+        query_variants = list(variants(query))
+        if not query_variants:
             skipped_dynamic += 1
             continue
-    query_variants = list(variants(query))
-    if not query_variants:
-        skipped_dynamic += 1
-        continue
-    for candidate in query_variants:
-        normalized = re.sub(r"\s+", " ", candidate).strip()
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        try:
-            parameter_tokens = re.findall(r"\?(\d*)", candidate)
-            numbered = [int(token) for token in parameter_tokens if token]
-            parameter_count = max(numbered) if numbered else len(parameter_tokens)
-            db.execute("EXPLAIN " + candidate, (None,) * parameter_count).fetchall()
-            checked += 1
-        except sqlite3.Error as exc:
-            failures.append((str(exc), normalized[:260]))
+        for candidate in query_variants:
+            normalized = re.sub(r"\s+", " ", candidate).strip()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            try:
+                parameter_tokens = re.findall(r"\?(\d*)", candidate)
+                numbered = [int(token) for token in parameter_tokens if token]
+                parameter_count = max(numbered) if numbered else len(parameter_tokens)
+                db.execute("EXPLAIN " + candidate, (None,) * parameter_count).fetchall()
+                checked += 1
+            except sqlite3.Error as exc:
+                failures.append((str(exc), normalized[:260]))
 
 if failures:
     print(f"FAIL: {len(failures)} SQL statement variant(s) failed; {checked} passed; {skipped_dynamic} dynamic statement(s) skipped.")

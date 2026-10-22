@@ -166,6 +166,19 @@ async function currentDeadCount() {
   return status.outbox.dead || 0;
 }
 
+async function latestOutboxFailure(stateDir) {
+  const queryPath = join(stateDir, "outbox-failure.sql");
+  await writeFile(queryPath, [
+    "SELECT status, attempts, last_error, payload_json FROM yaos_sync_jobs ORDER BY job_id DESC LIMIT 1;",
+    "SELECT id, path, content FROM notes;",
+  ].join("\n"));
+  return await run("npx", [
+    ...WRANGLER, "d1", "execute", "knowledge-integration",
+    "--local", `--file=${queryPath}`,
+    "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
+  ]);
+}
+
 async function mutateYaosNote(path, suffix, clientPath) {
   // Use YAOS's own installed Yjs provider and schema to make a genuine
   // remote-side edit, rather than faking the verification response.
@@ -363,6 +376,11 @@ SYNC_TOKEN = "${TOKEN}"
       "--local", "--file=./migrations/0009_yaos_sync_jobs.sql",
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
+    await run("npx", [
+      ...WRANGLER, "d1", "execute", "knowledge-integration",
+      "--local", "--file=./migrations/pending/0013_agent_memory_metadata.sql",
+      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
+    ]);
     markPhase("ローカルD1の準備完了");
 
     async function startWorker() {
@@ -486,7 +504,9 @@ SYNC_TOKEN = "${TOKEN}"
       retryObservation = status.outbox;
       return status.outbox?.sent > sentBeforeRetry;
     }, "outbox job to retry after YAOS auth is restored", 30000).catch(error => {
-      throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}`);
+      return latestOutboxFailure(stateDir).then(diagnostic => {
+        throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}; latest job: ${diagnostic.slice(-2000)}`);
+      });
     });
     markPhase("認証失敗後の再試行完了");
 
