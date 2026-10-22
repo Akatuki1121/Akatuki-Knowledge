@@ -125,6 +125,7 @@ jobs:
           repository: kavinsood/yaos
           ref: 2174eb89538ce7e213e9e33a0e75ecaf1a3f1f58
           path: yaos
+          fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
