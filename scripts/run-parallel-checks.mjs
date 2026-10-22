@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 const checks = [
   ["source-syntax", process.execPath, ["--check", "src/index.js"]],
+  ["sync-module-syntax", process.execPath, ["--check", "src/sync-outbox.mjs"]],
   ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/organize-failure.test.js"]],
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
   ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
@@ -28,8 +29,12 @@ const checks = [
 ];
 
 const selectedChecks = process.argv.includes("--sync-only")
-  ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name.startsWith("background-task-"))
-  : checks;
+  ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name === "sync-contract" || name === "yaos-integration-classifier" || name === "sync-module-syntax")
+  : process.argv.includes("--agent-only")
+    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name === "sync-telegram-agent-notifications")
+    : process.argv.includes("--core-only")
+      ? checks.filter(([name]) => ["source-syntax", "sync-module-syntax", "node-tests", "wrangler-config"].includes(name))
+      : checks;
 
 const limit = Math.max(1, Math.min(4, Number(process.env.CI_CHECK_CONCURRENCY) || 4));
 let next = 0;
