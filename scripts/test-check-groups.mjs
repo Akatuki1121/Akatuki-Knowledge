@@ -6,6 +6,12 @@ assert.equal(new Set(names).size, names.length, "check names must be unique");
 const core = new Set(selectChecks(["--core-only"]).map(([name]) => name));
 const agent = new Set(selectChecks(["--agent-only"]).map(([name]) => name));
 const sync = new Set(selectChecks(["--sync-only"]).map(([name]) => name));
+const all = new Set(selectChecks([]).map(([name]) => name));
+assert.equal(all.size, names.length, "the full suite includes every check");
+assert.ok(!core.has("sync-outbox"), "sync-only checks stay out of core");
+assert.ok(!core.has("agent-tool-loop"), "agent checks stay out of core");
+assert.ok(!agent.has("sync-identity"), "sync-only checks stay out of agent group");
+assert.ok(!sync.has("agent-tool-loop"), "agent checks stay out of sync group");
 for (const [name] of checks) {
   assert.ok(core.has(name) || agent.has(name) || sync.has(name), `Check is not assigned to any group: ${name}`);
 }
