@@ -567,8 +567,18 @@ async function cancelTelegramBackgroundTask(env, chatId, requestedTaskId) {
     return "キャンセル要求を保存できませんでした。少し待って /task_status " + taskId + " で確認してください。";
   }
   if (result.cancelled) {
-    return "キャンセルしました。\nID: " + result.taskId
-      + "\n結果の保存・完了通知は行われません。実行中の外部リクエストは応答待ちの間だけ残る場合があります。";
+    // Persist cancellation first so even a failed Workflow termination cannot
+    // save a result or reclaim the task. Then stop the durable execution itself.
+    try {
+      if (env.AGENT_TASK_WORKFLOW) {
+        const instance = await env.AGENT_TASK_WORKFLOW.get(taskId);
+        await instance.terminate();
+      }
+    } catch {
+      // The D1 terminal state remains authoritative if the instance already ended.
+    }
+    return "キャンセルしました。\\nID: " + result.taskId
+      + "\\n結果の保存・完了通知は行われません。すでに送信された外部API処理は相手側で完了する場合があります。";
   }
   if (result.reason === "already_cancelled") return "このタスクはすでにキャンセル済みです。\nID: " + taskId;
   if (result.reason === "already_terminal") return "このタスクはすでに終了しています（状態: " + result.status + "）。\nID: " + taskId;
