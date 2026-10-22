@@ -13,6 +13,19 @@ const final = (reply, sourceIds = []) => JSON.stringify({ action: "final", reply
 assert.deepEqual(Object.keys(AGENT_READ_ONLY_TOOLS).sort(), ["get_note", "search_notes"]);
 assert.ok(Object.values(AGENT_READ_ONLY_TOOLS).every((tool) => tool.sideEffect === "read_only"));
 assert.equal(AGENT_WEB_RESEARCH_TOOL.sideEffect, "external_read");
+assert.throws(() => validateAgentToolAction({
+  action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1 },
+}), /unknown_tool/);
+assert.deepEqual(
+  validateAgentToolAction({
+    action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1 },
+  }, { allowGitHubRead: true }),
+  { action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1 } },
+);
+assert.throws(() => validateAgentToolAction({
+  action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1, extra: true },
+}, { allowGitHubRead: true }), /invalid_input/);
+
 
 assert.deepEqual(
   validateAgentToolAction(JSON.parse(action("search_notes", { query: "deployment decision" }))),
@@ -300,5 +313,24 @@ await assert.rejects(runAgentToolLoop({
   executeTool: async () => "x".repeat(AGENT_TOOL_LIMITS.maxToolOutputChars + 1),
   saveCheckpoint: async () => true,
 }), (error) => error.message === "tool_output_too_large");
+
+
+const githubLoop = await runAgentToolLoop({
+  initialPrompt: "Inspect GitHub issue example/project#1",
+  allowGitHubRead: true,
+  callModel: async ({ modelCall, prompt }) => {
+    assert.match(prompt, /github_get_issue/);
+    if (modelCall === 1) return action("github_get_issue", { repository: "example/project", number: 1 });
+    return final("Issue #1 is open.", []);
+  },
+  executeTool: async (tool, args) => {
+    assert.equal(tool, "github_get_issue");
+    assert.deepEqual(args, { repository: "example/project", number: 1 });
+    return { repository: "example/project", number: 1, state: "open" };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(githubLoop.reply, "Issue #1 is open.");
+assert.equal(githubLoop.toolCalls[0].tool, "github_get_issue");
 
 console.log("Agent tool loop tests passed: sequential read-only tools, strict schemas, allowlist, citations, loop/step bounds, and checkpoint resume.");
