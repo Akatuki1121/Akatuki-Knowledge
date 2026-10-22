@@ -1062,12 +1062,20 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     });
   }
   let contextMs = 0;
+  let searchMs = 0;
   let generationMs = 0;
   let promptChars = 0;
   const contextStartedAt = Date.now();
   const [history, matches, policy] = await Promise.all([
     env.DB.prepare("SELECT role, content FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 12").bind(chatId).all(),
-    omitStoredMemory ? Promise.resolve([]) : findRelevantNotes(message, env, 8),
+    omitStoredMemory ? Promise.resolve([]) : (async () => {
+      const searchStartedAt = Date.now();
+      try {
+        return await findRelevantNotes(message, env, 8);
+      } finally {
+        searchMs = Date.now() - searchStartedAt;
+      }
+    })(),
     env.DB.prepare("SELECT category, rule_text FROM bot_behavior_rules WHERE active = 1 ORDER BY rule_id DESC LIMIT 20").all(),
     memoryQueuePromise
   ]);
@@ -1139,11 +1147,11 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
 
 \u51FA\u5178: ${cited.map((note) => note.title).join("\u3001")}`;
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings, ...safeResponse.findings], prompt.length, "success");
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
     return reply.slice(0, 3500);
   } catch (error) {
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], promptChars, "failed");
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
     await enqueueBotAlert(env, classifyOperationalFailure(error));
     console.error("Telegram chat response failed");
     return classifyOperationalFailure(error) === "gemini_limit" ? "AI\u306E\u5229\u7528\u4E0A\u9650\u306B\u9054\u3057\u305F\u3088\u3046\u3067\u3001\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u306A\u304B\u3063\u305F\u3088\u3002\u5C11\u3057\u6642\u9593\u3092\u7F6E\u3044\u3066\u8A66\u3057\u3066\u306D\u3002" : "\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30A8\u30E9\u30FC\u3092\u8A18\u9332\u3057\u305F\u306E\u3067\u3001\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u3082\u3046\u4E00\u5EA6\u9001\u3063\u3066\u307F\u3066\u306D\u3002";
@@ -1281,6 +1289,12 @@ async function drainAgentMemoryQueue(env, requestedLimit = 1) {
 __name(drainAgentMemoryQueue, "drainAgentMemoryQueue");
 
 async function processAgentMemoryJob(env, job) {
+  const jobStartedAt = Date.now();
+  const queueWaitMs = job.created_at ? Math.max(0, jobStartedAt - Date.parse(job.created_at)) : null;
+  let searchMs = 0;
+  let extractionMs = 0;
+  let saveMs = 0;
+  let promptChars = 0;
   const messageId = String(job.message_id);
   const chatId = String(job.chat_id);
   const message = String(job.message_text || "");
@@ -1288,7 +1302,9 @@ async function processAgentMemoryJob(env, job) {
   const safeMessage = inspectAndRedact(message, { blocklist: env.PRIVACY_BLOCKLIST || "" });
   if (!safeMessage.ok) return;
 
+  const searchStartedAt = Date.now();
   const matches = await findRelevantNotes(safeMessage.text, env, 8);
+  searchMs = Date.now() - searchStartedAt;
   const contextNotes = [];
   for (const note of matches) {
     if (inspectWholeContent(note.content, env).credentials) continue;
@@ -1312,14 +1328,24 @@ async function processAgentMemoryJob(env, job) {
     contextNotes.length ? `関連候補ノート:\n${contextNotes.map((note) => `ID=${note.id}; source=${note.source}; title=${note.title}; contentHash=${note.contentHash}\n${note.text}`).join("\n\n")}` : "関連候補ノートはありません。",
     `ユーザー発言:\n${safeMessage.text}`
   ].join("\n\n");
-  const raw = await callGemini(env, prompt, 500, { signal: AbortSignal.timeout(30_000) });
+  promptChars = prompt.length;
+  const extractionStartedAt = Date.now();
+  let raw;
+  try {
+    raw = await callGemini(env, prompt, 500, { signal: AbortSignal.timeout(30_000) });
+  } finally {
+    extractionMs = Date.now() - extractionStartedAt;
+  }
   let parsed;
   try {
     parsed = parseJsonObject(raw);
   } catch {
+    await writeAudit(env, "memory_extraction", contextNotes.length, safeMessage.findings, prompt.length, "invalid_json");
+    console.log(JSON.stringify({ event: "agent_memory_timing", queueWaitMs, searchMs, extractionMs, saveMs, totalMs: Date.now() - jobStartedAt, noteCount: contextNotes.length, promptChars, result: "invalid_json" }));
     return;
   }
 
+  const saveStartedAt = Date.now();
   const capture = parsed.capture || {};
   let notification = "";
   if (["create", "append"].includes(capture.action) && Number(capture.confidence) >= 0.85) {
@@ -1356,7 +1382,9 @@ async function processAgentMemoryJob(env, job) {
     }
   }
 
+  saveMs = Date.now() - saveStartedAt;
   await writeAudit(env, "memory_extraction", contextNotes.length, safeMessage.findings, prompt.length, "success");
+  console.log(JSON.stringify({ event: "agent_memory_timing", queueWaitMs, searchMs, extractionMs, saveMs, totalMs: Date.now() - jobStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
   if (notification) {
     try {
       await sendTelegramMessage(env, chatId, notification.slice(0, 3000));
