@@ -183,7 +183,7 @@ function webSourcesFromTranscript(transcript) {
     const result = validateSavedWebResearchResult(item.result);
     for (const source of result.sources) sources.set(source.url, source);
   }
-  return new Map([...sources.entries()].slice(0, AGENT_WEB_RESEARCH_LIMITS.maxReturnedSources));
+  return sources;
 }
 
 export async function runAgentToolLoop(input) {
@@ -246,7 +246,10 @@ export async function runAgentToolLoop(input) {
             const selected = action.webSourceUrls.length
               ? action.webSourceUrls.filter((url) => sources.has(url))
               : [...sources.keys()];
-            return [...new Set(selected)].map((url) => sources.get(url));
+            return [...new Set(selected)]
+              .map((url) => sources.get(url))
+              .filter(Boolean)
+              .slice(0, AGENT_WEB_RESEARCH_LIMITS.maxReturnedSources);
           })(),
           modelCalls: state.modelCalls,
           toolCalls: state.toolCalls,

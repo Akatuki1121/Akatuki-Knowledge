@@ -101,6 +101,8 @@ assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only pro
 assert.ok(source.includes('store: false'), "Web research interactions must not be stored by the provider");
 assert.ok(source.includes('tools: [{ type: "google_search" }, { type: "url_context" }]'), "Web research must use grounded search and page context");
 assert.ok(source.includes('signal: AbortSignal.timeout(90_000)'), "Web research requests must be bounded by a timeout");
+assert.ok(source.includes('if (allowWebResearch && env.GEMINI_WEB_RESEARCH_ENABLED !== "true")'), "User opt-in alone must not enable web research while the Worker gate is off");
+assert.ok(!config.includes("GEMINI_WEB_RESEARCH_ENABLED"), "The default Wrangler config must keep potentially billable web research disabled");
 assert.ok(toolLoop.includes('throw new Error("unknown_tool")'), "Unknown tools must fail closed");
 assert.ok(toolLoop.includes('throw new Error("tool_loop_detected")'), "Repeated tool calls must stop");
 assert.ok(toolLoop.includes("AGENT_TOOL_LIMITS.maxToolOutputChars"), "Tool output size must be bounded");

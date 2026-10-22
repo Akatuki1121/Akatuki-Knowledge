@@ -118,6 +118,38 @@ const webRun = await runAgentToolLoop({
 assert.equal(webToolExecutions, 1);
 assert.deepEqual(webRun.webSources, webResult.sources, "Final web citations must be filtered to collected evidence");
 
+const secondWebResult = {
+  report: "An independent source confirms the release date.",
+  sources: [{
+    url: "https://news.example/release",
+    title: "Independent release report",
+    evidence: "The release happened on May 3, 2026.",
+    checkedAt: "2026-10-22T12:01:00.000Z",
+  }],
+};
+let multiStageModelCalls = 0;
+let multiStageToolCalls = 0;
+const multiStageWeb = await runAgentToolLoop({
+  initialPrompt: "Compare the release date across official sources.",
+  allowWebResearch: true,
+  callModel: async () => {
+    multiStageModelCalls++;
+    if (multiStageModelCalls <= 2) {
+      return action("web_research", { query: `Compare release evidence ${multiStageModelCalls}` });
+    }
+    return JSON.stringify({
+      action: "final",
+      reply: "The sources agree on the date.",
+      source_ids: [],
+      web_source_urls: ["https://news.example/release"],
+    });
+  },
+  executeTool: async () => [webResult, secondWebResult][multiStageToolCalls++],
+  saveCheckpoint: async () => true,
+});
+assert.equal(multiStageToolCalls, 2);
+assert.deepEqual(multiStageWeb.webSources, secondWebResult.sources, "A later cited source must remain selectable across research steps");
+
 let cappedWebCalls = 0;
 let cappedWebExecutions = 0;
 await assert.rejects(runAgentToolLoop({
