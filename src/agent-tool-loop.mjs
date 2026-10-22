@@ -305,6 +305,8 @@ export async function runAgentToolLoop(input) {
     if (action.tool === "get_note" && !noteIdsFromTranscript(state.transcript).has(action.arguments.id)) {
       throw new Error("policy_violation");
     }
+    if (action.tool === "github_propose_write" && !allowGitHubWrite) throw new Error("policy_violation");
+    if (action.tool === "github_propose_write" && state.toolCalls.some((call) => call.tool === "github_propose_write")) throw new Error("github_write_plan_already_proposed");
     if (action.tool === "web_research"
       && state.toolCalls.filter((call) => call.tool === "web_research").length >= AGENT_WEB_RESEARCH_LIMITS.maxCalls) {
       throw new Error("web_research_budget_exhausted");
