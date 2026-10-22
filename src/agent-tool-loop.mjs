@@ -105,6 +105,10 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
     }
     return { action: "tool", tool: response.tool, arguments: { query: args.query.trim() } };
   }
+  if (response.tool === "github_propose_write") {
+    const plan = validateGitHubWritePlan(args);
+    return { action: "tool", tool: response.tool, arguments: plan };
+  }
   if (response.tool.startsWith("github_")) {
     if (typeof args.repository !== "string" || !/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u.test(args.repository)
       || args.repository.includes("..")) throw new Error("invalid_input");
