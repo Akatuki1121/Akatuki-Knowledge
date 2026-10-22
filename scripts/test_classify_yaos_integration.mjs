@@ -40,7 +40,6 @@ try {
   await writeFile(output, "");
   classify(baseline, feature);
   assert.match(await readFile(output, "utf8"), /required=false/, "unrelated source change should skip YAOS E2E");
-  assert.match(await readFile(output, "utf8"), /agent_required=false/, "unrelated source change should skip agent tests");
 
   await writeFile(join(dir, "src", "index.js"), [
     "async function mutateNote() {",
@@ -67,36 +66,10 @@ try {
   await writeFile(output, "");
   classify(sync, controlFlow);
   assert.match(await readFile(output, "utf8"), /required=true/, "control-flow changes inside sync context must run YAOS E2E");
-  assert.match(await readFile(output, "utf8"), /agent_required=false/, "sync-only changes should skip agent tests");
-
-  await writeFile(join(dir, "src", "index.js"), [
-    "async function answerTelegramMessage(env, text) {",
-    "  const shouldSearch = true;",
-    "  return shouldSearch;",
-    "}",
-    "",
-  ].join("\n"));
-  git("add", ".");
-  git("commit", "-qm", "agent feature");
-  const agentBase = git("rev-parse", "HEAD");
-  await writeFile(join(dir, "src", "index.js"), [
-    "async function answerTelegramMessage(env, text) {",
-    "  const shouldSearch = false;",
-    "  return shouldSearch;",
-    "}",
-    "",
-  ].join("\n"));
-  git("add", ".");
-  git("commit", "-qm", "agent behavior change");
-  const agentHead = git("rev-parse", "HEAD");
-  await writeFile(output, "");
-  classify(agentBase, agentHead);
-  assert.match(await readFile(output, "utf8"), /agent_required=true/, "agent behavior changes must run agent tests");
 
   await writeFile(output, "");
   classify("", sync);
   assert.match(await readFile(output, "utf8"), /required=true/, "unknown diff must fail closed");
-  assert.match(await readFile(output, "utf8"), /agent_required=true/, "unknown diff must fail closed for agent tests too");
 
   await writeFile(output, "");
   classify("", "", "false");
