@@ -19,4 +19,7 @@ export default {
 
     return knowledgeWorker.fetch(request, env, ctx);
   },
+  scheduled(event, env, ctx) {
+    return knowledgeWorker.scheduled(event, env, ctx);
+  },
 };
