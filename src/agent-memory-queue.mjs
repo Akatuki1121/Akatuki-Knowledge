@@ -54,7 +54,7 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
       AND attempts < max_attempts
       AND (
         (status = 'queued' AND next_attempt_at <= ?)
-        OR (status = 'processing' AND lease_expires_at <= ?)
+        OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
       )
     RETURNING job_id, chat_id, message_id, message_text, attempts, max_attempts
   `).bind(leaseUntil, now, now, now, now, now).first();
