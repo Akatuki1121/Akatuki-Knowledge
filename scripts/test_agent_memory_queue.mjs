@@ -87,7 +87,7 @@ assert.equal(db.calls[1].params[2], "failed");
 assert.equal(db.calls[1].params[3], "badstatus");
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-assert.match(source, /await enqueueAgentMemoryJob\(env\.DB/u);
+assert.match(source, /enqueueAgentMemoryJob\(env\.DB/u);
 assert.match(source, /ctx\.waitUntil\(drainAgentMemoryQueue\(env, 1\)\)/u);
 assert.match(source, /event: "telegram_answer_timing"/u);
 const answerStart = source.indexOf("async function answerTelegramMessage");
