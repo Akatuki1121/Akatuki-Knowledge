@@ -57,7 +57,7 @@ db.firstResult = {
 const claimed = await claimNextAgentMemoryJob(db, { nowMs });
 assert.equal(claimed.job_id, 7);
 assert.match(db.calls[0].sql, /attempts >= max_attempts/u);
-assert.match(db.calls[1].sql, /RETURNING job_id, chat_id, message_id, message_text/u);
+assert.match(db.calls[1].sql, /RETURNING job_id, chat_id, message_id, message_text, attempts, max_attempts, created_at/u);
 assert.match(db.calls[1].sql, /lease_expires_at IS NULL OR lease_expires_at <=/u);
 assert.match(db.calls[1].sql, /active.status = 'processing'/u);
 assert.equal(db.calls[1].params.length, 8);
@@ -90,6 +90,8 @@ const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8
 assert.match(source, /enqueueAgentMemoryJob\(env\.DB/u);
 assert.match(source, /ctx\.waitUntil\(drainAgentMemoryQueue\(env, 1\)\)/u);
 assert.match(source, /event: "telegram_answer_timing"/u);
+assert.match(source, /event: "agent_memory_timing"/u);
+assert.match(source, /searchMs, memoryQueueMs, generationMs/u);
 const answerStart = source.indexOf("async function answerTelegramMessage");
 const answerEnd = source.indexOf('__name(answerTelegramMessage', answerStart);
 const answerBody = source.slice(answerStart, answerEnd);
