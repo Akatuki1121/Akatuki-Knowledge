@@ -146,7 +146,7 @@ export function validateGitHubWritePlan(input) {
       case "update_file": {
         if (!exactObjectKeys(op, ["type", "branch", "path", "content", "message", "sha"]) || !SHA_PATTERN.test(op.sha)) throw new Error("invalid_input");
         return { type: op.type, branch: validateBranch(op.branch), path: validateWritePath(op.path),
-          content: validateShortText(op.content, 20_000, "content"),
+          content: validateContent(op.content, 20_000),
           message: validateShortText(op.message, 200, "message"), sha: op.sha };
       }
       case "create_issue": {
