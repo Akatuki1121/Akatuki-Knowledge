@@ -48,20 +48,22 @@ Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow exe
 
 ## Current task-type boundary
 
-The first task type is `knowledge_query`: a read-only multi-stage note search and summarization. Note writes are intentionally excluded until their D1/YAOS side effects have explicit idempotency keys and restart tests. The Workflow stores `context_ready`, `prompt_ready`, and `completed` checkpoints; a restart reuses saved context/prompt and completes from an existing output rather than issuing another AI call.
+The first task type is `knowledge_query`: a read-only multi-stage note search and summarization. Note writes are intentionally excluded until their D1/YAOS side effects have explicit idempotency keys, operation-bound approvals, and restart tests. The Workflow stores `context_ready`, `prompt_ready`, `agent_loop`, and `completed` checkpoints; a restart reuses saved context/prompt, replays only a pending read-only tool action, and completes from an existing output rather than issuing another AI call.
 
 ## Issue 35 operation inventory
 
 | Operation | Entry point | Side effects | Background status |
 | --- | --- | --- | --- |
 | Search and summarize approved notes | Telegram `/task <query>` or authenticated `POST /api/agent-tasks` | Reads D1 notes; calls Gemini after privacy checks; stores task checkpoints/result in D1; Telegram tasks send a terminal notification | Enabled as `knowledge_query`; read-only with respect to notes |
+| Search notes from an agent step | Internal `search_notes` allowlisted tool | Reads only AI-approved, credential-screened notes and returns masked, bounded excerpts | Enabled; at most four tool calls and five model calls per Workflow run |
+| Read a search result | Internal `get_note` allowlisted tool | Returns one bounded result previously returned by `search_notes`; no new access outside the task's retrieved result set | Enabled |
 | Inspect one task | Telegram `/task_status <id>` or authenticated `GET /api/agent-tasks/{id}` | Reads task metadata/checkpoint/result; no note or AI side effect | Enabled |
 | List tasks | Telegram `/tasks` or authenticated `GET /api/agent-tasks?status=...` | Reads bounded task metadata; no note or AI side effect | Enabled |
 | Create, append, correct, move, archive, or restore a note | Existing synchronous note/API flows | Mutates D1 and may enqueue a YAOS outbox delivery | Not connected to the generic background Workflow |
 
-The generic Workflow must reject every task type except `knowledge_query`. In particular, note mutations, external messages and deletion are not background tools and have no approval-bypass path. Keep them disabled until a separate design specifies operation-bound approvals, before-state checks and idempotent side-effect keys.
+The generic Workflow must reject every task type except `knowledge_query`. Its tool allowlist is read-only and schemas reject unknown tools, extra arguments, and malformed responses. In particular, note mutations, external messages and deletion are not background tools and have no approval-bypass path. Keep them disabled until a separate design specifies operation-bound approvals, before-state checks and idempotent side-effect keys.
 
-For the enabled query, the durable stages are `context_ready` (filtered note IDs and excerpts), `prompt_ready` (privacy-inspected assembled prompt and reserved estimate), and `completed` (bounded answer and cited IDs). The sanitized task payload also stores a SHA-256 input hash. Reusing an idempotency key with the same input returns the existing task without another reservation; reusing it with different input is rejected. A retry reuses the earliest valid checkpoint and must not repeat a completed task. An expired lease may be claimed by one executor; the previous lease token can no longer save a checkpoint or complete the task. Deadline and budget exhaustion are terminal and retain the checkpoint for diagnosis.
+For the enabled query, the durable stages are `context_ready` (filtered note IDs and excerpts), `prompt_ready` (privacy-inspected assembled prompt and reserved estimate), `agent_loop` (bounded transcript, tool arguments/results and any pending action), and `completed` (bounded answer and cited IDs). Every model request is screened before sending; every response is checked before parsing; each model call reserves task AI/token budget. Tool results are treated as untrusted reference data. Repeated tool signatures, invalid/unknown tools, oversize results, step exhaustion, and budget exhaustion stop closed. The sanitized task payload also stores a SHA-256 input hash. Reusing an idempotency key with the same input returns the existing task without another reservation; reusing it with different input is rejected. A retry reuses the earliest valid checkpoint and must not repeat a completed task. An expired lease may be claimed by one executor; the previous lease token can no longer save a checkpoint or complete the task. Deadline and budget exhaustion are terminal and retain the checkpoint for diagnosis.
 
 ## Implementation / rollout boundary
 

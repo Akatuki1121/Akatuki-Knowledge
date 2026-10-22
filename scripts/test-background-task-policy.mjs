@@ -35,6 +35,12 @@ for (const errorClass of [
   "invalid_input",
   "policy_violation",
   "validation_error",
+  "unknown_tool",
+  "tool_loop_detected",
+  "tool_budget_exhausted",
+  "model_call_budget_exhausted",
+  "tool_output_too_large",
+  "ai_token_budget_exhausted",
 ]) {
   const decision = decideTaskRetry({ ...base, errorClass });
   assert.equal(decision.action, "stop", errorClass);

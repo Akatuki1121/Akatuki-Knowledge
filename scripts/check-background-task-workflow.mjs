@@ -2,19 +2,28 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
 const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
 
 for (const required of [
   "class AgentTaskWorkflow extends WorkflowEntrypoint",
   'task.task_type !== "knowledge_query"',
-  "findRelevantNotes(prepared.safePrompt, this.env, 8)",
+  "searchAgentTaskNotes(prepared.safePrompt, this.env)",
   'step.do("retrieve-context-"',
   "if (note.ai_allowed !== 1) continue;",
   'step.do("compose-prompt-"',
   'checkpoint: { stage: "context_ready", contextNotes: notes }',
   'stage: "prompt_ready"',
   'checkpoint.stage === "completed"',
-  "parseJsonObject(safeResponse.text)",
+  "runAgentToolLoop",
+  "searchAgentTaskNotes",
+  'checkpoint.stage === "agent_loop"',
+  'tool === "search_notes"',
+  'tool === "get_note"',
+  "inspectAndRedact(prompt",
+  "inspectAndRedact(raw",
+  "reserveAgentAiBudget(this.env.DB",
+  'checkpoint.stage === "completed"',
   'taskType: "knowledge_query"',
   "startTelegramBackgroundTask",
   "getTelegramBackgroundTaskStatus",
@@ -72,6 +81,16 @@ const workflowEnd = source.indexOf('__name(AgentTaskWorkflow, "AgentTaskWorkflow
 const workflowSource = source.slice(workflowStart, workflowEnd);
 assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledge query must not mutate notes");
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
+assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
+assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
+assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
+assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
+assert.ok(toolLoop.includes("maxModelCalls: 5") && toolLoop.includes("maxToolCalls: 4"), "Agent loop budgets must remain bounded");
+assert.ok(toolLoop.includes('search_notes: Object.freeze') && toolLoop.includes('get_note: Object.freeze'), "Only the explicit read-only tool allowlist may be exposed");
+assert.ok(toolLoop.includes('throw new Error("unknown_tool")'), "Unknown tools must fail closed");
+assert.ok(toolLoop.includes('throw new Error("tool_loop_detected")'), "Repeated tool calls must stop");
+assert.ok(toolLoop.includes("AGENT_TOOL_LIMITS.maxToolOutputChars"), "Tool output size must be bounded");
+assert.ok(toolLoop.includes("allowedIds.has(id)"), "Final citations must be limited to retrieved notes");
 const prepareStart = workflowSource.indexOf('step.do("prepare-"');
 const retrieveStart = workflowSource.indexOf('step.do("retrieve-context-"', prepareStart);
 const prepareSource = workflowSource.slice(prepareStart, retrieveStart);
@@ -85,7 +104,7 @@ const retrieveEnd = workflowSource.indexOf('step.do("compose-prompt-"', retrieve
 const retrieveSource = workflowSource.slice(retrieveStart, retrieveEnd);
 assert.ok(retrieveSource.includes("if (prepared.contextNotes) return { notes: prepared.contextNotes };"), "Context checkpoints must bypass a repeated note search");
 const composeStart = retrieveEnd;
-const composeEnd = workflowSource.indexOf('step.do("reserve-budget-"', composeStart);
+const composeEnd = workflowSource.indexOf("runAgentToolLoop({", composeStart);
 const composeSource = workflowSource.slice(composeStart, composeEnd);
 assert.ok(composeSource.includes("if (prepared.resumePrompt)"), "Saved prompts must bypass prompt recomposition after recovery");
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
