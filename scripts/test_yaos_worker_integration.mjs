@@ -239,6 +239,12 @@ provider.on("sync", synced => {
     done(1);
     return;
   }
+  if (null === null) {
+    console.error("YAOS current content: " + JSON.stringify(text.toString()));
+    clearTimeout(timeout);
+    done(0);
+    return;
+  }
   text.insert(text.length, ${JSON.stringify(suffix)});
   setTimeout(() => { clearTimeout(timeout); done(0); }, 500);
 });
@@ -503,7 +509,10 @@ SYNC_TOKEN = "${TOKEN}"
       const status = await request("/sync/status");
       retryObservation = status.outbox;
       return status.outbox?.sent > sentBeforeRetry;
-    }, "outbox job to retry after YAOS auth is restored", 30000).catch(error => {
+    }, "outbox job to retry after YAOS auth is restored", 30000).catch(async error => {
+      await mutateYaosNote(RENAMED_PATH, null, clientPath).catch(diagnosticError => {
+        console.error("YAOS content diagnostic failed: " + String(diagnosticError));
+      });
       return latestOutboxFailure(stateDir).then(diagnostic => {
         throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}; latest job: ${diagnostic.slice(-2000)}`);
       });
