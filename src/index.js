@@ -1032,7 +1032,7 @@ ${candidates.slice(0, 5).map((note2) => `\u2022 ${note2.title}`).join("\n")}`;
 __name(reorganizeFromChat, "reorganizeFromChat");
 function isMemoryProcessingCandidate(message) {
   if (typeof message !== "string" || message.trim().length < 12) return false;
-  return /(?:記録|覚え|保存|メモ|今後|これから|私は|僕は|自分は|好き|苦手|嫌い|好み|方針|決め|重要|必ず|してほしい|しないで|やめて|希望|制約|条件|使っている|利用している|普段|いつも|改善|回答|返答|検索|応答|機能|精度|パーソナライズ|bot|assistant|I prefer|I like|remember|don't remember)/iu.test(message);
+  return /(?:記録|覚え|保存|メモ|今後|これから|私は|僕は|自分は|好き|苦手|嫌い|好み|方針|決め|重要|必ず|してほしい|しないで|やめて|希望|制約|条件|使っている|利用している|普段|いつも|改善|回答|返答|検索|応答|機能|精度|パーソナライズ|遅い|長い|重い|遅延|待ち時間|時間がかか|不便|使いづら|使いにく|もっと|短く|長く|bot|assistant|I prefer|I like|remember|don't remember)/iu.test(message);
 }
 __name(isMemoryProcessingCandidate, "isMemoryProcessingCandidate");
 
@@ -1109,8 +1109,12 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   ].filter(Boolean).join("\n\n");
   try {
     const generationStartedAt = Date.now();
-    const rawAnswer = await callGemini(env, prompt, 1400);
-    generationMs = Date.now() - generationStartedAt;
+    let rawAnswer;
+    try {
+      rawAnswer = await callGemini(env, prompt, 1400);
+    } finally {
+      generationMs = Date.now() - generationStartedAt;
+    }
     const safeResponse = inspectAndRedact(rawAnswer, { blocklist: env.PRIVACY_BLOCKLIST || "" });
     if (!safeResponse.ok) {
       await writeAudit(env, "telegram_chat", contextNotes.length, [...findings, ...safeResponse.findings], prompt.length, "blocked_answer");
@@ -1127,11 +1131,11 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     if (cited.length) reply += `
 
 \u51FA\u5178: ${cited.map((note) => note.title).join("\u3001")}`;
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, totalMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars: prompt.length, result: "success" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars: prompt.length, result: "success" }));
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings, ...safeResponse.findings], prompt.length, "success");
     return reply.slice(0, 3500);
   } catch (error) {
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, totalMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars: 0, result: "failed" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars: 0, result: "failed" }));
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], 0, "failed");
     await enqueueBotAlert(env, classifyOperationalFailure(error));
     console.error("Telegram chat response failed");
