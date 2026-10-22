@@ -1318,8 +1318,13 @@ async function processAgentMemoryJob(env, job) {
       && !isRestrictedImprovement(proposal)) {
       const inserted = await env.DB.prepare(`
         INSERT INTO bot_improvement_candidates (chat_id, source_message_id, category, proposal, status, created_at)
-        VALUES (?, ?, ?, ?, 'pending', ?)
-      `).bind(chatId, messageId, category, proposal, new Date().toISOString()).run();
+        SELECT ?, ?, ?, ?, 'pending', ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM bot_improvement_candidates
+          WHERE chat_id = ? AND source_message_id = ? AND category = ? AND proposal = ?
+        )
+      `).bind(chatId, messageId, category, proposal, new Date().toISOString(),
+        chatId, messageId, category, proposal).run();
       if (Number(inserted?.meta?.changes || 0) > 0) {
         notification += (notification ? "\\n\\n" : "") + `改善候補に記録したよ：「${proposal}」。反映してよければ「反映して」と言ってね。`;
       }
