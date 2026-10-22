@@ -73,6 +73,7 @@ function makeDb(initialNotes = []) {
             if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], title: v[2], content: v[3], content_hash: v[4], source_modified_at: v[5], imported_at: v[6], updated_at: v[7], tags_json: v[8], summary: null, ai_tags_json: "[]", related_json: "[]", organized_hash: null, organization_failures: 0, last_failure_stage: null, next_retry_at: null, review_state: "ready", deleted_at: null });
             return { meta: { changes: row ? 1 : 0 } };
           }
+          if (sql.startsWith("UPDATE agent_memory_metadata SET status = 'superseded'")) return { meta: { changes: 0 } };
           if (sql.startsWith("INSERT INTO notes")) {
             notes.push({ id: v[0], path: v[1], sync_uuid: v[2], title: v[3], content: v[4], content_hash: v[5], source_modified_at: v[6], imported_at: v[7], updated_at: v[8], tags_json: v[9], deleted_at: null });
             return { meta: { changes: 1 } };
