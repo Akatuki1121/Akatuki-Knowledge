@@ -326,6 +326,7 @@ async function approveGitHubWritePlan(env, chatId, taskId, ctx) {
     return pending.status === "completed" ? "この変更計画はすでに実行済みです。"
       : "この変更計画は承認待ちではありません（状態: " + String(pending.status) + "）。二重実行はしません。";
   }
+  if (!pending.presentedAt) return "変更計画の詳細をTelegramへ送信中です。すべての詳細メッセージが届いてから、もう一度承認してください。";
   if (typeof pending.expiresAt !== "string" || Date.parse(pending.expiresAt) <= Date.now()) {
     await env.DB.prepare("UPDATE agent_tasks SET checkpoint_json = json_set(checkpoint_json, '$.pendingGitHubWrite.status', 'expired'), updated_at = ? WHERE task_id = ? AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'pending'")
       .bind(toSqliteDateTime(Date.now()), taskId).run();
@@ -11786,6 +11787,8 @@ async function flushAgentTaskNotifications(env, limit = 5) {
           await sendTelegramMessage(env, task.notify_chat_id,
             "GitHub変更計画の詳細 " + (index + 1) + "/" + chunks.length + "（各本文を順につなぐと計画JSONになります）\n" + chunks[index]);
         }
+        await env.DB.prepare("UPDATE agent_tasks SET checkpoint_json = json_set(checkpoint_json, '$.pendingGitHubWrite.presentedAt', ?), updated_at = ? WHERE task_id = ? AND status = 'succeeded' AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'pending'")
+          .bind(new Date().toISOString(), toSqliteDateTime(Date.now()), task.task_id).run();
       }
       await env.DB.prepare(`
         UPDATE agent_tasks
