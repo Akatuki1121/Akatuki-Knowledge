@@ -20,7 +20,7 @@ npm run check:sync   # 同期・バックグラウンドタスク関連のみ
 
 - `src/index.js`: 稼働中の Worker から復元した 1 ファイルのバンドルです。推測でモジュール分割をしないでください(理由は `src/README.md`)。バックグラウンドタスクは `src/background-task-*.mjs` に分かれています。
 - `scripts/`: 検査と契約テスト。`scripts/run-parallel-checks.mjs` が一覧です。新しい検査を足したら、ここへ登録します。
-- `migrations/`: 適用済みとして記録された D1 マイグレーションです。`migrations/pending/` はリポジトリ上の未適用候補です。現在の `0013_agent_memory_metadata.sql` は本番適用を確認していません。
+- `migrations/`: 適用済みとして記録された D1 マイグレーションです。`migrations/pending/` はリポジトリ上の未適用候補です。`0013_agent_memory_metadata.sql` は 2026-10-22 に本番 D1 へ適用し、台帳で確認済みです。
 - `bootstrap/`、`schema-snapshots/`: 復旧用の参照資料です。マイグレーションではありません。
 - `docs/`: 設計と復旧の記録。
 
