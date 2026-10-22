@@ -28,10 +28,10 @@ if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
     const agentDiff = execFileSync("git", [
       "diff", "--no-ext-diff", "--unified=20", base, head, "--", "src/index.js",
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    const agentDiffWithoutImports = agentDiff.split(/\\r?\\n/).filter((line) => {
-      const text = line.replace(/^[ +\\-]/, "").trim();
-      return !/^(?:import\\b|(?:}\\s*)?from\\s+["']\\.\\/(?:agent-|background-task-))/i.test(text);
-    }).join("\\n");
+    const agentDiffWithoutImports = agentDiff.split(/\r?\n/).filter((line) => {
+      const text = line.replace(/^[ +\-]/, "").trim();
+      return !/^(?:import\b|(?:}\s*)?from\s+["']\.\/(?:agent-|background-task-))/i.test(text);
+    }).join("\n");
     const agentSensitive = /telegramWebhook|answerTelegramMessage|startTelegramBackgroundTask|cancelTelegramBackgroundTask|listTelegramBackgroundTasks|approveGitHubWritePlan|rejectGitHubWritePlan|runApprovedGitHubWritePlan|executeGitHubWritePlan|executeGitHubReadTool|parseGroundedWebResearch|agent_tasks|agent_memory|background.?task|ORGANIZE_PER_RUN|formatTelegramPlainText|isGitHubNaturalLanguageRequest|AI送信許可/i;
     agentRequired = agentSensitive.test(agentDiffWithoutImports);
     reason = required
