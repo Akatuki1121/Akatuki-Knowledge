@@ -164,7 +164,9 @@ export function validateGitHubWritePlan(input) {
       default: throw new Error("unknown_tool");
     }
   });
-  return { repository, summary, operations };
+  const normalized = { repository, summary, operations };
+  if (JSON.stringify(normalized).length > 12_000) throw new Error("github_write_plan_too_large");
+  return normalized;
 }
 
 function exactObjectKeys(value, keys) {
