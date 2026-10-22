@@ -275,7 +275,8 @@ async function telegramWebhook(request, env, ctx) {
     } else if (isImprovementStatusRequest(text2)) {
       reply = await listImprovementCandidates(env, chatId);
     } else if (isGitHubNaturalLanguageRequest(text2)) {
-      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2, { taskType: "github_query", allowGitHubRead: true, allowGitHubWrite: true });\n    } else if (text2.startsWith("/")) {
+      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2, { taskType: "github_query", allowGitHubRead: true, allowGitHubWrite: true });
+    } else if (text2.startsWith("/")) {
       reply = "\u30B3\u30DE\u30F3\u30C9\u3092\u899A\u3048\u306A\u304F\u3066\u3082\u5927\u4E08\u592B\u3002\u666E\u901A\u306B\u8A71\u3057\u304B\u3051\u3066\u306D\u3002";
     } else {
       try { processingMessageId = await sendTelegramMessage(env, chatId, "検索・回答を準備中…"); } catch {}
