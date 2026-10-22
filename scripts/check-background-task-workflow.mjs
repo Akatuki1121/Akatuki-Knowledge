@@ -12,7 +12,7 @@ for (const required of [
   'task.task_type === "github_query"',
   "executeGitHubReadTool",
   "allowGitHubRead",
-  '^\\\\/github(?:@\\\\w+)?',
+  '{ taskType: "github_query", allowGitHubRead: true }',
   "searchAgentTaskNotes(prepared.safePrompt, this.env)",
   'step.do("retrieve-context-"',
   "if (note.ai_allowed !== 1) continue;",
