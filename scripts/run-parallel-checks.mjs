@@ -9,6 +9,7 @@ const checks = [
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
+  ["agent-github-tools", process.execPath, ["scripts/test_agent_github_tools.mjs"]],
   ["agent-evaluation-set", process.execPath, ["scripts/test_agent_evaluation_set.mjs"]],
   ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
   ["agent-memory", process.execPath, ["scripts/test_agent_memory.mjs"]],
