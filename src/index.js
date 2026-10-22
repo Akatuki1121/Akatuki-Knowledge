@@ -406,6 +406,13 @@ async function listTelegramBackgroundTasks(env, chatId) {
     prompt_ready: "要約プロンプトの準備完了",
     completed: "結果保存済み"
   };
+  const notificationLabels = {
+    none: "対象外",
+    pending: "通知待ち",
+    sending: "通知中",
+    sent: "通知済み",
+    failed: "通知停止"
+  };
   const lines = tasks.map((task) => {
     const stage = task.checkpoint?.stage;
     return task.task_id
@@ -413,7 +420,7 @@ async function listTelegramBackgroundTasks(env, chatId) {
       + " / 試行 " + task.attempts + "/" + task.max_attempts
       + (stage ? "\n段階: " + (stageLabels[stage] || stage) : "")
       + (task.notification_status && task.notification_status !== "none"
-        ? "\n通知: " + task.notification_status : "");
+        ? "\n通知: " + (notificationLabels[task.notification_status] || task.notification_status) : "");
   });
   return "未完了の背景タスク（" + tasks.length + "件）:\n\n"
     + lines.join("\n\n")

@@ -123,4 +123,18 @@ const composeStart = retrieveEnd;
 const composeEnd = workflowSource.indexOf("runAgentToolLoop({", composeStart);
 const composeSource = workflowSource.slice(composeStart, composeEnd);
 assert.ok(composeSource.includes("if (prepared.resumePrompt)"), "Saved prompts must bypass prompt recomposition after recovery");
+const taskListStart = source.indexOf("async function listTelegramBackgroundTasks");
+const taskListEnd = source.indexOf('__name(listTelegramBackgroundTasks', taskListStart);
+assert.ok(taskListStart >= 0 && taskListEnd > taskListStart, "Telegram task-list formatter must exist");
+const taskListSource = source.slice(taskListStart, taskListEnd);
+for (const label of [
+  'pending: "通知待ち"',
+  'sending: "通知中"',
+  'sent: "通知済み"',
+  'failed: "通知停止"',
+  'notificationLabels[task.notification_status]'
+]) {
+  assert.ok(taskListSource.includes(label), "Telegram task list must localize notification state: " + label);
+}
+
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
