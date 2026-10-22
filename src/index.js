@@ -303,7 +303,6 @@ async function telegramWebhook(request, env, ctx) {
 }
 __name(telegramWebhook, "telegramWebhook");
 
-async 
 function isGitHubNaturalLanguageRequest(text) {
   if (typeof text !== "string" || text.startsWith("/")) return false;
   const topic = /(?:github|github\.com|\bissue\b|\bissues\b|\bpr\b|pull request|プルリク|プルリクエスト|リポジトリ|ブランチ|コミット|\bcommit\b|\bCI\b|\bworkflow\b|\bActions\b|コード|バグ)/iu.test(text);
