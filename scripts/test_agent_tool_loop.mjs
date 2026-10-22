@@ -368,4 +368,16 @@ assert.equal(githubWriteLoop.pendingGitHubWrite.status, "pending");
 assert.equal(githubWriteLoop.pendingGitHubWrite.taskId, "task-1");
 assert.equal(githubWriteLoop.toolCalls[0].tool, "github_propose_write");
 
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Update an existing file in example/project",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async () => action("github_propose_write", {
+    repository: "example/project",
+    summary: "Update README",
+    operations: [{ type: "update_file", branch: "main", path: "README.md", content: "# New", message: "docs: update README", sha: "a".repeat(40) }],
+  }),
+  executeTool: async () => { throw new Error("must not execute without a complete prior file read"); },
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "github_write_requires_complete_file_read");
 console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, strict schemas, citations, loop/step bounds, and checkpoint resume.");
