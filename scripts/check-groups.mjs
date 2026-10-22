@@ -15,6 +15,8 @@ export const checks = [
   ["agent-evaluation-set", process.execPath, ["scripts/test_agent_evaluation_set.mjs"]],
   ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
   ["agent-memory", process.execPath, ["scripts/test_agent_memory.mjs"]],
+  ["agent-memory-queue", process.execPath, ["scripts/test_agent_memory_queue.mjs"]],
+  ["agent-memory-jobs-migration", "python3", ["scripts/test_agent_memory_jobs_migration.py"]],
   ["background-task-store", process.execPath, ["scripts/check-background-task-store.mjs"]],
   ["background-task-workflow", process.execPath, ["scripts/check-background-task-workflow.mjs"]],
   ["agent-task-idempotency", process.execPath, ["scripts/test_agent_task_idempotency.mjs"]],
