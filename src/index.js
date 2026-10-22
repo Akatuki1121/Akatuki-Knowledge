@@ -233,7 +233,7 @@ async function telegramWebhook(request, env, ctx) {
     } else if (/^\/tasks(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await listTelegramBackgroundTasks(env, chatId);
     } else if (/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u.test(text2)) {
-      reply = await approveGitHubWritePlan(env, chatId, text2.match(/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u)[1]);
+      reply = await approveGitHubWritePlan(env, chatId, text2.match(/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u)[1], ctx);
     } else if (/^\/github(?:@\w+)?\s+reject\s+([A-Za-z0-9_-]{1,100})\s*$/u.test(text2)) {
       reply = await rejectGitHubWritePlan(env, chatId, text2.match(/^\/github(?:@\w+)?\s+reject\s+([A-Za-z0-9_-]{1,100})\s*$/u)[1]);
     } else if (/^\/github(?:@\w+)?(?:\s|$)/u.test(text2)) {
