@@ -106,7 +106,7 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
   if (response.tool.startsWith("github_")) {
     if (typeof args.repository !== "string" || !/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u.test(args.repository)
       || args.repository.includes("..")) throw new Error("invalid_input");
-    if (response.tool === "github_get_issue" || response.tool === "github_get_pull_request") {
+    if (response.tool === "github_get_issue" || response.tool === "github_get_pull_request" || response.tool === "github_get_pr_checks") {
       if (!Number.isSafeInteger(args.number) || args.number < 1 || args.number > 1_000_000) throw new Error("invalid_input");
     } else if (response.tool === "github_list_pull_requests") {
       if (!["open", "closed", "all"].includes(args.state)) throw new Error("invalid_input");
