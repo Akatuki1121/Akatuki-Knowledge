@@ -13,6 +13,19 @@ const final = (reply, sourceIds = []) => JSON.stringify({ action: "final", reply
 assert.deepEqual(Object.keys(AGENT_READ_ONLY_TOOLS).sort(), ["get_note", "search_notes"]);
 assert.ok(Object.values(AGENT_READ_ONLY_TOOLS).every((tool) => tool.sideEffect === "read_only"));
 assert.equal(AGENT_WEB_RESEARCH_TOOL.sideEffect, "external_read");
+assert.throws(() => validateAgentToolAction({
+  action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1 },
+}), /unknown_tool/);
+assert.deepEqual(
+  validateAgentToolAction({
+    action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1 },
+  }, { allowGitHubRead: true }),
+  { action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1 } },
+);
+assert.throws(() => validateAgentToolAction({
+  action: "tool", tool: "github_get_issue", arguments: { repository: "example/project", number: 1, extra: true },
+}, { allowGitHubRead: true }), /invalid_input/);
+
 
 assert.deepEqual(
   validateAgentToolAction(JSON.parse(action("search_notes", { query: "deployment decision" }))),
@@ -301,4 +314,70 @@ await assert.rejects(runAgentToolLoop({
   saveCheckpoint: async () => true,
 }), (error) => error.message === "tool_output_too_large");
 
-console.log("Agent tool loop tests passed: sequential read-only tools, strict schemas, allowlist, citations, loop/step bounds, and checkpoint resume.");
+
+const githubLoop = await runAgentToolLoop({
+  initialPrompt: "Inspect GitHub issue example/project#1",
+  allowGitHubRead: true,
+  callModel: async ({ modelCall, prompt }) => {
+    assert.match(prompt, /github_get_issue/);
+    if (modelCall === 1) return action("github_get_issue", { repository: "example/project", number: 1 });
+    return final("Issue #1 is open.", []);
+  },
+  executeTool: async (tool, args) => {
+    assert.equal(tool, "github_get_issue");
+    assert.deepEqual(args, { repository: "example/project", number: 1 });
+    return { repository: "example/project", number: 1, state: "open" };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(githubLoop.reply, "Issue #1 is open.");
+assert.equal(githubLoop.toolCalls[0].tool, "github_get_issue");
+
+
+const githubWritePlan = {
+  repository: "example/project",
+  summary: "Create an issue for the regression",
+  operations: [{ type: "create_issue", title: "Regression report", body: "Observed in latest build." }],
+};
+assert.throws(() => validateAgentToolAction({
+  action: "tool", tool: "github_propose_write", arguments: githubWritePlan,
+}), /unknown_tool/);
+assert.deepEqual(
+  validateAgentToolAction({
+    action: "tool", tool: "github_propose_write", arguments: githubWritePlan,
+  }, { allowGitHubWrite: true }),
+  { action: "tool", tool: "github_propose_write", arguments: githubWritePlan },
+);
+const githubWriteLoop = await runAgentToolLoop({
+  initialPrompt: "Create an issue in example/project",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async ({ modelCall, prompt }) => {
+    assert.match(prompt, /github_propose_write/);
+    if (modelCall === 1) return action("github_propose_write", githubWritePlan);
+    return final("A write plan is ready for approval.", []);
+  },
+  executeTool: async (tool, args) => {
+    assert.equal(tool, "github_propose_write");
+    assert.deepEqual(args, githubWritePlan);
+    return { pendingGitHubWrite: { status: "pending", taskId: "task-1", plan: args, planHash: "abc", expiresAt: "2099-01-01T00:00:00.000Z" } };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(githubWriteLoop.pendingGitHubWrite.status, "pending");
+assert.equal(githubWriteLoop.pendingGitHubWrite.taskId, "task-1");
+assert.equal(githubWriteLoop.toolCalls[0].tool, "github_propose_write");
+
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Update an existing file in example/project",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async () => action("github_propose_write", {
+    repository: "example/project",
+    summary: "Update README",
+    operations: [{ type: "update_file", branch: "main", path: "README.md", content: "# New", message: "docs: update README", sha: "a".repeat(40) }],
+  }),
+  executeTool: async () => { throw new Error("must not execute without a complete prior file read"); },
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "github_write_requires_complete_file_read");
+console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, strict schemas, citations, loop/step bounds, and checkpoint resume.");

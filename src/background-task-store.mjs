@@ -297,6 +297,33 @@ export async function enqueueAgentTask(db, input) {
 }
 
 /**
+ * Cancel a task only when it belongs to the requesting Telegram chat and is
+ * still active. Clearing the lease makes every in-flight checkpoint/completion
+ * fail its conditional UPDATE, so a cancelled task cannot publish a result.
+ */
+export async function cancelAgentTask(db, input = {}) {
+  const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
+  const chatId = typeof input.chatId === "string" ? input.chatId.trim() : "";
+  if (!taskId || !chatId) return { cancelled: false, reason: "not_found" };
+  const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET status = 'cancelled', stop_reason = 'user_cancelled',
+        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL,
+        notification_status = 'sent', notification_lease_expires_at = NULL
+    WHERE task_id = ? AND notify_chat_id = ?
+      AND status IN ('queued', 'running', 'waiting')
+    RETURNING task_id
+  `).bind(now, now, taskId, chatId).first();
+  if (result?.task_id) return { cancelled: true, taskId: result.task_id };
+  const task = await db.prepare("SELECT status, notify_chat_id FROM agent_tasks WHERE task_id = ?")
+    .bind(taskId).first();
+  if (!task || String(task.notify_chat_id ?? "") !== chatId) return { cancelled: false, reason: "not_found" };
+  if (task.status === "cancelled") return { cancelled: false, reason: "already_cancelled" };
+  return { cancelled: false, reason: "already_terminal", status: task.status };
+}
+
+/**
  * Claim one eligible task with a single atomic UPDATE ... RETURNING statement.
  * Concurrent executors cannot claim the same queued task. Expired leases are recoverable.
  */

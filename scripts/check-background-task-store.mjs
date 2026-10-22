@@ -6,6 +6,9 @@ const source = await readFile(new URL("../src/background-task-store.mjs", import
 for (const required of [
   "ON CONFLICT(idempotency_key) DO NOTHING",
   "export async function listAgentTasks",
+  "export async function cancelAgentTask",
+  "SET status = 'cancelled', stop_reason = 'user_cancelled'",
+  "WHERE task_id = ? AND notify_chat_id = ?",
   "Unsupported task status filter",
   "ORDER BY updated_at DESC",
   "budget_reserved = 1",

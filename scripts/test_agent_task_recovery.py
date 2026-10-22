@@ -27,6 +27,7 @@ def statement_containing(*fragments):
 claim_sql = statement_containing("SET status = 'running'", "RETURNING *")
 checkpoint_sql = statement_containing("SET checkpoint_json = ?", "WHERE task_id = ?")
 complete_sql = statement_containing("SET status = 'succeeded'", "completed_at = ?")
+cancel_sql = statement_containing("SET status = 'cancelled'", "WHERE task_id = ? AND notify_chat_id = ?", "RETURNING task_id")
 expire_sql = statement_containing(
     "task_deadline_exceeded",
     "WHERE status IN ('queued', 'waiting', 'running')",
@@ -112,6 +113,32 @@ duplicate_completion = connection.execute(
 ).rowcount
 assert duplicate_completion == 0, "Terminal completion must be idempotently rejected"
 assert claim(connection, "recoverable", "lease-after-complete") is None
+
+# Cancellation is scoped to the originating chat, atomically terminalizes an
+# active task, clears its lease, and blocks stale checkpoint/completion writes.
+insert_task(connection, "cancel-active", status="running")
+connection.execute(
+    "UPDATE agent_tasks SET notify_chat_id = ?, lease_token = ?, lease_expires_at = ? WHERE task_id = ?",
+    ("chat-1", "cancel-lease", FUTURE, "cancel-active"),
+)
+cancelled = connection.execute(
+    cancel_sql, (NOW, NOW, "cancel-active", "chat-1")
+).fetchone()
+assert cancelled == ("cancel-active",), "The owning chat must be able to cancel an active task"
+cancelled_state = connection.execute(
+    "SELECT status, stop_reason, lease_token, notification_status FROM agent_tasks WHERE task_id = ?",
+    ("cancel-active",),
+).fetchone()
+assert cancelled_state == ("cancelled", "user_cancelled", None, "sent"), (
+    f"Cancellation must clear execution lease and suppress duplicate terminal notifications: {cancelled_state}"
+)
+assert connection.execute(
+    complete_sql, (NOW, NOW, "cancel-active", "cancel-lease", NOW, NOW)
+).rowcount == 0, "A cancelled task must reject stale completion"
+assert connection.execute(
+    cancel_sql, (NOW, NOW, "cancel-active", "another-chat")
+).fetchone() is None, "A different chat must not cancel another chat's task"
+
 
 insert_task(
     connection,
