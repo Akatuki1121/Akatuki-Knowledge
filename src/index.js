@@ -12092,6 +12092,9 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               }
               if (tool === "github_propose_write" && prepared.allowGitHubWrite) {
                 const plan = validateGitHubWritePlan(args);
+                const planInspection = inspectAndRedact(JSON.stringify(plan), { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
+                if (!planInspection.ok || planInspection.findings.includes("credentials")) throw new Error("credentials_detected");
+                if (planInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) throw new Error("pii_masking_failed");
                 const planHash = await hashGitHubWritePlan(plan);
                 const pendingGitHubWrite = {
                   status: "pending",
