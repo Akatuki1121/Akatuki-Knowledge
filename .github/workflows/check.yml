@@ -60,6 +60,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
             integration:
+              - 'src/sync-outbox.mjs'
               - 'scripts/test_yaos_worker_integration.mjs'
               - 'scripts/test_reconstructed_baseline.py'
               - 'scripts/test_worker_sql_compatibility.py'
