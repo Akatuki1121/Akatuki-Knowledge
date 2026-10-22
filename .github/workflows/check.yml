@@ -29,6 +29,7 @@ jobs:
       agent_tests: ${{ steps.filter.outputs.agent_tests }}
       sync_tests: ${{ steps.filter.outputs.sync_tests }}
       migration_checks: ${{ steps.filter.outputs.migration_checks }}
+      test_harness: ${{ steps.filter.outputs.test_harness }}
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       # Pull-request path filtering uses the GitHub API; the checked-out
@@ -92,6 +93,13 @@ jobs:
               - 'scripts/classify_yaos_integration.mjs'
               - 'scripts/test-sync-*.mjs'
               - 'scripts/test_classify_yaos_integration.mjs'
+            test_harness:
+              - 'scripts/run-parallel-checks.mjs'
+              - 'scripts/check-groups.mjs'
+              - 'scripts/test-check-groups.mjs'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/check.yml'
             migration_checks:
               - 'migrations/**'
               - 'schema-snapshots/**'
@@ -122,7 +130,7 @@ jobs:
 
   agent-domain-tests:
     needs: changed-files
-    if: needs.changed-files.outputs.agent_tests == 'true'
+    if: needs.changed-files.outputs.agent_tests == 'true' || needs.changed-files.outputs.test_harness == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -142,6 +150,7 @@ jobs:
       always() &&
       needs.changed-files.outputs.checks == 'true' &&
       (needs.changed-files.outputs.sync_tests == 'true' ||
+       needs.changed-files.outputs.test_harness == 'true' ||
        ((needs.classify-yaos-integration.result == 'success' &&
          needs.classify-yaos-integration.outputs.required == 'true') ||
         (needs.classify-yaos-integration.result != 'success' &&
@@ -221,6 +230,7 @@ jobs:
     if: >-
       always() &&
       (needs.changed-files.outputs.integration == 'true' ||
+       needs.changed-files.outputs.test_harness == 'true' ||
        ((needs.classify-yaos-integration.result == 'success' &&
          needs.classify-yaos-integration.outputs.required == 'true') ||
         (needs.classify-yaos-integration.result != 'success' &&
