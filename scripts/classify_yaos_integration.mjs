@@ -15,7 +15,7 @@ const shaPattern = /^[0-9a-f]{40}$/i;
 if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
   try {
     const diff = execFileSync("git", [
-      "diff", "--no-ext-diff", "--unified=0", base, head, "--", "src/index.js",
+      "diff", "--no-ext-diff", "--unified=20", base, head, "--", "src/index.js",
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     const changedLines = diff
       .split("\n")
@@ -25,7 +25,7 @@ if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
     // only when changed lines touch sync, note-mutation, identity, or conflict
     // handling. If this classifier cannot inspect the diff, it fails closed.
     const syncSensitive = /enqueueSyncJob|drainSyncOutbox|yaos_sync_jobs|sync[_-]?uuid|syncOutbox|outbox|sync\/status|api\/sync|api\/notes|YJS_CLIENT|\bYAOS\b|vault_content_conflict|ambiguous_sync_(?:identity|uuid)|unsafe_path|note_revisions|telegram_note_revisions|applyKnowledgeSyncJob|knowledge-sync|source_modified_at|deleted_at|readUuid|isValidSyncUuid|syncIdentity|sync_identity|correction|restore|archive|SYNC_/i;
-    required = syncSensitive.test(changedLines);
+    required = syncSensitive.test(diff);
     reason = required
       ? "src/index.js の変更行が同期・ノート変更の保護対象に該当"
       : "src/index.js の変更行に同期・ノート変更の保護対象は見つからず";
