@@ -175,8 +175,9 @@ import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
 const host = "http://127.0.0.1:8787";
 const doc = new Y.Doc();
-const pathToId = doc.getMap("pathToId");
 const idToText = doc.getMap("idToText");
+// Schema v2+ resolves paths from metadata; pathToId is a frozen legacy index.
+const meta = doc.getMap("meta");
 const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
   prefix: ${JSON.stringify("/vault/sync/" + encodeURIComponent(VAULT_ID))},
   params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
@@ -207,7 +208,12 @@ const timeout = setTimeout(() => {
 }, 10000);
 provider.on("sync", synced => {
   if (!synced || finished) return;
-  const id = pathToId.get(${JSON.stringify(path)});
+  const id = Array.from(meta.entries()).find(([, value]) => {
+    const notePath = value instanceof Y.Map
+      ? value.get("path")
+      : value && typeof value === "object" ? value.path : null;
+    return notePath === ${JSON.stringify(path)};
+  })?.[0];
   const text = id && idToText.get(id);
   if (!text) {
     console.error("YAOS note not found at path " + ${JSON.stringify(path)});
