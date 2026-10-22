@@ -33,6 +33,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name === "sync-telegram-agent-notifications")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "sync-module-syntax", "node-tests", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "node-tests", "wrangler-config"].includes(name))
       : checks;
 }
