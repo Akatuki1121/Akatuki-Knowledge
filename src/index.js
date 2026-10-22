@@ -12199,10 +12199,10 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         }
         const pendingGitHubWrite = output.pendingGitHubWrite?.status === "pending" ? output.pendingGitHubWrite : null;
         output.reply = pendingGitHubWrite
-          ? "GitHubへの変更計画を作成しました。まだ書き込みは行っていません。\\n計画: " + pendingGitHubWrite.plan.summary
-            + "\\n承認: /github approve " + taskId
-            + "\\n拒否: /github reject " + taskId
-            + "\\n承認期限: " + pendingGitHubWrite.expiresAt
+          ? "GitHubへの変更計画を作成しました。まだ書き込みは行っていません。\n計画: " + pendingGitHubWrite.plan.summary
+            + "\n承認: /github approve " + taskId
+            + "\n拒否: /github reject " + taskId
+            + "\n承認期限: " + pendingGitHubWrite.expiresAt
           : (reply || "関連ノートから回答を作成できませんでした。");
         const finalSaved = await step.do("save-formatted-output-" + attempt, { retries: { limit: 0 } }, async () => {
           return saveAgentTaskCheckpoint(this.env.DB, {
