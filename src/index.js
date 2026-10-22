@@ -1045,17 +1045,21 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   const safeMessage = inspectAndRedact(message, { blocklist: env.PRIVACY_BLOCKLIST || "" });
   if (!safeMessage.ok) return "\u8A8D\u8A3C\u60C5\u5831\u3089\u3057\u3044\u5024\u304C\u542B\u307E\u308C\u3066\u3044\u305F\u305F\u3081\u3001AI\u306B\u306F\u9001\u4FE1\u3057\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u5024\u3092\u524A\u9664\u3057\u3066\u304B\u3089\u9001\u308A\u76F4\u3057\u3066\u306D\u3002";
   const omitStoredMemory = shouldOmitStoredMemory(message);
+  let memoryQueueMs = 0;
+  let memoryQueuePromise = Promise.resolve();
   if (!omitStoredMemory && isMemoryProcessingCandidate(safeMessage.text)) {
-    try {
-      await enqueueAgentMemoryJob(env.DB, {
-        chatId: String(chatId),
-        messageId: String(messageId),
-        messageText: safeMessage.text,
-        nowMs: Date.parse(now)
-      });
-    } catch {
+    const queueStartedAt = Date.now();
+    memoryQueuePromise = enqueueAgentMemoryJob(env.DB, {
+      chatId: String(chatId),
+      messageId: String(messageId),
+      messageText: safeMessage.text,
+      nowMs: Date.parse(now)
+    }).then(() => {
+      memoryQueueMs = Date.now() - queueStartedAt;
+    }).catch(() => {
+      memoryQueueMs = Date.now() - queueStartedAt;
       console.error("memory job enqueue failed");
-    }
+    });
   }
   let contextMs = 0;
   let generationMs = 0;
@@ -1064,7 +1068,8 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   const [history, matches, policy] = await Promise.all([
     env.DB.prepare("SELECT role, content FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 12").bind(chatId).all(),
     omitStoredMemory ? Promise.resolve([]) : findRelevantNotes(message, env, 8),
-    env.DB.prepare("SELECT category, rule_text FROM bot_behavior_rules WHERE active = 1 ORDER BY rule_id DESC LIMIT 20").all()
+    env.DB.prepare("SELECT category, rule_text FROM bot_behavior_rules WHERE active = 1 ORDER BY rule_id DESC LIMIT 20").all(),
+    memoryQueuePromise
   ]);
   contextMs = Date.now() - contextStartedAt;
   const findings = new Set(safeMessage.findings);
@@ -1134,11 +1139,11 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
 
 \u51FA\u5178: ${cited.map((note) => note.title).join("\u3001")}`;
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings, ...safeResponse.findings], prompt.length, "success");
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
     return reply.slice(0, 3500);
   } catch (error) {
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], promptChars, "failed");
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
     await enqueueBotAlert(env, classifyOperationalFailure(error));
     console.error("Telegram chat response failed");
     return classifyOperationalFailure(error) === "gemini_limit" ? "AI\u306E\u5229\u7528\u4E0A\u9650\u306B\u9054\u3057\u305F\u3088\u3046\u3067\u3001\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u306A\u304B\u3063\u305F\u3088\u3002\u5C11\u3057\u6642\u9593\u3092\u7F6E\u3044\u3066\u8A66\u3057\u3066\u306D\u3002" : "\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30A8\u30E9\u30FC\u3092\u8A18\u9332\u3057\u305F\u306E\u3067\u3001\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u3082\u3046\u4E00\u5EA6\u9001\u3063\u3066\u307F\u3066\u306D\u3002";
