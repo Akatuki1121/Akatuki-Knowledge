@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const classifier = fileURLToPath(new URL("./classify_yaos_integration.mjs", import.meta.url));
@@ -26,7 +26,6 @@ try {
   git("init", "-q");
   git("config", "user.name", "CI classifier test");
   git("config", "user.email", "ci-classifier@example.invalid");
-  await writeFile(join(dir, "src-index.js"), 'export const reply = "hello";\n');
   // The classifier intentionally targets src/index.js, matching the real repository layout.
   await (await import("node:fs/promises")).mkdir(join(dir, "src"));
   await writeFile(join(dir, "src", "index.js"), 'export const reply = "hello";\n');
@@ -42,13 +41,31 @@ try {
   classify(baseline, feature);
   assert.match(await readFile(output, "utf8"), /required=false/, "unrelated source change should skip YAOS E2E");
 
-  await writeFile(join(dir, "src", "index.js"), 'await enqueueSyncJob(env, "notes", id, "upsert");\n');
+  await writeFile(join(dir, "src", "index.js"), [
+    "async function mutateNote() {",
+    '  await enqueueSyncJob(env, "notes", id, "upsert");',
+    "  const shouldSend = true;",
+    "  return shouldSend;",
+    "}",
+    "",
+  ].join("\n"));
   git("add", ".");
   git("commit", "-qm", "sync change");
   const sync = git("rev-parse", "HEAD");
+  await writeFile(join(dir, "src", "index.js"), [
+    "async function mutateNote() {",
+    '  await enqueueSyncJob(env, "notes", id, "upsert");',
+    "  const shouldSend = false;",
+    "  return shouldSend;",
+    "}",
+    "",
+  ].join("\n"));
+  git("add", ".");
+  git("commit", "-qm", "change sync control flow");
+  const controlFlow = git("rev-parse", "HEAD");
   await writeFile(output, "");
-  classify(feature, sync);
-  assert.match(await readFile(output, "utf8"), /required=true/, "sync-sensitive source change must run YAOS E2E");
+  classify(sync, controlFlow);
+  assert.match(await readFile(output, "utf8"), /required=true/, "control-flow changes inside sync context must run YAOS E2E");
 
   await writeFile(output, "");
   classify("", sync);
