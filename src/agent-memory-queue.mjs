@@ -32,7 +32,7 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
   await db.prepare(`
     UPDATE agent_memory_jobs
     SET status = 'failed', last_error_class = 'attempt_budget_exhausted',
-        lease_expires_at = NULL, completed_at = ?, updated_at = ?
+        lease_expires_at = NULL, message_text = '', completed_at = ?, updated_at = ?
     WHERE status IN ('queued', 'processing') AND attempts >= max_attempts
       AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at <= ?)
   `).bind(now, now, now).run();
@@ -94,10 +94,12 @@ export async function failAgentMemoryJob(db, jobId, input = {}) {
   const result = await db.prepare(`
     UPDATE agent_memory_jobs
     SET status = ?, next_attempt_at = ?, lease_expires_at = NULL,
+        message_text = CASE WHEN ? = 'failed' THEN '' ELSE message_text END,
         last_error_class = ?, completed_at = CASE WHEN ? = 'failed' THEN ? ELSE NULL END,
         updated_at = ?
     WHERE job_id = ? AND status = 'processing'
-  `).bind(retryable ? "queued" : "failed", nextAttemptAt, errorClass,
+  `).bind(retryable ? "queued" : "failed", nextAttemptAt,
+    retryable ? "queued" : "failed", errorClass,
     retryable ? "queued" : "failed", now, now, jobId).run();
   return Number(result?.meta?.changes || 0) === 1;
 }
