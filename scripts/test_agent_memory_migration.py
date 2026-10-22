@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations" / "pending" / "0013_agent_memory_metadata.sql"
+MIGRATION = ROOT / "migrations" / "0013_agent_memory_metadata.sql"
 connection = sqlite3.connect(":memory:")
 connection.executescript(MIGRATION.read_text(encoding="utf-8"))
 
