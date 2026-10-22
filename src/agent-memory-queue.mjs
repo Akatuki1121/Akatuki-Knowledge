@@ -32,10 +32,10 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
   await db.prepare(`
     UPDATE agent_memory_jobs
     SET status = 'failed', last_error_class = 'attempt_budget_exhausted',
-        lease_expires_at = NULL, updated_at = ?
+        lease_expires_at = NULL, completed_at = ?, updated_at = ?
     WHERE status IN ('queued', 'processing') AND attempts >= max_attempts
       AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at <= ?)
-  `).bind(now, now).run();
+  `).bind(now, now, now).run();
 
   const row = await db.prepare(`
     UPDATE agent_memory_jobs
