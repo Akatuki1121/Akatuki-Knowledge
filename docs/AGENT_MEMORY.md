@@ -14,7 +14,7 @@ Agent memory is metadata over the existing Obsidian and Telegram notes. The note
 | `procedure` | A reusable, user-provided process |
 | `hypothesis` | An inference that has not been confirmed |
 
-Each entry has a canonical memory key, source note ID, source reference, record/update timestamps, confidence, trust level, and status. `user_stated` is reserved for content directly supported by the user's own words and confidence of at least 0.85. `user_confirmed` is reserved for an explicit user resolution of a conflict. Other captures are `inferred` and remain `unverified`; hypotheses are always unverified. Assistant-generated conclusions are not user knowledge.
+Each entry has a canonical memory key, source note ID, source reference, record/update timestamps, confidence, trust level, and status. `user_stated` is reserved for content directly supported by a quote copied from the current user message and confidence of at least 0.85. `user_confirmed` additionally requires an explicit confirmation phrase in the current user message. Other captures are `inferred` and remain `unverified`; hypotheses are always unverified. Assistant-generated conclusions are not user knowledge.
 
 Legacy `knowledge_type` remains populated for compatibility (`decision` maps to `rationale`, `procedure` to `procedure`, and other kinds to `fact`). Notes without metadata are labelled `legacy_unverified` in agent context.
 
@@ -25,7 +25,7 @@ Legacy `knowledge_type` remains populated for compatibility (`decision` maps to 
 - Responses must describe competing values and dates and ask the user rather than choosing one. Only an explicit user confirmation may supersede competing values.
 - When note text changes outside a classified capture, existing metadata is marked `superseded`. The changed note remains searchable but is treated as legacy/unverified until classified again.
 - Deleting a note writes suppression records for its content hash and each known memory key/value hash, and marks its metadata `forgotten`. Retrieval and automatic capture reject suppressed content or keys, including a rephrased value with the same key.
-- A direct request not to remember or reuse a topic is never captured. Delete the relevant note to persist a suppression across future captures.
+- A direct request not to remember or reuse a topic skips both stored-memory retrieval and capture for that reply. Delete the relevant note to persist a suppression across future captures.
 - An explicit restore removes that note's suppression records and returns forgotten entries as `unverified`; restoring a note does not silently re-confirm its contents.
 
 ## Safety and rollout

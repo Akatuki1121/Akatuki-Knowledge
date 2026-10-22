@@ -28,6 +28,28 @@ function normalizedText(value) {
   return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("ja-JP");
 }
 
+export function deriveAgentMemoryTrust(input) {
+  if (!input
+    || typeof input.userMessage !== "string"
+    || typeof input.sourceQuote !== "string"
+    || !input.sourceQuote.trim()
+    || !normalizedText(input.userMessage).includes(normalizedText(input.sourceQuote))
+    || !Number.isFinite(input.confidence)
+    || input.confidence < 0.85) {
+    return "inferred";
+  }
+  if (input.requestedTrust === "user_confirmed"
+    && /(?:今後|これから).{0,30}(?:として扱|で記録|を採用|で確定|にする)|(?:正しいのは|正解は|採用するのは).{1,80}(?:です|だ|にする|を採用|で確定)/u.test(input.userMessage)) {
+    return "user_confirmed";
+  }
+  return input.requestedTrust === "user_stated" ? "user_stated" : "inferred";
+}
+
+export function shouldOmitStoredMemory(message) {
+  if (typeof message !== "string") return false;
+  return /(?:記憶|覚え|記録|保存|メモ|ノート)(?:しないで|ないで|しない|しなくて|残さないで)|(?:この話|この件|この内容).{0,20}(?:覚えないで|記録しないで|保存しないで|メモしないで|忘れて|記憶しないで)|(?:記憶から消して|記録を消して|保存した内容を削除)|(?:don't\s+(?:remember|save|store|record|note)|forget\s+(?:this|that|it)|stop remembering)/iu.test(message);
+}
+
 async function sha256Hex(value) {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);

@@ -3,9 +3,11 @@ import { readFile } from "node:fs/promises";
 import {
   buildAgentMemorySuppressionStatements,
   createAgentMemoryMetadata,
+  deriveAgentMemoryTrust,
   isAgentMemorySuppressed,
   prepareAgentMemoryMetadataStatements,
-  saveAgentMemoryMetadata
+  saveAgentMemoryMetadata,
+  shouldOmitStoredMemory
 } from "../src/agent-memory.mjs";
 
 class Statement {
@@ -90,6 +92,42 @@ const confirmed = await createAgentMemoryMetadata({ ...base, trustLevel: "user_c
 assert.equal(confirmed.trustLevel, "user_confirmed");
 assert.equal(confirmed.confirmedAt, confirmed.recordedAt);
 
+assert.equal(deriveAgentMemoryTrust({
+  userMessage: "私は短い返答が好きです。",
+  sourceQuote: "短い返答が好きです。",
+  requestedTrust: "user_stated",
+  confidence: 0.95
+}), "user_stated");
+assert.equal(deriveAgentMemoryTrust({
+  userMessage: "以前はAと言ったけど、正しいのはBです。今後はBとして扱ってください。",
+  sourceQuote: "正しいのはBです",
+  requestedTrust: "user_confirmed",
+  confidence: 0.95
+}), "user_confirmed");
+assert.equal(deriveAgentMemoryTrust({
+  userMessage: "たぶん短い返答が好きかも。",
+  sourceQuote: "短い返答が好きです。",
+  requestedTrust: "user_stated",
+  confidence: 0.99
+}), "inferred");
+assert.equal(shouldOmitStoredMemory("この話は記録しないでください。"), true);
+assert.equal(shouldOmitStoredMemory("この内容は覚えないで。"), true);
+assert.equal(shouldOmitStoredMemory("この話は忘れないでね。"), false);
+assert.equal(shouldOmitStoredMemory("Please don't remember this."), true);
+assert.equal(shouldOmitStoredMemory("次の予定を覚えて。"), false);
+assert.equal(deriveAgentMemoryTrust({
+  userMessage: "短い返答が好きです。",
+  sourceQuote: "",
+  requestedTrust: "user_stated",
+  confidence: 0.99
+}), "inferred");
+assert.equal(deriveAgentMemoryTrust({
+  userMessage: "この場合、正しいのはBでしょうか？",
+  sourceQuote: "正しいのはB",
+  requestedTrust: "user_confirmed",
+  confidence: 0.99
+}), "inferred");
+
 await assert.rejects(
   createAgentMemoryMetadata({ ...base, confidence: 1.1 }),
   { name: "TypeError" }
@@ -144,5 +182,6 @@ assert.match(workerSource, /NOT EXISTS\s*\(\s*SELECT 1 FROM agent_memory_suppres
 assert.match(workerSource, /memory_status/u);
 assert.match(workerSource, /status = 'superseded'/u);
 assert.match(workerSource, /user_confirmed/u);
+assert.match(workerSource, /shouldOmitStoredMemory/u);
 
 console.log("Agent memory metadata, trust, expiry, conflict, and suppression checks passed.");
