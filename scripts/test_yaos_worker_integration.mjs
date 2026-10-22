@@ -378,7 +378,7 @@ SYNC_TOKEN = "${TOKEN}"
     ]);
     await run("npx", [
       ...WRANGLER, "d1", "execute", "knowledge-integration",
-      "--local", "--file=./migrations/pending/0013_agent_memory_metadata.sql",
+      "--local", "--file=./migrations/0013_agent_memory_metadata.sql",
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
     markPhase("ローカルD1の準備完了");

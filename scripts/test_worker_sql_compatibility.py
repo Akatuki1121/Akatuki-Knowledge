@@ -11,7 +11,7 @@ PENDING_MIGRATIONS = [
     Path("migrations/0010_bot_organization_candidates.sql"),
     Path("migrations/0011_agent_tasks.sql"),
     Path("migrations/0012_bot_ai_permission_previews.sql"),
-    Path("migrations/pending/0013_agent_memory_metadata.sql"),
+    Path("migrations/0013_agent_memory_metadata.sql"),
 ]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
@@ -30,7 +30,7 @@ SOURCE_EXPR = '$' + '{table === "notes" ? "obsidian" : "telegram"}'
 
 
 def decode_js_string(value: str) -> str:
-    return value.replace(r"\n", "\n").replace(r"\r", "\r").replace(r"\t", "\t").replace(r"\"", '"').replace(r"\'", "'").replace(r"\\", "\\")
+    return value.replace(r"\n", "\n").replace(r"\r", "\r").replace(r"\t", "\t").replace(r'\"', '"').replace(r"\'", "'").replace(r"\\", "\\")
 
 
 def variants(query: str):
@@ -56,7 +56,7 @@ def variants(query: str):
 
 db = sqlite3.connect(":memory:")
 db.executescript(SCHEMA.read_text(encoding="utf-8"))
-# Validate Worker SQL against the captured live schema plus additive pending migrations.
+# Validate Worker SQL against the captured live schema plus applied migrations.
 for migration in PENDING_MIGRATIONS:
     db.executescript(migration.read_text(encoding="utf-8"))
 sources = [path.read_text(encoding="utf-8") for path in SOURCES]
