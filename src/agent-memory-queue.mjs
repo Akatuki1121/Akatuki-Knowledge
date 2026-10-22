@@ -64,7 +64,7 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
         SELECT 1 FROM agent_memory_jobs active
         WHERE active.status = 'processing' AND active.lease_expires_at > ?
       )
-    RETURNING job_id, chat_id, message_id, message_text, attempts, max_attempts
+    RETURNING job_id, chat_id, message_id, message_text, attempts, max_attempts, created_at
   `).bind(leaseUntil, now, now, now, now, now, now, now).first();
 
   return row || null;
