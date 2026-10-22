@@ -175,10 +175,10 @@ import YSyncProvider from "y-partyserver/provider";
 import WebSocket from "ws";
 const host = "http://127.0.0.1:8787";
 const doc = new Y.Doc();
-const pathToId = doc.getMap("pathToId");
 const idToText = doc.getMap("idToText");
+const meta = doc.getMap("meta");
 const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
-  prefix: ${JSON.stringify("/vault/sync/" + encodeURIComponent(VAULT_ID))},
+  prefix: ${JSON.stringify("/__integration/yaos/vault/sync/" + encodeURIComponent(VAULT_ID))},
   params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
   WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
   // Register sync/error listeners before opening the socket to avoid missing
@@ -207,10 +207,21 @@ const timeout = setTimeout(() => {
 }, 10000);
 provider.on("sync", synced => {
   if (!synced || finished) return;
-  const id = pathToId.get(${JSON.stringify(path)});
+  const matches = Array.from(meta.entries()).filter(([, value]) => {
+    const notePath = value instanceof Y.Map
+      ? value.get("path")
+      : value && typeof value === "object" ? value.path : null;
+    return notePath === ${JSON.stringify(path)};
+  });
+  const id = matches.length === 1 ? matches[0][0] : null;
   const text = id && idToText.get(id);
   if (!text) {
-    console.error("YAOS note not found at path " + ${JSON.stringify(path)});
+    console.error("YAOS lookup failed: " + JSON.stringify({
+      path: ${JSON.stringify(path)},
+      metadataEntries: meta.size,
+      textEntries: idToText.size,
+      pathMatches: matches.length,
+    }));
     clearTimeout(timeout);
     done(1);
     return;
@@ -259,14 +270,13 @@ async function main() {
   markPhase("開始");
   const stateDir = await mkdtemp(join(tmpdir(), "knowledge-yaos-e2e-"));
   let worker;
-  let yaosWorker;
   let workerOutput = "";
   const clientPath = join(YAOS_SERVER, `.knowledge-integration-client-${UUID}.mjs`);
   const originalKnowledge = await readFile(join(ROOT, "wrangler.toml"), "utf8");
   const originalYaos = await readFile(YAOS_WRANGLER, "utf8");
 
   const knowledgeConfig = `name = "akatuki-knowledge-integration"
-main = "src/index.js"
+main = "scripts/yaos-integration-proxy.mjs"
 compatibility_date = "2026-10-17"
 workers_dev = true
 
@@ -290,6 +300,7 @@ service = "yaos"
 API_TOKEN = "${TOKEN}"
 VAULT_ID = "${VAULT_ID}"
 YAOS_TOKEN = "${TOKEN}"
+INTEGRATION_TEST = "true"
 # Shorter settle windows are safe here because the integration suite uses local Workers only.
 SYNC_IDLE_AFTER_MS = 500
 SYNC_PUSH_SETTLE_MS = 500
@@ -383,60 +394,21 @@ SYNC_TOKEN = "${TOKEN}"
       };
       worker.stdout.on("data", collect);
       worker.stderr.on("data", collect);
-      await waitFor(async () => {
-        try {
-          const response = await fetch(HOST + "/health");
-          return response.ok;
-        } catch { return false; }
-      }, "local Knowledge Worker startup");
+      try {
+        await waitFor(async () => {
+          try {
+            const response = await fetch(HOST + "/health");
+            return response.ok;
+          } catch { return false; }
+        }, "local Knowledge Worker startup");
+      } catch (error) {
+        throw new Error(`${error.message}\n${workerOutput}`);
+      }
     }
 
     async function stopWorker() {
       await stopProcessTree(worker);
       worker = null;
-    }
-
-    async function startYaosWorker() {
-      let output = "";
-      yaosWorker = spawn("npx", [
-        ...WRANGLER, "dev",
-        "--config", YAOS_CONFIG,
-        "--ip", "127.0.0.1",
-        "--port", "8787",
-        "--local",
-        "--persist-to", stateDir,
-        "--log-level", "error",
-      ], {
-        cwd: YAOS_SERVER,
-        detached: process.platform !== "win32",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
-          CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false",
-        },
-      });
-      const collect = chunk => {
-        output += chunk.toString();
-        if (output.length > 6000) output = output.slice(-6000);
-      };
-      yaosWorker.stdout.on("data", collect);
-      yaosWorker.stderr.on("data", collect);
-      try {
-        await waitFor(async () => {
-          try {
-            const response = await fetch(HOST + "/");
-            return response.status < 500;
-          } catch { return false; }
-        }, "direct local YAOS Worker startup");
-      } catch (error) {
-        throw new Error(`${error.message}\n${output}`);
-      }
-    }
-
-    async function stopYaosWorker() {
-      await stopProcessTree(yaosWorker);
-      yaosWorker = null;
     }
 
     await startWorker();
@@ -518,20 +490,9 @@ SYNC_TOKEN = "${TOKEN}"
     });
     markPhase("認証失敗後の再試行完了");
 
-    // Connect the independent Yjs client directly to the YAOS Worker. The
-    // Knowledge Worker exposes only its own routes on the public local port;
-    // its YAOS service binding is internal and cannot be reached by a Node
-    // WebSocket client at 127.0.0.1:8787. Stop Knowledge first, expose YAOS on
-    // that port with the same disposable persistence directory, edit the DO,
-    // then restart Knowledge and verify its conflict handling.
-    await stopWorker();
-    await startYaosWorker();
-    try {
-      await mutateYaosNote(RENAMED_PATH, "\\n\\nexternal YAOS edit", clientPath);
-    } finally {
-      await stopYaosWorker();
-    }
-    await startWorker();
+    // The test-only proxy routes this client through the live YAOS service
+    // binding so it edits the same Durable Object used by the Knowledge Worker.
+    await mutateYaosNote(RENAMED_PATH, "\\n\\nexternal YAOS edit", clientPath);
     const deadBeforeConflict = await currentDeadCount();
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
@@ -539,7 +500,6 @@ SYNC_TOKEN = "${TOKEN}"
     console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
   } finally {
     await stopProcessTree(worker);
-    await stopProcessTree(yaosWorker);
     await rm(KNOWLEDGE_CONFIG, { force: true });
     await rm(YAOS_CONFIG, { force: true });
     await rm(clientPath, { force: true });
