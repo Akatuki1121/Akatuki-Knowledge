@@ -1,34 +1,8 @@
 import { spawn } from "node:child_process";
 
-const checks = [
-  ["source-syntax", process.execPath, ["--check", "src/index.js"]],
-  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/organize-failure.test.js"]],
-  ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
-  ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
-  ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
-  ["sync-conflicts", process.execPath, ["scripts/test-sync-conflicts.mjs"]],
-  ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
-  ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
-  ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
-  ["agent-github-tools", process.execPath, ["scripts/test_agent_github_tools.mjs"]],
-  ["agent-evaluation-set", process.execPath, ["scripts/test_agent_evaluation_set.mjs"]],
-  ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
-  ["agent-memory", process.execPath, ["scripts/test_agent_memory.mjs"]],
-  ["background-task-store", process.execPath, ["scripts/check-background-task-store.mjs"]],
-  ["background-task-workflow", process.execPath, ["scripts/check-background-task-workflow.mjs"]],
-  ["agent-task-idempotency", process.execPath, ["scripts/test_agent_task_idempotency.mjs"]],
-  ["sync-telegram-agent-notifications", process.execPath, ["scripts/test-telegram-agent-notifications.mjs"]],
-  ["agent-tasks-migration", "python3", ["scripts/test_agent_tasks_migration.py"]],
-  ["agent-task-store-sql", "python3", ["scripts/test_agent_task_store_sql.py"]],
-  ["agent-task-recovery", "python3", ["scripts/test_agent_task_recovery.py"]],
-  ["agent-memory-migration", "python3", ["scripts/test_agent_memory_migration.py"]],
-  ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
-  ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
-];
+import { selectChecks } from "./check-groups.mjs";
 
-const selectedChecks = process.argv.includes("--sync-only")
-  ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name.startsWith("background-task-"))
-  : checks;
+const selectedChecks = selectChecks(process.argv);
 
 const limit = Math.max(1, Math.min(4, Number(process.env.CI_CHECK_CONCURRENCY) || 4));
 let next = 0;

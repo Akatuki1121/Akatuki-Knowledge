@@ -26,6 +26,10 @@ jobs:
       integration: ${{ steps.filter.outputs.integration }}
       source: ${{ steps.filter.outputs.source }}
       classifier: ${{ steps.filter.outputs.classifier }}
+      agent_tests: ${{ steps.filter.outputs.agent_tests }}
+      sync_tests: ${{ steps.filter.outputs.sync_tests }}
+      migration_checks: ${{ steps.filter.outputs.migration_checks }}
+      test_harness: ${{ steps.filter.outputs.test_harness }}
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       # Pull-request path filtering uses the GitHub API; the checked-out
@@ -60,6 +64,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
             integration:
+              - 'src/sync-outbox.mjs'
               - 'scripts/test_yaos_worker_integration.mjs'
               - 'scripts/test_reconstructed_baseline.py'
               - 'scripts/test_worker_sql_compatibility.py'
@@ -73,6 +78,35 @@ jobs:
             classifier:
               - 'scripts/classify_yaos_integration.mjs'
               - '.github/workflows/check.yml'
+            agent_tests:
+              - 'src/index.js'
+              - 'scripts/test_agent_*.mjs'
+              - 'scripts/test_agent_*.py'
+              - 'scripts/check-agent-*.mjs'
+              - 'scripts/check-background-task-*.mjs'
+              - 'scripts/test-background-task-*.mjs'
+              - 'scripts/test-telegram-agent-notifications.mjs'
+              - 'src/agent/**'
+            sync_tests:
+              - 'src/sync-outbox.mjs'
+              - 'scripts/check-sync-contract.mjs'
+              - 'scripts/classify_yaos_integration.mjs'
+              - 'scripts/test-sync-*.mjs'
+              - 'scripts/test_classify_yaos_integration.mjs'
+            test_harness:
+              - 'scripts/run-parallel-checks.mjs'
+              - 'scripts/check-groups.mjs'
+              - 'scripts/test-check-groups.mjs'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/check.yml'
+            migration_checks:
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'scripts/test_pending_migration.py'
+              - 'scripts/test_recovered_migration_chain.py'
+              - 'scripts/test_reconstructed_baseline.py'
+              - 'scripts/test_worker_sql_compatibility.py'
             deploy:
               - 'src/index.js'
               - 'wrangler.toml'
@@ -92,8 +126,55 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run check
-      - run: python3 scripts/test_pending_migration.py
+      - run: npm run check:core
+
+  agent-domain-tests:
+    needs: changed-files
+    if: needs.changed-files.outputs.agent_tests == 'true' || needs.changed-files.outputs.test_harness == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:agent
+
+  sync-unit-tests:
+    needs:
+      - changed-files
+      - classify-yaos-integration
+    if: >-
+      always() &&
+      needs.changed-files.outputs.checks == 'true' &&
+      (needs.changed-files.outputs.sync_tests == 'true' ||
+       needs.changed-files.outputs.test_harness == 'true' ||
+       ((needs.classify-yaos-integration.result == 'success' &&
+         needs.classify-yaos-integration.outputs.required == 'true') ||
+        (needs.classify-yaos-integration.result != 'success' &&
+         needs.changed-files.outputs.source == 'true')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:sync
+
+  migration-validation:
+    needs: changed-files
+    if: needs.changed-files.outputs.migration_checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate pending migrations
+        run: python3 scripts/test_pending_migration.py
       - name: Validate recovered migration chain and full schema shape
         run: python3 scripts/test_recovered_migration_chain.py
       - name: Validate reconstructed baseline in empty SQLite database
@@ -149,8 +230,11 @@ jobs:
     if: >-
       always() &&
       (needs.changed-files.outputs.integration == 'true' ||
-       (needs.classify-yaos-integration.result == 'success' &&
-        needs.classify-yaos-integration.outputs.required == 'true'))
+       needs.changed-files.outputs.test_harness == 'true' ||
+       ((needs.classify-yaos-integration.result == 'success' &&
+         needs.classify-yaos-integration.outputs.required == 'true') ||
+        (needs.classify-yaos-integration.result != 'success' &&
+         needs.changed-files.outputs.source == 'true')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -182,12 +266,18 @@ jobs:
       - syntax-and-contract
       - worker-build
       - yaos-worker-integration
+      - agent-domain-tests
+      - sync-unit-tests
+      - migration-validation
     if: >-
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       needs.changed-files.outputs.deploy == 'true' &&
-      needs.syntax-and-contract.result == 'success' &&
+      (needs.syntax-and-contract.result == 'success' || needs.syntax-and-contract.result == 'skipped') &&
+      (needs.agent-domain-tests.result == 'success' || needs.agent-domain-tests.result == 'skipped') &&
+      (needs.sync-unit-tests.result == 'success' || needs.sync-unit-tests.result == 'skipped') &&
+      (needs.migration-validation.result == 'success' || needs.migration-validation.result == 'skipped') &&
       (needs.worker-build.result == 'success' || needs.worker-build.result == 'skipped') &&
       (needs.yaos-worker-integration.result == 'success' || needs.yaos-worker-integration.result == 'skipped')
     runs-on: ubuntu-latest
