@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import { checks, selectChecks } from "./check-groups.mjs";
+import { selectChecks } from "./check-groups.mjs";
 
 const selectedChecks = selectChecks(process.argv);
 
