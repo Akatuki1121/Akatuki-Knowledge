@@ -24,6 +24,7 @@ jobs:
       checks: ${{ steps.filter.outputs.checks }}
       worker_build: ${{ steps.filter.outputs.worker_build }}
       integration: ${{ steps.filter.outputs.integration }}
+      source: ${{ steps.filter.outputs.source }}
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       # Pull-request path filtering uses the GitHub API; the checked-out
@@ -58,7 +59,6 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
             integration:
-              - 'src/**'
               - 'scripts/test_yaos_worker_integration.mjs'
               - 'scripts/test_reconstructed_baseline.py'
               - 'scripts/test_worker_sql_compatibility.py'
@@ -67,6 +67,8 @@ jobs:
               - 'wrangler.toml'
               - 'package.json'
               - 'package-lock.json'
+            source:
+              - 'src/**'
             deploy:
               - 'src/index.js'
               - 'wrangler.toml'
@@ -95,6 +97,29 @@ jobs:
       - name: Compile Worker SQL against captured D1 schema
         run: python3 scripts/test_worker_sql_compatibility.py
 
+  classify-yaos-integration:
+    needs: changed-files
+    if: needs.changed-files.outputs.source == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      required: ${{ steps.classify.outputs.required }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Fetch base commit for a shallow diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+      - name: Classify sync-sensitive source changes
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/classify_yaos_integration.mjs
+
   worker-build:
     needs: changed-files
     if: needs.changed-files.outputs.worker_build == 'true'
@@ -111,11 +136,15 @@ jobs:
         run: npx --yes wrangler@4.69.0 deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
 
   yaos-worker-integration:
-    # Run independently to reduce wall-clock time; isolated integration tests
-    # do not deploy or mutate production resources. A failed contract job may
-    # still spend CI minutes here, trading some cost for faster feedback.
-    needs: changed-files
-    if: needs.changed-files.outputs.integration == 'true'
+    # Run the end-to-end test for explicitly sync-related files or source diffs
+    # classified as sync-sensitive. The classifier fails closed on errors.
+    needs:
+      - changed-files
+      - classify-yaos-integration
+    if: >-
+      always() &&
+      (needs.changed-files.outputs.integration == 'true' ||
+       needs.classify-yaos-integration.outputs.required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
