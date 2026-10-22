@@ -99,6 +99,7 @@ const plan = validateGitHubWritePlan({
   ],
 });
 assert.equal(plan.operations.length, 3);
+assert.equal(plan.operations[1].content, "# Agent\\n", "file content whitespace/newlines must be preserved");
 assert.match(await hashGitHubWritePlan(plan), /^[a-f0-9]{64}$/u);
 assert.throws(() => validateGitHubWritePlan({
   repository: "example/project", summary: "secret", operations: [
