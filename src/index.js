@@ -351,6 +351,33 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText, 
 }
 __name(startTelegramBackgroundTask, "startTelegramBackgroundTask");
 
+function describeAgentTaskStopReason(reason) {
+  const normalized = typeof reason === "string" && reason.startsWith("non_retryable_")
+    ? reason.slice("non_retryable_".length)
+    : reason;
+  const guidance = {
+    task_deadline_exceeded: ["処理時間の上限に到達", "依頼を小さく分け、新しい /task として依頼してください。"],
+    retry_would_exceed_task_deadline: ["処理時間の上限に到達するため再試行できない", "依頼を小さく分け、新しい /task として依頼してください。"],
+    attempt_budget_exhausted: ["再試行回数の上限に到達", "依頼内容を絞り、新しい /task として依頼してください。"],
+    ai_call_budget_exhausted: ["AI 呼び出し上限に到達", "質問を一つに絞り、新しい /task として依頼してください。"],
+    ai_token_budget_exhausted: ["AI 利用量の上限に到達", "依頼文を短くし、対象範囲を絞って新しい /task として依頼してください。"],
+    daily_workflow_budget_exhausted: ["本日の背景タスク上限に到達", "翌日以降に、必要な内容を絞って再依頼してください。"],
+    credentials_detected: ["認証情報を検出", "認証情報を依頼文から削除してから再依頼してください。"],
+    pii_masking_failed: ["個人情報を安全にマスキングできない", "個人を特定できる情報を除いてから再依頼してください。"],
+    web_research_not_enabled: ["Web 調査は現在無効", "Web 調査の有効化を待つ間は、ナレッジ検索を /task で依頼してください。"],
+    web_research_sources_missing: ["調査結果の出典を確認できない", "出典を確認できる依頼内容に絞って、新しい /research として依頼してください。"],
+    web_research_unverified: ["調査結果を検証できない", "検証対象を絞って、新しい /research として依頼してください。"],
+    non_retryable_or_unknown_error: ["安全に再試行できると確認できないエラー", "依頼内容を確認し、対象を絞って新しい /task として依頼してください。"]
+  };
+  const entry = guidance[reason] || guidance[normalized];
+  if (entry) return { label: entry[0], nextAction: entry[1] };
+  return {
+    label: typeof reason === "string" && reason ? reason : "停止理由は未記録",
+    nextAction: "依頼内容を確認し、対象を絞って新しい /task として依頼してください。"
+  };
+}
+__name(describeAgentTaskStopReason, "describeAgentTaskStopReason");
+
 async function getTelegramBackgroundTaskStatus(env, taskId) {
   if (!taskId) return "使い方: /task_status タスクID";
   let task;
@@ -383,7 +410,11 @@ async function getTelegramBackgroundTaskStatus(env, taskId) {
   const notificationLabels = { none: "対象外", pending: "通知待ち", sending: "通知中", sent: "通知済み", failed: "通知停止" };
   if (task.notify_chat_id) reply += "\n通知: " + (notificationLabels[task.notification_status] || task.notification_status);
   if (task.notification_status === "failed") reply += "\n通知停止理由: " + (task.notification_last_error_class || "delivery_failed");
-  if (task.status === "failed" && task.stop_reason) reply += "\n停止理由: " + task.stop_reason;
+  if (task.status === "failed") {
+    const guidance = describeAgentTaskStopReason(task.stop_reason);
+    reply += "\n停止理由: " + guidance.label
+      + "\n次の操作: " + guidance.nextAction;
+  }
   if (task.status === "succeeded" && typeof task.checkpoint?.result === "string") {
     reply += "\n\n" + task.checkpoint.result.slice(0, 3000);
   }
@@ -11611,7 +11642,13 @@ async function flushAgentTaskNotifications(env, limit = 5) {
       + "\nID: " + task.task_id
       + "\n試行回数: " + task.attempts + "/" + task.max_attempts;
     if (checkpoint.stage) message += "\n最終段階: " + (stageLabels[checkpoint.stage] || checkpoint.stage);
-    if (task.status !== "succeeded" && task.stop_reason) message += "\n停止理由: " + task.stop_reason;
+    if (task.status === "failed") {
+      const guidance = describeAgentTaskStopReason(task.stop_reason);
+      message += "\n停止理由: " + guidance.label
+        + "\n次の操作: " + guidance.nextAction;
+    } else if (task.status === "cancelled" && task.stop_reason) {
+      message += "\n停止理由: " + task.stop_reason;
+    }
     if (task.last_error_class) message += "\nエラー分類: " + task.last_error_class;
     if (task.status === "succeeded" && typeof checkpoint.result === "string") {
       message += "\n\n" + checkpoint.result.slice(0, 2500);
