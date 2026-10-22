@@ -308,6 +308,7 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText) 
     });
   } catch (error) {
     if (error?.message === "daily_workflow_budget_exhausted") return "本日の背景タスク上限（60件）に達しました。明日また依頼してください。";
+    if (error?.message === "idempotency_key_conflict") return "同じ依頼IDが異なる内容です。新しい依頼として送信し直してください。";
     return "背景タスクを登録できませんでした。基盤の状態を確認してください。";
   }
 
@@ -11765,6 +11766,9 @@ var wrapper_default = {
       } catch (error) {
         if (error?.message === "daily_workflow_budget_exhausted") {
           return Response.json({ error: "daily_task_budget_exhausted" }, { status: 429, headers: JSON_HEADERS2 });
+        }
+        if (error?.message === "idempotency_key_conflict") {
+          return Response.json({ error: "idempotency_key_conflict" }, { status: 409, headers: JSON_HEADERS2 });
         }
         return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
       }

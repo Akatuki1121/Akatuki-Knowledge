@@ -50,6 +50,19 @@ Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow exe
 
 The first task type is `knowledge_query`: a read-only multi-stage note search and summarization. Note writes are intentionally excluded until their D1/YAOS side effects have explicit idempotency keys and restart tests. The Workflow stores `context_ready`, `prompt_ready`, and `completed` checkpoints; a restart reuses saved context/prompt and completes from an existing output rather than issuing another AI call.
 
+## Issue 35 operation inventory
+
+| Operation | Entry point | Side effects | Background status |
+| --- | --- | --- | --- |
+| Search and summarize approved notes | Telegram `/task <query>` or authenticated `POST /api/agent-tasks` | Reads D1 notes; calls Gemini after privacy checks; stores task checkpoints/result in D1; Telegram tasks send a terminal notification | Enabled as `knowledge_query`; read-only with respect to notes |
+| Inspect one task | Telegram `/task_status <id>` or authenticated `GET /api/agent-tasks/{id}` | Reads task metadata/checkpoint/result; no note or AI side effect | Enabled |
+| List tasks | Telegram `/tasks` or authenticated `GET /api/agent-tasks?status=...` | Reads bounded task metadata; no note or AI side effect | Enabled |
+| Create, append, correct, move, archive, or restore a note | Existing synchronous note/API flows | Mutates D1 and may enqueue a YAOS outbox delivery | Not connected to the generic background Workflow |
+
+The generic Workflow must reject every task type except `knowledge_query`. In particular, note mutations, external messages and deletion are not background tools and have no approval-bypass path. Keep them disabled until a separate design specifies operation-bound approvals, before-state checks and idempotent side-effect keys.
+
+For the enabled query, the durable stages are `context_ready` (filtered note IDs and excerpts), `prompt_ready` (privacy-inspected assembled prompt and reserved estimate), and `completed` (bounded answer and cited IDs). The sanitized task payload also stores a SHA-256 input hash. Reusing an idempotency key with the same input returns the existing task without another reservation; reusing it with different input is rejected. A retry reuses the earliest valid checkpoint and must not repeat a completed task. An expired lease may be claimed by one executor; the previous lease token can no longer save a checkpoint or complete the task. Deadline and budget exhaustion are terminal and retain the checkpoint for diagnosis.
+
 ## Implementation / rollout boundary
 
 - Retry policy, pending D1 schema, claim/lease/checkpoint store, and Workflow/API wiring are developed on a feature branch and validated with Actions.

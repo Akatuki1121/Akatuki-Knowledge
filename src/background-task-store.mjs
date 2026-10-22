@@ -135,6 +135,11 @@ function safeJson(value, fieldName) {
   return serialized;
 }
 
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function boundedInteger(value, fallback, ceiling) {
   const number = Number.isFinite(value) ? Math.floor(value) : fallback;
   return Math.max(1, Math.min(ceiling, number));
@@ -162,6 +167,15 @@ export async function enqueueAgentTask(db, input) {
   const now = toSqliteDateTime(nowMs);
   const deadline = toSqliteDateTime(deadlineAtMs);
   const payloadJson = safeJson(input.payload, "payload");
+  const payload = parseJson(payloadJson, null);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new TypeError("payload must be an object");
+  }
+  if (Object.hasOwn(payload, "inputHash")) {
+    throw new TypeError("payload.inputHash is reserved");
+  }
+  const inputHash = await sha256Hex(payloadJson);
+  const storedPayloadJson = safeJson({ ...payload, inputHash }, "payload");
   const taskId = input.taskId.trim();
   const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
     ? input.notifyChatId.trim() : null;
@@ -181,7 +195,7 @@ export async function enqueueAgentTask(db, input) {
         CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
       ON CONFLICT(idempotency_key) DO NOTHING
     `).bind(
-      taskId, idempotencyKey, input.taskType.trim(), payloadJson,
+      taskId, idempotencyKey, input.taskType.trim(), storedPayloadJson,
       maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now,
       notifyChatId, notifyChatId, now,
     ),
@@ -250,7 +264,17 @@ export async function enqueueAgentTask(db, input) {
   if (!row && idempotencyKey) {
     const existing = await db.prepare("SELECT * FROM agent_tasks WHERE idempotency_key = ?")
       .bind(idempotencyKey).first();
-    if (existing) return { created: false, task: presentTask(existing) };
+    if (existing) {
+      const existingPayload = parseJson(existing.payload_json, null);
+      if (!existingPayload || typeof existingPayload !== "object" || Array.isArray(existingPayload)) {
+        throw new Error("idempotency_key_conflict");
+      }
+      const existingInputHash = typeof existingPayload.inputHash === "string"
+        ? existingPayload.inputHash
+        : await sha256Hex(safeJson(existingPayload, "payload"));
+      if (existingInputHash !== inputHash) throw new Error("idempotency_key_conflict");
+      return { created: false, task: presentTask(existing) };
+    }
   }
   if (!row) throw new Error("agent_task_insert_not_confirmed");
 
