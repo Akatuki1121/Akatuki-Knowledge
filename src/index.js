@@ -301,7 +301,114 @@ async function telegramWebhook(request, env, ctx) {
 }
 __name(telegramWebhook, "telegramWebhook");
 
-async function startTelegramBackgroundTask(env, chatId, messageId, commandText, options = {}) {
+async 
+function isGitHubNaturalLanguageRequest(text) {
+  if (typeof text !== "string" || text.startsWith("/")) return false;
+  const topic = /(?:github|github\.com|\bissue\b|\bissues\b|\bpr\b|pull request|プルリク|プルリクエスト|リポジトリ|ブランチ|コミット|\bcommit\b|\bCI\b|\bworkflow\b|\bActions\b)/iu.test(text);
+  const action = /(?:調べ|確認|見て|見直|修正|直し|作成|更新|コメント|レビュー|実装|テスト|変更|開い|閉じ|マージ|やって|対応|直して|追加|消して|書き込|PRに|issueに)/iu.test(text);
+  const repo = /\b[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\b/u.test(text);
+  return action && (topic || repo);
+}
+
+async function approveGitHubWritePlan(env, chatId, taskId, ctx) {
+  if (!env.DB) return "承認を処理できません。タスク保存先が利用できません。";
+  if (typeof env.GITHUB_TOKEN !== "string" || !env.GITHUB_TOKEN) {
+    return "GitHubへの書き込み用トークンが未設定です。Worker Secret GITHUB_TOKEN に、対象リポジトリの Contents・Issues・Pull requests を必要最小限で操作できるトークンを設定してください。承認内容は実行せず保留しました。";
+  }
+  const task = await getAgentTask(env.DB, taskId);
+  const pending = task?.checkpoint?.pendingGitHubWrite;
+  if (!task || task.task_type !== "github_query" || task.status !== "succeeded"
+    || task.notify_chat_id !== String(chatId) || !pending || pending.taskId !== taskId) {
+    return "そのタスクに、このチャットで承認できる GitHub 変更計画はありません。";
+  }
+  if (pending.status !== "pending") {
+    return pending.status === "completed" ? "この変更計画はすでに実行済みです。"
+      : "この変更計画は承認待ちではありません（状態: " + String(pending.status) + "）。二重実行はしません。";
+  }
+  if (typeof pending.expiresAt !== "string" || Date.parse(pending.expiresAt) <= Date.now()) {
+    await env.DB.prepare("UPDATE agent_tasks SET checkpoint_json = json_set(checkpoint_json, '$.pendingGitHubWrite.status', 'expired'), updated_at = ? WHERE task_id = ? AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'pending'")
+      .bind(toSqliteDateTime(Date.now()), taskId).run();
+    return "変更計画の承認期限（24時間）が切れています。新しい依頼で計画を作り直してください。";
+  }
+  let plan;
+  let hash;
+  try {
+    plan = validateGitHubWritePlan(pending.plan);
+    hash = await hashGitHubWritePlan(plan);
+  } catch {
+    return "保存された変更計画の検証に失敗しました。安全のため実行しません。";
+  }
+  if (hash !== pending.planHash) return "変更計画のハッシュが一致しません。内容が変わっている可能性があるため実行しません。";
+  const approvedAt = new Date().toISOString();
+  const claimed = await env.DB.prepare(`
+    UPDATE agent_tasks
+    SET checkpoint_json = json_set(checkpoint_json, '$.pendingGitHubWrite.status', 'executing',
+      '$.pendingGitHubWrite.approvedAt', ?), updated_at = ?
+    WHERE task_id = ? AND task_type = 'github_query' AND status = 'succeeded'
+      AND notify_chat_id = ?
+      AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'pending'
+      AND json_extract(checkpoint_json, '$.pendingGitHubWrite.expiresAt') > ?
+  `).bind(approvedAt, toSqliteDateTime(Date.now()), taskId, String(chatId), approvedAt).run();
+  if (Number(claimed?.meta?.changes || 0) !== 1) return "承認状態が変わったため実行しませんでした。/task_status で確認してください。";
+  ctx.waitUntil(runApprovedGitHubWritePlan(env, String(chatId), taskId, plan));
+  return "変更計画を承認しました。GitHubへの書き込みをバックグラウンドで実行します。\nタスク: " + taskId
+    + "\n計画: " + plan.summary + "\n結果はこのチャットに通知します。";
+}
+
+async function runApprovedGitHubWritePlan(env, chatId, taskId, plan) {
+  try {
+    const result = await executeGitHubWritePlan(plan, {
+      token: env.GITHUB_TOKEN,
+      signal: AbortSignal.timeout(45_000)
+    });
+    await env.DB.prepare(`
+      UPDATE agent_tasks
+      SET checkpoint_json = json_set(checkpoint_json,
+        '$.pendingGitHubWrite.status', 'completed',
+        '$.pendingGitHubWrite.results', json(?),
+        '$.pendingGitHubWrite.completedAt', ?),
+        updated_at = ?
+      WHERE task_id = ? AND status = 'succeeded'
+        AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'executing'
+    `).bind(JSON.stringify(result.results), new Date().toISOString(), toSqliteDateTime(Date.now()), taskId).run();
+    const links = result.results.map((item) => item.url).filter(Boolean);
+    await sendTelegramMessage(env, chatId, "GitHubへの書き込みが完了しました。\nタスク: " + taskId
+      + "\n計画: " + plan.summary
+      + (links.length ? "\n成果物:\n" + [...new Set(links)].join("\n") : "")
+      + "\nマージ・デプロイは実行していません。");
+  } catch {
+    await env.DB.prepare(`
+      UPDATE agent_tasks
+      SET checkpoint_json = json_set(checkpoint_json,
+        '$.pendingGitHubWrite.status', 'failed_or_unknown',
+        '$.pendingGitHubWrite.completedAt', ?),
+        updated_at = ?
+      WHERE task_id = ? AND status = 'succeeded'
+        AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'executing'
+    `).bind(new Date().toISOString(), toSqliteDateTime(Date.now()), taskId).run();
+    await sendTelegramMessage(env, chatId, "GitHub書き込みは完了を確認できませんでした。タスク: " + taskId
+      + "\n一部の操作だけ成功した可能性もあるため、自動再実行はしていません。リポジトリの状態を確認してから、新しい依頼を送ってください。");
+  }
+}
+
+async function rejectGitHubWritePlan(env, chatId, taskId) {
+  if (!env.DB) return "承認を処理できません。";
+  const task = await getAgentTask(env.DB, taskId);
+  if (!task || task.task_type !== "github_query" || task.status !== "succeeded"
+    || task.notify_chat_id !== String(chatId) || task.checkpoint?.pendingGitHubWrite?.status !== "pending") {
+    return "そのタスクに、拒否できる GitHub 変更計画はありません。";
+  }
+  const result = await env.DB.prepare(`
+    UPDATE agent_tasks
+    SET checkpoint_json = json_set(checkpoint_json, '$.pendingGitHubWrite.status', 'rejected'),
+      updated_at = ?
+    WHERE task_id = ? AND status = 'succeeded' AND notify_chat_id = ?
+      AND json_extract(checkpoint_json, '$.pendingGitHubWrite.status') = 'pending'
+  `).bind(toSqliteDateTime(Date.now()), taskId, String(chatId)).run();
+  return Number(result?.meta?.changes || 0) === 1 ? "変更計画を拒否しました。GitHubへの書き込みは行っていません。" : "承認状態が変わったため、拒否を反映できませんでした。";
+}
+
+function startTelegramBackgroundTask(env, chatId, messageId, commandText, options = {}) {
   const allowWebResearch = options.allowWebResearch === true;
   const allowGitHubRead = options.allowGitHubRead === true;
   const taskType = options.taskType === "github_query" && allowGitHubRead ? "github_query" : "knowledge_query";
