@@ -17,10 +17,6 @@ if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
     const diff = execFileSync("git", [
       "diff", "--no-ext-diff", "--unified=20", base, head, "--", "src/index.js",
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    const changedLines = diff
-      .split("\n")
-      .filter(line => (/^[+-]/.test(line) && !line.startsWith("+++") && !line.startsWith("---")))
-      .join("\n");
     // index.js is a large legacy entry point. Run the end-to-end YAOS test
     // only when changed lines touch sync, note-mutation, identity, or conflict
     // handling. If this classifier cannot inspect the diff, it fails closed.
