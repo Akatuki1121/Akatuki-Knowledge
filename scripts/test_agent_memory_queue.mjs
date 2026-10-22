@@ -34,7 +34,7 @@ const queued = await enqueueAgentMemoryJob(db, {
 });
 assert.deepEqual(queued, { inserted: true });
 assert.match(db.calls[0].sql, /INSERT OR IGNORE INTO agent_memory_jobs/u);
-assert.match(db.calls[0].sql, /UNIQUE/u.test("UNIQUE") ? /agent_memory_jobs/u : /agent_memory_jobs/u);
+assert.match(db.calls[0].sql, /agent_memory_jobs/u);
 assert.equal(db.calls[0].params[0], "123");
 assert.equal(db.calls[0].params[1], "456");
 assert.equal(db.calls[0].params[2], "私は短い返答が好きです。");
