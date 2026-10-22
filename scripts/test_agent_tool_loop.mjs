@@ -333,4 +333,39 @@ const githubLoop = await runAgentToolLoop({
 assert.equal(githubLoop.reply, "Issue #1 is open.");
 assert.equal(githubLoop.toolCalls[0].tool, "github_get_issue");
 
-console.log("Agent tool loop tests passed: sequential read-only tools, strict schemas, allowlist, citations, loop/step bounds, and checkpoint resume.");
+
+const githubWritePlan = {
+  repository: "example/project",
+  summary: "Create an issue for the regression",
+  operations: [{ type: "create_issue", title: "Regression report", body: "Observed in latest build." }],
+};
+assert.throws(() => validateAgentToolAction({
+  action: "tool", tool: "github_propose_write", arguments: githubWritePlan,
+}), /unknown_tool/);
+assert.deepEqual(
+  validateAgentToolAction({
+    action: "tool", tool: "github_propose_write", arguments: githubWritePlan,
+  }, { allowGitHubWrite: true }),
+  { action: "tool", tool: "github_propose_write", arguments: githubWritePlan },
+);
+const githubWriteLoop = await runAgentToolLoop({
+  initialPrompt: "Create an issue in example/project",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async ({ modelCall, prompt }) => {
+    assert.match(prompt, /github_propose_write/);
+    if (modelCall === 1) return action("github_propose_write", githubWritePlan);
+    return final("A write plan is ready for approval.", []);
+  },
+  executeTool: async (tool, args) => {
+    assert.equal(tool, "github_propose_write");
+    assert.deepEqual(args, githubWritePlan);
+    return { pendingGitHubWrite: { status: "pending", taskId: "task-1", plan: args, planHash: "abc", expiresAt: "2099-01-01T00:00:00.000Z" } };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(githubWriteLoop.pendingGitHubWrite.status, "pending");
+assert.equal(githubWriteLoop.pendingGitHubWrite.taskId, "task-1");
+assert.equal(githubWriteLoop.toolCalls[0].tool, "github_propose_write");
+
+console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, strict schemas, citations, loop/step bounds, and checkpoint resume.");
