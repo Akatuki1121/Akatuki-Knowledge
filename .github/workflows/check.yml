@@ -89,6 +89,7 @@ jobs:
             sync_tests:
               - 'src/sync-outbox.mjs'
               - 'scripts/check-sync-contract.mjs'
+              - 'scripts/classify_yaos_integration.mjs'
               - 'scripts/test-sync-*.mjs'
               - 'scripts/test_classify_yaos_integration.mjs'
             migration_checks:
