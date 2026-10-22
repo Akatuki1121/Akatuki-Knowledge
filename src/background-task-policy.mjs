@@ -20,6 +20,12 @@ const NON_RETRYABLE = new Set([
   "tool_budget_exhausted",
   "model_call_budget_exhausted",
   "tool_output_too_large",
+  "web_research_not_enabled",
+  "web_research_budget_exhausted",
+  "web_research_unverified",
+  "web_research_sources_missing",
+  "web_research_invalid_response",
+  "web_research_provider_error",
   "ai_token_budget_exhausted",
 ]);
 

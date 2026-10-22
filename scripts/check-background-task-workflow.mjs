@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
+const webResearch = await readFile(new URL("../src/agent-web-research.mjs", import.meta.url), "utf8");
 const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
 
 for (const required of [
@@ -29,6 +30,10 @@ for (const required of [
   "getTelegramBackgroundTaskStatus",
   "listTelegramBackgroundTasks",
   "listAgentTasks",
+  "allowWebResearch",
+  "GEMINI_WEB_RESEARCH_ENABLED",
+  "callGeminiWebResearch",
+  "parseGroundedWebResearch",
   '/tasks(?:@\\w+)?',
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
   "const stageLabels = {",
@@ -42,7 +47,7 @@ for (const required of [
   "await isAuthorized(request, env)",
   "inspectAndRedact(task.payload.prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || \"\" })",
   "inspectAndRedact(body.prompt",
-  "payload: { prompt: inspection.text, maxOutputTokens },",
+  "payload: { prompt: inspection.text, maxOutputTokens, allowWebResearch },",
   '["health", "financial", "location"]',
   "reserveAgentAiBudget",
   "step.sleepUntil",
@@ -87,6 +92,17 @@ assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Eve
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
 assert.ok(toolLoop.includes("maxModelCalls: 5") && toolLoop.includes("maxToolCalls: 4"), "Agent loop budgets must remain bounded");
 assert.ok(toolLoop.includes('search_notes: Object.freeze') && toolLoop.includes('get_note: Object.freeze'), "Only the explicit read-only tool allowlist may be exposed");
+assert.ok(toolLoop.includes('sideEffect: "external_read"'), "Web research must be distinguished from local read-only tools");
+assert.ok(toolLoop.includes("state.toolCalls.filter((call) => call.tool === \"web_research\")"), "Web research calls must have their own bounded budget");
+assert.ok(toolLoop.includes("allowWebResearch === true"), "Web research must require explicit per-task permission");
+assert.ok(webResearch.includes('step?.type === "google_search_call"'), "Web results must have a Google Search grounding step");
+assert.ok(webResearch.includes('step?.type === "url_context_result"'), "Web results must have inspected page retrieval");
+assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only provider citations may become web sources");
+assert.ok(source.includes('store: false'), "Web research interactions must not be stored by the provider");
+assert.ok(source.includes('tools: [{ type: "google_search" }, { type: "url_context" }]'), "Web research must use grounded search and page context");
+assert.ok(source.includes('signal: AbortSignal.timeout(90_000)'), "Web research requests must be bounded by a timeout");
+assert.ok(source.includes('if (allowWebResearch && env.GEMINI_WEB_RESEARCH_ENABLED !== "true")'), "User opt-in alone must not enable web research while the Worker gate is off");
+assert.ok(!config.includes("GEMINI_WEB_RESEARCH_ENABLED"), "The default Wrangler config must keep potentially billable web research disabled");
 assert.ok(toolLoop.includes('throw new Error("unknown_tool")'), "Unknown tools must fail closed");
 assert.ok(toolLoop.includes('throw new Error("tool_loop_detected")'), "Repeated tool calls must stop");
 assert.ok(toolLoop.includes("AGENT_TOOL_LIMITS.maxToolOutputChars"), "Tool output size must be bounded");
