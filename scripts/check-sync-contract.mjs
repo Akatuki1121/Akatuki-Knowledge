@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const migration = await readFile(new URL("../migrations/pending/0009_yaos_sync_jobs.sql", import.meta.url), "utf8");
+const migration = await readFile(new URL("../migrations/0009_yaos_sync_jobs.sql", import.meta.url), "utf8");
 const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.url), "utf8");
 
 for (const contract of [
@@ -81,5 +81,5 @@ for (const contract of [
 }
 
 assert.ok(docs.includes("YAOS Worker and its Durable Object protocol unchanged"));
-assert.ok(docs.includes("migrations/pending/"));
+assert.ok(docs.includes("migrations/0008_folders_schema_reconstructed.sql"));
 console.log("Sync contract checks passed.");

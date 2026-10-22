@@ -1,7 +1,8 @@
 -- Reconstructed forward migration for the folder schema observed in live D1.
 -- This is NOT claimed to be the original historical change.
--- Production already has this schema but its d1_migrations ledger does not record its origin.
--- Do not apply directly to production: reconcile/record the already-present schema first.
+-- Production already had this schema before the ledger recorded it; the ledger now lists this file (applied_at 2026-10-20 06:10:38 UTC).
+-- The live schema was compared with this file on 2026-10-22 (tables, columns, foreign keys, indexes) and matched.
+-- Do not run it against production again: ALTER TABLE notes ADD COLUMN folder_id would fail on the existing column.
 CREATE TABLE IF NOT EXISTS folders (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

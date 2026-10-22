@@ -71,7 +71,7 @@ def schema(sql_files):
 
 
 paths = [MIGRATIONS / name for name in EXPECTED]
-paths.append(MIGRATIONS / "pending" / "0008_folders_schema_reconstructed.sql")
+paths.append(MIGRATIONS / "0008_folders_schema_reconstructed.sql")
 missing_files = [path.name for path in paths if not path.is_file()]
 if missing_files:
     raise SystemExit(f"Recovered migration files missing: {missing_files}")
@@ -110,7 +110,7 @@ assert not foreign_key_differences, f"Foreign-key definitions differ: {foreign_k
 assert not index_differences, f"Index definitions differ: {index_differences}"
 
 print(
-    "PASS: migrations 0001-0007 plus the pending folder migration apply in order to empty SQLite "
+    "PASS: migrations 0001-0007 plus the reconstructed folder migration (0008) apply in order to empty SQLite "
     "and match the captured live schema's tables, column definitions, foreign keys, and indexes."
 )
 print(

@@ -1,5 +1,6 @@
--- Pending schema addition for approval-gated Telegram folder organization proposals.
--- Apply only after reviewing the Worker changes; no note paths are changed by this migration.
+-- Schema for approval-gated Telegram folder organization proposals.
+-- Recorded in the production ledger (applied_at 2026-10-21 16:00:54 UTC, after 0011 and 0012). The live schema matched this file on 2026-10-22.
+-- No note paths are changed by this migration.
 
 CREATE TABLE bot_organization_candidates (
     candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,

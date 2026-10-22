@@ -1,5 +1,6 @@
--- Pending schema for explicit, expiring Telegram bulk AI-permission previews.
--- Apply only after reviewing the Worker rollout; this does not change note permissions.
+-- Schema for explicit, expiring Telegram bulk AI-permission previews.
+-- Recorded in the production ledger (applied_at 2026-10-21 03:18:46 UTC). The live schema matched this file on 2026-10-22.
+-- This does not change note permissions.
 CREATE TABLE bot_ai_permission_previews (
     chat_id TEXT PRIMARY KEY,
     candidates_json TEXT NOT NULL,

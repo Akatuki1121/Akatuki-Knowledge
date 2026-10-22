@@ -1,5 +1,5 @@
--- Candidate only. Do not apply to production until the historical migration ledger
--- and pending migrations have been reviewed and an explicit rollout plan exists.
+-- Schema for background agent tasks and the daily Workflow-step budget.
+-- Recorded in the production ledger (applied_at 2026-10-21 03:18:46 UTC). The live schema matched this file on 2026-10-22.
 -- See docs/BACKGROUND_TASKS.md and GitHub Issue #29.
 CREATE TABLE agent_tasks (
     task_id TEXT PRIMARY KEY,
