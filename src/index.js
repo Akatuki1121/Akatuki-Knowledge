@@ -16,7 +16,7 @@ import {
   toSqliteDateTime
 } from "./background-task-store.mjs";
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
-import { executeGitHubReadTool } from "./agent-github-tools.mjs";
+import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
   buildAgentMemorySuppressionStatements,
@@ -232,8 +232,12 @@ async function telegramWebhook(request, env, ctx) {
       reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、GitHub の Issue・PR・ファイル調査は /github 依頼内容、Web調査は /research 内容、未完了一覧は /tasks、状態確認は /task_status ID。GitHub の読み取りはできるけれど、書き込みや PR 作成はまだ対応していないよ。ノート変更は通常の会話で依頼してね。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
     } else if (/^\/tasks(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await listTelegramBackgroundTasks(env, chatId);
+    } else if (/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u.test(text2)) {
+      reply = await approveGitHubWritePlan(env, chatId, text2.match(/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u)[1]);
+    } else if (/^\/github(?:@\w+)?\s+reject\s+([A-Za-z0-9_-]{1,100})\s*$/u.test(text2)) {
+      reply = await rejectGitHubWritePlan(env, chatId, text2.match(/^\/github(?:@\w+)?\s+reject\s+([A-Za-z0-9_-]{1,100})\s*$/u)[1]);
     } else if (/^\/github(?:@\w+)?(?:\s|$)/u.test(text2)) {
-      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2, { taskType: "github_query", allowGitHubRead: true });
+      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2, { taskType: "github_query", allowGitHubRead: true, allowGitHubWrite: true });
     } else if (/^\/research(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2, { allowWebResearch: true });
     } else if (/^\/task(?:@\w+)?(?:\s|$)/u.test(text2)) {
@@ -270,7 +274,7 @@ async function telegramWebhook(request, env, ctx) {
       reply = await rejectLatestImprovement(env, chatId);
     } else if (isImprovementStatusRequest(text2)) {
       reply = await listImprovementCandidates(env, chatId);
-    } else if (text2.startsWith("/")) {
+    } else if (isGitHubNaturalLanguageRequest(text2)) {\n      reply = await startTelegramBackgroundTask(env, chatId, message.message_id, text2, { taskType: "github_query", allowGitHubRead: true, allowGitHubWrite: true });\n    } else if (text2.startsWith("/")) {
       reply = "\u30B3\u30DE\u30F3\u30C9\u3092\u899A\u3048\u306A\u304F\u3066\u3082\u5927\u4E08\u592B\u3002\u666E\u901A\u306B\u8A71\u3057\u304B\u3051\u3066\u306D\u3002";
     } else {
       try { processingMessageId = await sendTelegramMessage(env, chatId, "検索・回答を準備中…"); } catch {}
@@ -330,7 +334,7 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText, 
       taskId: crypto.randomUUID(),
       taskType,
       idempotencyKey: "telegram:" + chatId + ":" + messageId,
-      payload: { prompt: inspection.text, maxOutputTokens: 512, allowWebResearch, allowGitHubRead },
+      payload: { prompt: inspection.text, maxOutputTokens: 512, allowWebResearch, allowGitHubRead, allowGitHubWrite },
       notifyChatId: chatId,
       nowMs: Date.now()
     });
@@ -11961,6 +11965,19 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                 const note = notes.find((candidate) => candidate.id === args.id);
                 if (!note) throw new Error("policy_violation");
                 return { note };
+              }
+              if (tool === "github_propose_write" && prepared.allowGitHubWrite) {
+                const plan = validateGitHubWritePlan(args);
+                const planHash = await hashGitHubWritePlan(plan);
+                const pendingGitHubWrite = {
+                  status: "pending",
+                  taskId,
+                  plan,
+                  planHash,
+                  createdAt: new Date().toISOString(),
+                  expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+                };
+                return { pendingGitHubWrite };
               }
               if (tool.startsWith("github_") && prepared.allowGitHubRead) {
                 const result = await executeGitHubReadTool(tool, args, {
