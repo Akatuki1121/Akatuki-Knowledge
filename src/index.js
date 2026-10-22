@@ -5,6 +5,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
 import {
   enqueueAgentTask,
+  cancelAgentTask,
   getAgentTask,
   listAgentTasks,
   claimNextAgentTask,
@@ -229,7 +230,10 @@ async function telegramWebhook(request, env, ctx) {
     let reply;
     let processingMessageId = null;
     if (text2 === "/start" || text2 === "/help") {
-      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、GitHub作業は自然文または /github 依頼内容（変更は承認後）、Web調査は /research 内容、未完了一覧は /tasks、状態確認は /task_status ID。GitHubの変更計画は /github approve TASK_ID で承認、/github reject TASK_ID で拒否できるよ。マージとデプロイは別の明示的な判断が必要だよ。ノート変更は通常の会話で依頼してね。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
+      reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、GitHub作業は自然文または /github 依頼内容（変更は承認後）、Web調査は /research 内容、未完了一覧は /tasks、状態確認は /task_status ID、実行中タスクの停止は /cancel または /cancel タスクID。GitHubの変更計画は /github approve TASK_ID で承認、/github reject TASK_ID で拒否できるよ。マージとデプロイは別の明示的な判断が必要だよ。ノート変更は通常の会話で依頼してね。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
+    } else if (/^\/cancel(?:@\w+)?(?:\s|$)/u.test(text2)) {
+      const cancelMatch = text2.match(/^\/cancel(?:@\w+)?(?:\s+([A-Za-z0-9_-]{1,100}))?\s*$/u);
+      reply = cancelMatch ? await cancelTelegramBackgroundTask(env, chatId, cancelMatch[1] || "") : "使い方: /cancel または /cancel タスクID";
     } else if (/^\/tasks(?:@\w+)?(?:\s|$)/u.test(text2)) {
       reply = await listTelegramBackgroundTasks(env, chatId);
     } else if (/^\/github(?:@\w+)?\s+approve\s+([A-Za-z0-9_-]{1,100})\s*$/u.test(text2)) {
@@ -542,6 +546,35 @@ async function getTelegramBackgroundTaskStatus(env, taskId) {
   return reply;
 }
 __name(getTelegramBackgroundTaskStatus, "getTelegramBackgroundTaskStatus");
+
+async function cancelTelegramBackgroundTask(env, chatId, requestedTaskId) {
+  let taskId = requestedTaskId;
+  if (!taskId) {
+    let active;
+    try {
+      active = await listAgentTasks(env.DB, { status: "active", notifyChatId: chatId, limit: 1 });
+    } catch {
+      return "実行中タスクを確認できませんでした。";
+    }
+    if (!active.length) return "キャンセルできる未完了タスクはありません。";
+    taskId = active[0].task_id;
+  }
+
+  let result;
+  try {
+    result = await cancelAgentTask(env.DB, { taskId, chatId, nowMs: Date.now() });
+  } catch {
+    return "キャンセル要求を保存できませんでした。少し待って /task_status " + taskId + " で確認してください。";
+  }
+  if (result.cancelled) {
+    return "キャンセルしました。\nID: " + result.taskId
+      + "\n結果の保存・完了通知は行われません。実行中の外部リクエストは応答待ちの間だけ残る場合があります。";
+  }
+  if (result.reason === "already_cancelled") return "このタスクはすでにキャンセル済みです。\nID: " + taskId;
+  if (result.reason === "already_terminal") return "このタスクはすでに終了しています（状態: " + result.status + "）。\nID: " + taskId;
+  return "タスクが見つからないか、このチャットからキャンセルできません。\nID: " + taskId;
+}
+__name(cancelTelegramBackgroundTask, "cancelTelegramBackgroundTask");
 
 async function listTelegramBackgroundTasks(env, chatId) {
   let tasks;
@@ -11893,6 +11926,14 @@ async function searchAgentTaskNotes(query, env) {
 }
 __name(searchAgentTaskNotes, "searchAgentTaskNotes");
 
+async function assertAgentTaskRunning(db, taskId, leaseToken) {
+  const task = await getAgentTask(db, taskId);
+  if (!task || task.status !== "running" || task.lease_token !== leaseToken) {
+    throw new Error(task?.status === "cancelled" ? "task_cancelled" : "lease_lost");
+  }
+}
+__name(assertAgentTaskRunning, "assertAgentTaskRunning");
+
 class AgentTaskWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const taskId = typeof event?.payload?.taskId === "string" ? event.payload.taskId : "";
@@ -12055,6 +12096,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             "agent-model-" + attempt + "-" + modelCall,
             { retries: { limit: 0 } },
             async () => {
+              await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const inspection = inspectAndRedact(prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
               if (!inspection.ok) {
                 throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
@@ -12067,6 +12109,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                 taskId, leaseToken, estimatedTokens
               });
               if (!reserved) throw new Error("ai_token_budget_exhausted");
+              await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const raw = await callGemini(this.env, inspection.text, prepared.maxOutputTokens, {
                 signal: AbortSignal.timeout(30_000)
               });
@@ -12084,6 +12127,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             "agent-tool-" + attempt + "-" + (state.transcript.filter((item) => item?.role === "tool").length + 1),
             { retries: { limit: 0 } },
             async () => {
+              await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               if (tool === "search_notes") {
                 return { notes: await searchAgentTaskNotes(args.query, this.env) };
               }
@@ -12135,6 +12179,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                   taskId, leaseToken, estimatedTokens
                 });
                 if (!reserved) throw new Error("ai_token_budget_exhausted");
+                await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
                 const research = await callGeminiWebResearch(this.env, queryInspection.text, {
                   signal: AbortSignal.timeout(90_000)
                 });
