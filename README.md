@@ -1,51 +1,64 @@
 # Akatuki-Knowledge
 
-Cloudflare Workers と D1 を基盤にした、個人用ナレッジ管理サービスです。Telegram 連携、ノート同期、AI を使った補助機能を提供します。
+Obsidian のノートを検索し、AI で整理するための個人用ナレッジサービスです。Cloudflare Workers と D1 の上で動き、Telegram ボットから操作できます。
 
-## 本番環境の状況（2026-10-20 時点）
+## できること
 
-- 復元した Worker のソースは `src/index.js` です。YAOS イベント同期の PR #14 は `46ab2b71dbe66f4247af274c3a0ed47d1aad4b68` でマージされました。Cloudflare のメタデータでは、本番トラフィックの 100% が Worker version 65（`41c8cfc7-f94a-4669-833c-6e75cec70d13`、2026-10-20 08:00:52 UTC にアップロード）へ向いています。現在の設定には本番 D1、YAOS service binding、Yjs Durable Object binding、既存の Secret bindings、毎時実行の `0 * * * *` Cron が含まれます。
-- 本番 D1 は `Akatuki-knowledge` です。2026-10-20 の読み取り専用クエリでは、`notes` が 602 行、`telegram_notes` が 8 行、`notes.sync_uuid IS NULL` が 0 行でした。同期アウトボックスの 3 件はすべて `sent` で、`pending`・`processing`・`dead` はありませんでした。
-- 最新の保存済み安全復旧診断（2026-10-20 08:00:40 UTC）では、D1 の 602 件と Vault の 602 ファイルがすべて対応済みで、未検出ノート、削除記録、重複パス、UUID 競合、内容競合は報告されていません。これは保存された照合結果の確認であり、すべての本番リクエスト経路を検証したことを意味しません。
-- 既存 602 ノートの `notes.sync_uuid` の補完は、Worker と同じ決定的 UUID アルゴリズムで完了しています。ノート本文は変更していません。Vault 側で独立して削除された可能性のあるファイルを再作成しないよう、初回の一括アウトボックス登録は行っていません。既存 Vault ファイルには、安全な送信更新を通じて安定した frontmatter ID が付与されます。
-- ステージングでの実地テストと証跡は [`evidence/yaos-staging-validation-20261020`](https://github.com/Akatuki1121/Akatuki-Knowledge/tree/evidence/yaos-staging-validation-20261020) に記録されています。テスト後、ステージング Worker は Secret の削除、公開サブドメインの無効化、スケジュールの解除を行いました。
-- Cloudflare API のメタデータでは、稼働中のデプロイ、binding、Cron を確認しています。一方、現在利用できる実行経路では、公開 HTTP エンドポイントへの直接スモークテストと、本番データを変更するエンドツーエンドテストは完了していません。そのため、リクエスト単位の本番動作は未検証です。
+- **ノート同期**: Obsidian Vault と D1 のノートを、YAOS 経由のイベント同期でそろえます。定期実行の照合は、取りこぼしを直す安全網です。
+- **Telegram ボット**: 会話から残す価値のある知識を記録し、「今のなし」で直前の記録を戻せます。
+- **フォルダ整理**: AI 利用が許可されたノート 1 件の移動案を提案します。`フォルダ整理案を反映して` と返信するまで、ノートは移動しません。
+- **バックグラウンドタスク**: `/task <質問>` で、ナレッジベースを検索して要約するタスクを非同期に実行します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
+- **長期記憶メタデータ**: 既存ノートに由来・信頼度・有効期限などのメタデータを付けて扱います。必要な D1 マイグレーション `0013` は `migrations/pending/` にあり、本番への適用とデプロイは保留中です。
 
-## 復旧に関する制約
+## 安全面の方針
 
-- マイグレーション `0001`〜`0007` の正確な歴史的 SQL ソースは未回収です。本番 D1 の台帳には該当する名前がありますが、リポジトリにはクリーンなデータベースを再構築できると検証済みのマイグレーション一式がまだありません。
-- `migrations/0008`〜`0012` は、本番 D1 の台帳（`d1_migrations`）にすでに記録されています。2026-10-22 に、`0001`〜`0012` を空の SQLite に順に適用した結果が本番のスキーマ（テーブル、列、外部キー、インデックス）と一致することを確認しました。`0008` はフォルダ構成の再構築版で、歴史的な原本ではありません。台帳の記録順は `0011`、`0012`、`0010` の順です（適用順の違いであり、スキーマの差ではありません）。
-- 復元した `wrangler.toml` は観測できた稼働設定と Durable Object のマイグレーションタグ `v1`〜`v5` を反映しています。ただし Cloudflare の version API から、過去の migration 配列全体を独立して確認することはできていません。
-- R2 は意図的に設定していません。
-
-## Telegram と AI 補助機能
-
-- Telegram から、AI 利用が許可された Obsidian ノート 1 件の移動案を提案できます。ユーザーが明示的に `フォルダ整理案を反映して` と返信するまでは移動しません。`フォルダ整理案を却下して` で保留中の提案を却下できます。
-- 提案前に、認証情報が検出されたノートを除外します。Gemini へ送るのはノート ID、タイトル、パス、短い要約のみです。提案されたパスの検証、衝突確認、提案後にノートが変更されていないことの再確認も行います。
-- 承認された移動ではノートのリビジョンを保存し、既存の YAOS 同期アウトボックスへ登録します。ボットの動作改善提案は、これとは別の承認フローで管理されます。
-- フォルダ整理用テーブルは `migrations/0010_bot_organization_candidates.sql`、バックグラウンドタスク用テーブルは `migrations/0011_agent_tasks.sql` に定義されています。どちらも本番 D1 に適用済みです。今後、未適用のスキーマ変更を入れるときは `migrations/pending/` に置いてください。そのディレクトリに SQL がある間は、GitHub Actions の本番デプロイがスキップされます。
-- AI に渡す内容は送信前に検査します。認証情報が検出された場合や、安全にマスキングできない機微情報が含まれる場合は送信を停止します。これはパターンベースの検出であり、あらゆる秘密情報の検出を保証するものではありません。
+- AI へ送る内容は送信前に検査します。認証情報が見つかった場合や、安全にマスキングできない機微情報を含む場合は送信を止めます。パターンベースの検出なので、すべての秘密情報の検出は保証しません。
+- AI へ送れるのは `ai_allowed` で許可されたノートだけです。
+- ノートを変更する操作は、ユーザーの明示的な承認を経て実行します。
 
 ## 構成
 
 | コンポーネント | 役割 |
 | --- | --- |
-| Cloudflare Workers | API と Telegram 連携の処理 |
-| Cloudflare D1 | ノート、同期状態、処理状態などの永続化 |
-| Durable Objects / Yjs | ノート同期に関わるリアルタイム状態管理 |
-| YAOS | ノートの同期先 |
-| GitHub Actions | 構文・契約テスト、設定検証、対象変更に応じた統合テスト |
+| Cloudflare Workers(`src/index.js`) | API と Telegram 連携 |
+| Cloudflare D1(`Akatuki-knowledge`) | ノート、同期状態、タスク状態の永続化 |
+| Durable Objects / Yjs | ノート同期のリアルタイム状態 |
+| Cloudflare Workflows | バックグラウンドタスクの実行 |
+| YAOS | ノートの同期先(別 Worker。プロトコルは変更しません) |
+| GitHub Actions | 検査、および条件を満たした場合の本番デプロイ |
 
-## 開発・検証
+`src/index.js` は、稼働中の Worker から復元した 1 ファイルのバンドルです。元のソースマップが無いため、推測でモジュール分割はしていません。詳細は [`src/README.md`](src/README.md) を参照してください。
 
-Node.js を用意し、リポジトリのルートで次を実行します。
+## 開発
+
+必要なもの: Node.js 22、Python 3(一部の検査に使います)。
 
 ```sh
-npm run check
+npm ci
+npm run check        # 全検査を並列実行
+npm run check:sync   # 同期・バックグラウンドタスク関連のみ
 ```
 
-このコマンドでは、JavaScript の構文、同期契約、同期 ID・競合処理、安全なノート ID の復旧、バックグラウンドタスクの再試行ポリシー、保留中のタスク用スキーマと SQL、Workflow/API の安全性契約、Wrangler 設定を検証します。GitHub Actions では、変更内容に応じて Wrangler の dry-run ビルドや、分離したローカル D1 と Worker を使う YAOS 統合テストも実行します。
+`npm run check` は、構文、同期契約、同期 ID と競合処理、ノート ID の安全な復旧、バックグラウンドタスクの再試行ポリシーとスキーマ、Wrangler 設定を検証します。保留中のマイグレーションの適用や、本番リクエストの動作検証は行いません。
 
-これらの検査は、保留中のマイグレーションを適用したり、本番リクエストの動作を検証したりするものではありません。既存の本番 D1 に対してクリーンブートストラップを試してはいけません。
+## デプロイとマイグレーション
 
-新機能の仕様・進捗・未解決事項は [GitHub Issues](https://github.com/Akatuki1121/Akatuki-Knowledge/issues) と [Pull Requests](https://github.com/Akatuki1121/Akatuki-Knowledge/pulls) で管理します。本番環境の変更やマイグレーションは、検証とレビューを行ったうえで別途実施します。
+- `main` へのマージは本番デプロイの経路を動かしうるため、変更は Pull Request 経由で行います。
+- `migrations/pending/` に SQL がある間、GitHub Actions の本番デプロイは自動で止まります。現在は `0013_agent_memory_metadata.sql` が保留中なので、このゲートを維持します。
+- `migrations/0008`〜`0012` は、2026-10-22 の読み取り専用確認で本番 D1 の台帳に記録済みであり、リポジトリ側のマイグレーション履歴にも反映済みです。`0008` は再構築版であり、歴史的な原本ではありません。
+- 既存の本番 D1 に対して、`bootstrap/` の SQL や `schema-snapshots/` を実行してはいけません。
+- 本番の観測記録と復旧上の制約は [`docs/PRODUCTION_STATUS.md`](docs/PRODUCTION_STATUS.md) を参照してください。
+
+## ドキュメント
+
+| ファイル | 内容 |
+| --- | --- |
+| [`AGENTS.md`](AGENTS.md) | AI エージェント向けの作業ルール |
+| [`docs/AGENT_MEMORY.md`](docs/AGENT_MEMORY.md) | 長期記憶の分類、信頼度、競合、失効ポリシー |
+| [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) | バックグラウンドタスクの設計と制限 |
+| [`docs/YAOS_EVENT_SYNC.md`](docs/YAOS_EVENT_SYNC.md) | YAOS イベント同期 |
+| [`docs/PRODUCTION_STATUS.md`](docs/PRODUCTION_STATUS.md) | 本番環境の観測記録 |
+| [`migrations/README.md`](migrations/README.md) | D1 マイグレーションの扱いと復旧の経緯 |
+| [`docs/CLOUDFLARE_RECOVERY.md`](docs/CLOUDFLARE_RECOVERY.md) | Cloudflare からの復旧記録 |
+
+仕様の議論、進捗、未解決事項は [Issues](https://github.com/Akatuki1121/Akatuki-Knowledge/issues) と [Pull Requests](https://github.com/Akatuki1121/Akatuki-Knowledge/pulls) で管理します。
