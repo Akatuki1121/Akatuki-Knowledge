@@ -4,6 +4,7 @@ const checks = [
   ["source-syntax", process.execPath, ["--check", "src/index.js"]],
   ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/organize-failure.test.js"]],
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
+  ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
   ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
   ["sync-conflicts", process.execPath, ["scripts/test-sync-conflicts.mjs"]],
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
