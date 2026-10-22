@@ -9,6 +9,7 @@ const checks = [
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
+  ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
   ["background-task-store", process.execPath, ["scripts/check-background-task-store.mjs"]],
   ["background-task-workflow", process.execPath, ["scripts/check-background-task-workflow.mjs"]],
   ["agent-task-idempotency", process.execPath, ["scripts/test_agent_task_idempotency.mjs"]],

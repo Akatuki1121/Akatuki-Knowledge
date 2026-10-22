@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  AGENT_WEB_RESEARCH_TOOL,
   AGENT_READ_ONLY_TOOLS,
   AGENT_TOOL_LIMITS,
   runAgentToolLoop,
@@ -11,6 +12,7 @@ const final = (reply, sourceIds = []) => JSON.stringify({ action: "final", reply
 
 assert.deepEqual(Object.keys(AGENT_READ_ONLY_TOOLS).sort(), ["get_note", "search_notes"]);
 assert.ok(Object.values(AGENT_READ_ONLY_TOOLS).every((tool) => tool.sideEffect === "read_only"));
+assert.equal(AGENT_WEB_RESEARCH_TOOL.sideEffect, "external_read");
 
 assert.deepEqual(
   validateAgentToolAction(JSON.parse(action("search_notes", { query: "deployment decision" }))),
@@ -24,6 +26,17 @@ for (const response of [
 ]) {
   assert.throws(() => validateAgentToolAction(response), /unknown_tool|invalid_input/);
 }
+
+const webResearchAction = {
+  action: "tool",
+  tool: "web_research",
+  arguments: { query: "Compare official release notices" },
+};
+assert.throws(() => validateAgentToolAction(webResearchAction), /unknown_tool/);
+assert.deepEqual(
+  validateAgentToolAction(webResearchAction, { allowWebResearch: true }),
+  { action: "tool", tool: "web_research", arguments: { query: "Compare official release notices" } },
+);
 
 const saved = [];
 const responses = [
@@ -69,6 +82,55 @@ assert.equal(saved[1].pendingAction, null);
 assert.equal(saved.at(-1).stage, "completed");
 assert.equal(saved.at(-1).result, result.reply);
 assert.ok(saved.every((checkpoint) => checkpoint.initialPrompt === "What deployment decision was recorded?"));
+
+const webResult = {
+  report: "The official pages agree on the release date.",
+  sources: [{
+    url: "https://example.org/release",
+    title: "Official release notice",
+    evidence: "The release date is May 3, 2026.",
+    checkedAt: "2026-10-22T12:00:00.000Z",
+  }],
+};
+let webToolExecutions = 0;
+const webRun = await runAgentToolLoop({
+  initialPrompt: "Research official release dates from the web.",
+  allowWebResearch: true,
+  callModel: async ({ modelCall, prompt }) => {
+    if (modelCall === 1) {
+      assert.match(prompt, /web_research/);
+      return action("web_research", { query: "Compare official release notices" });
+    }
+    return JSON.stringify({
+      action: "final",
+      reply: "Official sources agree on May 3, 2026.",
+      source_ids: [],
+      web_source_urls: ["https://example.org/release", "https://unseen.example/"],
+    });
+  },
+  executeTool: async (tool) => {
+    assert.equal(tool, "web_research");
+    webToolExecutions++;
+    return webResult;
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(webToolExecutions, 1);
+assert.deepEqual(webRun.webSources, webResult.sources, "Final web citations must be filtered to collected evidence");
+
+let cappedWebCalls = 0;
+let cappedWebExecutions = 0;
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Use web research",
+  allowWebResearch: true,
+  callModel: async () => action("web_research", { query: `Research question ${++cappedWebCalls}` }),
+  executeTool: async () => {
+    cappedWebExecutions++;
+    return webResult;
+  },
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "web_research_budget_exhausted");
+assert.equal(cappedWebExecutions, 2, "Web research must stop at its independent call budget");
 
 let replayedTools = 0;
 const resumedAfterTool = await runAgentToolLoop({
@@ -166,6 +228,39 @@ const resumed = await runAgentToolLoop({
 assert.equal(resumedModelCalls, 1, "Recovery from a persisted pending action must not repeat the prior model call");
 assert.equal(resumedToolCalls, 1, "A pending read-only tool action must be replayed after recovery");
 assert.deepEqual(resumed.sourceIds, ["note-2"]);
+
+const webCheckpoint = {
+  stage: "agent_loop",
+  initialPrompt: "Saved web research",
+  contextNotes: [],
+  modelCalls: 1,
+  toolCalls: [{
+    tool: "web_research",
+    arguments: { query: "Compare official release notices" },
+    result: webResult,
+  }],
+  transcript: [
+    { role: "assistant", action: webResearchAction },
+    { role: "tool", name: "web_research", result: webResult },
+  ],
+  pendingAction: null,
+};
+const resumedWeb = await runAgentToolLoop({
+  initialPrompt: webCheckpoint.initialPrompt,
+  allowWebResearch: true,
+  checkpoint: webCheckpoint,
+  callModel: async () => JSON.stringify({
+    action: "final",
+    reply: "The official pages agree.",
+    source_ids: [],
+    web_source_urls: ["https://example.org/release"],
+  }),
+  executeTool: async () => {
+    throw new Error("Completed web results must not be replayed");
+  },
+  saveCheckpoint: async () => true,
+});
+assert.deepEqual(resumedWeb.webSources, webResult.sources, "Saved web evidence must be available after recovery");
 
 await assert.rejects(runAgentToolLoop({
   initialPrompt: "Oversized result",
