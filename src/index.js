@@ -285,7 +285,7 @@ async function telegramWebhook(request, env, ctx) {
     const displayReply = formatTelegramPlainText(reply);
     if (processingMessageId) {
       try { await editTelegramMessage(env, chatId, processingMessageId, displayReply); }
-      catch { await sendTelegramMessage(env, chatId, displayReply); }
+      catch { if (displayReply !== "検索・回答を準備中…") await sendTelegramMessage(env, chatId, displayReply); }
     } else {
       await sendTelegramMessage(env, chatId, displayReply);
     }
