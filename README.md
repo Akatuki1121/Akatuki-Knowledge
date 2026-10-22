@@ -44,8 +44,8 @@ npm run check:sync   # 同期・バックグラウンドタスク関連のみ
 ## デプロイとマイグレーション
 
 - `main` へのマージは本番デプロイの経路を動かしうるため、変更は Pull Request 経由で行います。
-- `migrations/pending/` に SQL がある間、GitHub Actions の本番デプロイは自動で止まります。現在は `0013_agent_memory_metadata.sql` が保留中なので、このゲートを維持します。
-- `migrations/0008`〜`0012` は、2026-10-22 の読み取り専用確認で本番 D1 の台帳に記録済みであり、リポジトリ側のマイグレーション履歴にも反映済みです。`0008` は再構築版であり、歴史的な原本ではありません。
+- `migrations/pending/` に SQL がある間、GitHub Actions の本番デプロイは自動で止まります。`0013_agent_memory_metadata.sql` は 2026-10-22 に本番 D1 へ適用し、台帳へ記録したうえで `migrations/` へ移動済みです。
+- `migrations/0008`〜`0013` は、本番 D1 の台帳に記録済みであり、リポジトリ側のマイグレーション履歴にも反映済みです。`0008` は再構築版であり、歴史的な原本ではありません。
 - 既存の本番 D1 に対して、`bootstrap/` の SQL や `schema-snapshots/` を実行してはいけません。
 - 本番の観測記録と復旧上の制約は [`docs/PRODUCTION_STATUS.md`](docs/PRODUCTION_STATUS.md) を参照してください。
 
