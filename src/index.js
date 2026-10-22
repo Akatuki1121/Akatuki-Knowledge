@@ -411,6 +411,7 @@ async function rejectGitHubWritePlan(env, chatId, taskId) {
 function startTelegramBackgroundTask(env, chatId, messageId, commandText, options = {}) {
   const allowWebResearch = options.allowWebResearch === true;
   const allowGitHubRead = options.allowGitHubRead === true;
+  const allowGitHubWrite = options.allowGitHubWrite === true;
   const taskType = options.taskType === "github_query" && allowGitHubRead ? "github_query" : "knowledge_query";
   const prompt = commandText.replace(/^\/(?:task|research|github)(?:@\w+)?\s*/u, "").trim();
   if (!prompt) {
