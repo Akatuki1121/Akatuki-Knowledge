@@ -29,8 +29,6 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
   const nowMs = Number.isFinite(input.nowMs) ? input.nowMs : Date.now();
   const now = iso(nowMs);
   const leaseUntil = iso(nowMs + LEASE_MS);
-  const limit = Math.max(1, Math.min(3, Math.floor(Number(input.limit) || 1)));
-
   await db.prepare(`
     UPDATE agent_memory_jobs
     SET status = 'failed', last_error_class = 'attempt_budget_exhausted',
@@ -48,7 +46,7 @@ export async function claimNextAgentMemoryJob(db, input = {}) {
       WHERE attempts < max_attempts
         AND (
           (status = 'queued' AND next_attempt_at <= ?)
-          OR (status = 'processing' AND lease_expires_at <= ?)
+          OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
         )
       ORDER BY created_at, job_id
       LIMIT 1
