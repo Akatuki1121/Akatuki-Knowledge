@@ -20,6 +20,11 @@ export const GITHUB_READ_TOOLS = Object.freeze({
     sideEffect: "external_read",
     arguments: Object.freeze(["repository", "number"]),
   }),
+  github_get_pr_checks: Object.freeze({
+    description: "Read the latest check-run status for one GitHub pull request.",
+    sideEffect: "external_read",
+    arguments: Object.freeze(["repository", "number"]),
+  }),
   github_read_file: Object.freeze({
     description: "Read a bounded text file from a public GitHub repository's branch. Sensitive file paths are blocked.",
     sideEffect: "external_read",
@@ -137,6 +142,25 @@ export async function executeGitHubReadTool(tool, args, options = {}) {
       changedFiles: Number.isSafeInteger(pr.changed_files) ? pr.changed_files : null,
       additions: Number.isSafeInteger(pr.additions) ? pr.additions : null,
       deletions: Number.isSafeInteger(pr.deletions) ? pr.deletions : null,
+    };
+  } else if (tool === "github_get_pr_checks") {
+    validateNumber(args.number);
+    const pr = await githubGet(`/repos/${repository}/pulls/${args.number}`, options);
+    const checks = await githubGet(`/repos/${repository}/commits/${pr.head?.sha}/check-runs?per_page=20`, options);
+    if (!Array.isArray(checks.check_runs)) throw new Error("github_invalid_response");
+    result = {
+      repository,
+      number: pr.number,
+      title: boundedText(pr.title, 300),
+      headSha: boundedText(pr.head?.sha, 100),
+      url: safeUrl(pr.html_url),
+      totalCount: Number.isSafeInteger(checks.total_count) ? checks.total_count : checks.check_runs.length,
+      checks: checks.check_runs.slice(0, 20).map((check) => ({
+        name: boundedText(check.name, 200),
+        status: boundedText(check.status, 30),
+        conclusion: check.conclusion == null ? null : boundedText(check.conclusion, 40),
+        url: safeUrl(check.html_url),
+      })),
     };
   } else {
     if (typeof args.path !== "string" || !PATH_PATTERN.test(args.path)
