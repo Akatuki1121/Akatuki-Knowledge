@@ -1,5 +1,7 @@
 from pathlib import Path
+import re
 import sqlite3
+import textwrap
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations" / "0014_agent_memory_jobs.sql"
@@ -47,5 +49,18 @@ except sqlite3.IntegrityError:
     pass
 else:
     raise AssertionError("Invalid memory-job status was accepted")
+
+SOURCE = ROOT / "src" / "agent-memory-queue.mjs"
+source = SOURCE.read_text(encoding="utf-8")
+statements = [
+    textwrap.dedent(match.group(1)).strip()
+    for match in re.finditer(r"db\\.prepare\\(\\s*`([\\s\\S]*?)`\\s*\\)", source)
+]
+assert len(statements) >= 5, f"Expected queue SQL statements, found {len(statements)}"
+for index, statement in enumerate(statements, start=1):
+    try:
+        connection.execute("EXPLAIN " + statement, [None] * statement.count("?"))
+    except Exception as error:
+        raise AssertionError(f"Memory queue SQL statement {index} failed SQLite compilation: {error}\\n{statement}") from error
 
 print("Agent memory jobs migration checks passed.")
