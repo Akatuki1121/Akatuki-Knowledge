@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { executeGitHubReadTool, GITHUB_READ_TOOLS } from "../src/agent-github-tools.mjs";
+import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, GITHUB_READ_TOOLS } from "../src/agent-github-tools.mjs";
 
 const calls = [];
 const response = (status, body, headers = {}) => new Response(JSON.stringify(body), {
@@ -88,4 +88,55 @@ await assert.rejects(executeGitHubReadTool("github_delete_issue", {
 }, { fetchImpl }), /unknown_tool/);
 assert.ok(calls.every((call) => call.init.method === "GET"), "GitHub tools must remain read-only");
 
-console.log("GitHub read tool tests passed: allowlist, bounded reads, path blocking, and API failures.");
+
+const plan = validateGitHubWritePlan({
+  repository: "example/project",
+  summary: "Add a small README and open a draft PR",
+  operations: [
+    { type: "create_branch", branch: "bot/docs-update", base_ref: "main" },
+    { type: "create_file", branch: "bot/docs-update", path: "docs/agent.md", content: "# Agent\\n", message: "docs: add agent note" },
+    { type: "create_pull_request", head: "bot/docs-update", base: "main", title: "docs: add agent note", body: "Automated draft", draft: true },
+  ],
+});
+assert.equal(plan.operations.length, 3);
+assert.match(await hashGitHubWritePlan(plan), /^[a-f0-9]{64}$/u);
+assert.throws(() => validateGitHubWritePlan({
+  repository: "example/project", summary: "secret", operations: [
+    { type: "create_file", branch: "main", path: ".env", content: "TOKEN=x", message: "bad" },
+  ],
+}), /github_path_blocked/);
+assert.throws(() => validateGitHubWritePlan({
+  repository: "example/project", summary: "unknown operation", operations: [
+    { type: "delete_repository", repository: "example/project" },
+  ],
+}), /unknown_tool/);
+
+const writeCalls = [];
+const writeFetch = async (url, init) => {
+  writeCalls.push({ url: String(url), init });
+  if (init.method === "GET" && String(url).endsWith("/git/ref/heads/main")) {
+    return response(200, { object: { sha: "a".repeat(40) } });
+  }
+  if (init.method === "POST" && String(url).endsWith("/git/refs")) {
+    return response(201, { ref: "refs/heads/bot/docs-update", object: { sha: "b".repeat(40) } });
+  }
+  if (init.method === "PUT" && String(url).endsWith("/contents/docs/agent.md")) {
+    return response(201, { content: { path: "docs/agent.md", html_url: "https://github.com/example/project/blob/bot/docs-update/docs/agent.md" }, commit: { sha: "c".repeat(40) } });
+  }
+  if (init.method === "POST" && String(url).endsWith("/pulls")) {
+    return response(201, { number: 9, html_url: "https://github.com/example/project/pull/9" });
+  }
+  return response(404, { message: "Not Found" });
+};
+const writes = await executeGitHubWritePlan(plan, { token: "test-token", fetchImpl: writeFetch });
+assert.equal(writes.results.length, 3);
+assert.equal(writes.results[2].url, "https://github.com/example/project/pull/9");
+assert.ok(writeCalls.every((call) => call.init.headers.authorization === "Bearer test-token"));
+assert.deepEqual(writeCalls.map((call) => call.init.method), ["GET", "POST", "PUT", "POST"]);
+assert.throws(() => validateGitHubWritePlan({
+  repository: "example/project", summary: "too many", operations: Array.from({ length: 6 }, () => ({
+    type: "create_issue", title: "x", body: "",
+  })),
+}), /invalid_input/);
+
+console.log("GitHub tools tests passed: read allowlist, bounded writes, approval-plan validation, hashing, path blocking, and API failures.");
