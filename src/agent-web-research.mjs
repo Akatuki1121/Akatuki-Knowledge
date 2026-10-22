@@ -1,5 +1,6 @@
 export const AGENT_WEB_RESEARCH_LIMITS = Object.freeze({
   maxCalls: 2,
+  maxSearchQueriesPerCall: 4,
   maxSourcesPerCall: 4,
   maxReturnedSources: 3,
   maxReportChars: 4000,
@@ -60,7 +61,11 @@ export function validateSavedWebResearchResult(value) {
     };
   });
 
-  return { report: value.report.trim(), sources };
+  const returned = { report: value.report.trim(), sources };
+  if (Number.isInteger(value.searchQueriesCount) && value.searchQueriesCount >= 0) {
+    returned.searchQueriesCount = value.searchQueriesCount;
+  }
+  return returned;
 }
 
 export function parseGroundedWebResearch(interaction, checkedAt) {
@@ -72,6 +77,17 @@ export function parseGroundedWebResearch(interaction, checkedAt) {
   const hasPageRead = interaction.steps.some((step) => step?.type === "url_context_result");
   if (!hasSearch || !hasPageRead || interaction.steps.some(containsUnsafePageStatus)) {
     throw new Error("web_research_unverified");
+  }
+
+  let totalSearchQueries = 0;
+  for (const step of interaction.steps) {
+    if (step?.type === "google_search_call") {
+      const queries = Array.isArray(step.arguments?.queries) ? step.arguments.queries : [];
+      totalSearchQueries += queries.length || 1;
+    }
+  }
+  if (totalSearchQueries > AGENT_WEB_RESEARCH_LIMITS.maxSearchQueriesPerCall) {
+    throw new Error("web_research_query_budget_exceeded");
   }
 
   const textParts = [];
@@ -115,6 +131,7 @@ export function parseGroundedWebResearch(interaction, checkedAt) {
   const result = {
     report,
     sources: [...sources.values()].slice(0, AGENT_WEB_RESEARCH_LIMITS.maxSourcesPerCall),
+    searchQueriesCount: totalSearchQueries,
   };
   if (result.sources.length === 0) throw new Error("web_research_sources_missing");
   return validateSavedWebResearchResult(result);

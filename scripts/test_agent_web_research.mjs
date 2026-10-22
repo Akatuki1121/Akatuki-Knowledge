@@ -88,4 +88,13 @@ const longEvidence = {
 };
 assert.throws(() => validateSavedWebResearchResult(longEvidence), /invalid_input/);
 
+const tooManyQueriesInteraction = structuredClone(interaction);
+tooManyQueriesInteraction.steps[0].arguments.queries = [
+  "query 1", "query 2", "query 3", "query 4", "query 5"
+];
+assert.throws(
+  () => parseGroundedWebResearch(tooManyQueriesInteraction, checkedAt),
+  (error) => error.message === "web_research_query_budget_exceeded",
+);
+
 console.log("Agent web research checks passed: grounded search, page retrieval, source attribution, URL safety, and bounded checkpoints.");
