@@ -75,7 +75,7 @@ try {
     "  return shouldSearch;",
     "}",
     "",
-  ].join("\\n"));
+  ].join("\n"));
   git("add", ".");
   git("commit", "-qm", "agent feature");
   const agentBase = git("rev-parse", "HEAD");
@@ -85,7 +85,7 @@ try {
     "  return shouldSearch;",
     "}",
     "",
-  ].join("\\n"));
+  ].join("\n"));
   git("add", ".");
   git("commit", "-qm", "agent behavior change");
   const agentHead = git("rev-parse", "HEAD");
