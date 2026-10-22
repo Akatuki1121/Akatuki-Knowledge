@@ -5,11 +5,14 @@ import { appendFileSync } from "node:fs";
 const base = process.env.BASE_SHA ?? "";
 const head = process.env.HEAD_SHA ?? "";
 const outputFile = process.env.GITHUB_OUTPUT;
-let required = true;
-let reason = "比較対象を確認できないため安全側で結合テストを実行";
+const sourceChanged = process.env.SOURCE_CHANGED !== "false";
+let required = sourceChanged;
+let reason = sourceChanged
+  ? "比較対象を確認できないため安全側で結合テストを実行"
+  : "ソースコード変更がないため分類対象外";
 
 const shaPattern = /^[0-9a-f]{40}$/i;
-if (shaPattern.test(base) && shaPattern.test(head)) {
+if (sourceChanged && shaPattern.test(base) && shaPattern.test(head)) {
   try {
     const diff = execFileSync("git", [
       "diff", "--no-ext-diff", "--unified=0", base, head, "--", "src/index.js",
