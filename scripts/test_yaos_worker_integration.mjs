@@ -239,7 +239,7 @@ provider.on("sync", synced => {
     done(1);
     return;
   }
-  if (null === null) {
+  if (${JSON.stringify(suffix)} === null) {
     console.error("YAOS current content: " + JSON.stringify(text.toString()));
     clearTimeout(timeout);
     done(0);
