@@ -137,4 +137,28 @@ for (const label of [
   assert.ok(taskListSource.includes(label), "Telegram task list must localize notification state: " + label);
 }
 
+const stopGuidanceStart = source.indexOf("function describeAgentTaskStopReason");
+const stopGuidanceEnd = source.indexOf('__name(describeAgentTaskStopReason', stopGuidanceStart);
+assert.ok(stopGuidanceStart >= 0 && stopGuidanceEnd > stopGuidanceStart, "Task stop-reason guidance must exist");
+const stopGuidance = source.slice(stopGuidanceStart, stopGuidanceEnd);
+for (const required of [
+  'task_deadline_exceeded: ["処理時間の上限に到達"',
+  'attempt_budget_exhausted: ["再試行回数の上限に到達"',
+  'credentials_detected: ["認証情報を検出"',
+  'pii_masking_failed: ["個人情報を安全にマスキングできない"',
+  'nextAction: "依頼内容を確認し、対象を絞って新しい /task として依頼してください。"'
+]) {
+  assert.ok(stopGuidance.includes(required), "Missing actionable stop-reason guidance: " + required);
+}
+const taskStatusStart = source.indexOf("async function getTelegramBackgroundTaskStatus");
+const taskStatusEnd = source.indexOf('__name(getTelegramBackgroundTaskStatus', taskStatusStart);
+const taskStatusSource = source.slice(taskStatusStart, taskStatusEnd);
+assert.ok(taskStatusSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Task status must explain failures");
+assert.ok(taskStatusSource.includes('"\\n次の操作: " + guidance.nextAction'), "Task status must include a next action");
+const notificationDispatchStart = source.indexOf("async function flushAgentTaskNotifications");
+const notificationDispatchEnd = source.indexOf('__name(flushAgentTaskNotifications', notificationDispatchStart);
+const notificationDispatchSource = source.slice(notificationDispatchStart, notificationDispatchEnd);
+assert.ok(notificationDispatchSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Failure notifications must explain the stop reason");
+assert.ok(notificationDispatchSource.includes('"\\n次の操作: " + guidance.nextAction'), "Failure notifications must include a next action");
+
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
