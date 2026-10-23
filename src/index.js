@@ -1057,7 +1057,10 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   const findings = new Set(safeMessage.findings);
   const contextNotes = [];
   for (const note of matches) {
-    if (inspectWholeContent(note.content, env).credentials) continue;
+    const wholeInspection = inspectWholeContent(note.content, env);
+    // Search may find sensitive notes locally; their original text remains stored, but it must not enter the Gemini prompt.
+    if (wholeInspection.credentials
+      || wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) continue;
     const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
     const safeExcerpt = inspectAndRedact(excerpt(note.content, message, 800), { blocklist: env.PRIVACY_BLOCKLIST || "" });
     for (const finding of [...safeTitle.findings, ...safeExcerpt.findings]) findings.add(finding);
@@ -1716,6 +1719,11 @@ async function buildAiPreview(body, env) {
     findings.push(...wholeNote.findings);
     if (wholeNote.credentials) {
       blockedNotes.push({ id: note.id, title: note.title, reason: "credential_detected" });
+      continue;
+    }
+    // Keep the source note unchanged, but do not send health, financial, or location-sensitive content to Gemini.
+    if (wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+      blockedNotes.push({ id: note.id, title: note.title, reason: "sensitive_info_requires_confirmation" });
       continue;
     }
     if (note.ai_allowed !== 1) {
