@@ -104,7 +104,28 @@ assert.ok(!holdSource.includes("content ="), "Holding a sensitive note must not 
 const folderStart = source.indexOf("async function proposeFolderOrganization");
 const folderEnd = source.indexOf("async function applyLatestFolderOrganization", folderStart);
 const folderSource = source.slice(folderStart, folderEnd);
-assert.ok(folderSource.includes('!inspectWholeContent(note.content || "", env).credentials'), "Folder organization may exclude credentials, but not notes merely because they contain health, financial, or location information");
-assert.ok(!folderSource.includes('findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Sensitive categories must not blanket-exclude notes from automatic organization");
+assert.ok(folderSource.includes("!inspection.credentials"), "Folder organization must exclude notes with credentials");
+assert.ok(folderSource.includes('!inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Folder organization must not send sensitive note metadata to AI");
+
+const summaryStart = source.indexOf("async function summarizeConversationToKnowledge");
+const summaryEnd = source.indexOf("\\nfunction isFolderOrganizationRequest", summaryStart);
+const summarySource = source.slice(summaryStart, summaryEnd);
+assert.ok(summarySource.includes("results.reverse().flatMap"), "Conversation summaries must build an outbound-safe copy of history");
+assert.ok(summarySource.includes('["health", "financial", "location"].includes(finding)'), "Sensitive history messages must be excluded from AI summaries without altering stored history");
+
+assert.ok(answerSource.includes('safeMessage.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Sensitive current messages must not be sent to Gemini");
+assert.ok(answerSource.includes("history.results.reverse().flatMap"), "Chat prompts must filter sensitive stored history at send time");
+
+assert.ok(previewSource.includes('inspectedQuestion.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "AI previews must block sensitive questions before sending");
+
+const taskNotesStart = source.indexOf("async function searchAgentTaskNotes");
+const taskNotesEnd = source.indexOf("__name(searchAgentTaskNotes", taskNotesStart);
+const taskNotesSource = source.slice(taskNotesStart, taskNotesEnd);
+assert.ok(taskNotesSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Background tasks must exclude sensitive notes from their context");
+
+const geminiStart = source.indexOf("async function callGemini");
+const geminiEnd = source.indexOf("__name(callGemini", geminiStart);
+const geminiSource = source.slice(geminiStart, geminiEnd);
+assert.ok(geminiSource.includes('privacyCheck.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "The final Gemini boundary must reject sensitive payloads regardless of caller");
 
 console.log("Agent organization contract checks passed.");
