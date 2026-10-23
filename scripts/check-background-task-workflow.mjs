@@ -65,7 +65,7 @@ for (const required of [
   "inspectAndRedact(body.prompt",
   "payload: { prompt: inspection.text, maxOutputTokens: 512, allowWebResearch, allowGitHubRead, allowGitHubWrite },",
   "payload: { prompt: inspection.text, maxOutputTokens, allowWebResearch },",
-  '["health", "financial", "location"]',
+  "hasSensitiveCategory(",
   "reserveAgentAiBudget",
   "step.sleepUntil",
   "AbortSignal.timeout(30_000)",

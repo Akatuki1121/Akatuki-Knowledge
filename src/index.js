@@ -29,6 +29,7 @@ import {
   saveAgentMemoryMetadata,
   shouldOmitStoredMemory
 } from "./agent-memory.mjs";
+import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent, selectSafeParagraphs } from "./ai-send-guard.mjs";
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 var MAX_BODY_BYTES = 1024 * 1024;
 var MAX_NOTES_PER_SYNC = 20;
@@ -356,7 +357,7 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText, 
       ? "認証情報らしい内容を検出したため、AIには送らず停止しました。値を削除して依頼し直してください。"
       : "入力を安全に確認できなかったため、AIには送らず停止しました。";
   }
-  if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+  if (hasSensitiveCategory(inspection.findings)) {
     return "個人情報を安全にマスキングできない内容を検出したため、AIには送らず停止しました。識別情報を除いて依頼し直してください。";
   }
 
@@ -723,7 +724,7 @@ async function summarizeConversationToKnowledge(env, chatId, messageId, now, req
   const { results } = await env.DB.prepare("SELECT role, content FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 40").bind(chatId).all();
   const conversation = results.reverse().flatMap((item) => {
     const inspected = inspectAndRedact(item.content, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    if (!inspected.ok || inspected.findings.some((finding) => ["health", "financial", "location"].includes(finding))) return [];
+    if (!inspected.ok || hasSensitiveCategory(inspected.findings)) return [];
     return [`${item.role === "assistant" ? "Assistant" : "User"}: ${inspected.text.slice(0, 1600)}`];
   });
   const prompt = [
@@ -787,7 +788,7 @@ async function inspectBulkAiPermissionCandidates(env) {
       if (note.ai_allowed === 1) credentialAllowed.push(candidate);
       continue;
     }
-    if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+    if (hasSensitiveCategory(inspection.findings)) {
       sensitive++;
       sensitiveCandidates.push(candidate);
       continue;
@@ -894,7 +895,7 @@ async function applyBulkAiPermission(env, chatId) {
       }
       const inspection = inspectWholeContent(note.content, env);
       const hasCredentials = inspection.credentials;
-      const isSensitive = inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding));
+      const isSensitive = hasSensitiveCategory(inspection.findings);
       if (hasCredentials) credentials++;
       if (candidate.action === "allow" && (hasCredentials || isSensitive || note.ai_allowed === 1)) {
         if (!hasCredentials && !isSensitive) alreadyAllowed++;
@@ -973,7 +974,7 @@ async function proposeFolderOrganization(env, chatId, now) {
   if (!eligible.length) return "整理できるノートがありません。対象ノートのAI送信許可と、認証情報が含まれていないことを確認してください。";
   const safeField = (value) => {
     const checked = inspectAndRedact(String(value || ""), { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    return checked.ok && !checked.findings.some((finding) => ["health", "financial", "location"].includes(finding)) ? checked.text : "[機微情報を含む項目]";
+    return checked.ok && !hasSensitiveCategory(checked.findings) ? checked.text : "[機微情報を含む項目]";
   };
   const folders = [...new Set(eligible.map((note) => safeField(String(note.path || "").split("/").slice(0, -1).join("/"))).filter((folder) => folder && folder !== "[機微情報を含む項目]"))].slice(0, 80);
   const prompt = [
@@ -1056,7 +1057,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   }
   const safeMessage = inspectAndRedact(message, { blocklist: env.PRIVACY_BLOCKLIST || "" });
   if (!safeMessage.ok) return "\u8A8D\u8A3C\u60C5\u5831\u3089\u3057\u3044\u5024\u304C\u542B\u307E\u308C\u3066\u3044\u305F\u305F\u3081\u3001AI\u306B\u306F\u9001\u4FE1\u3057\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u5024\u3092\u524A\u9664\u3057\u3066\u304B\u3089\u9001\u308A\u76F4\u3057\u3066\u306D\u3002";
-  if (safeMessage.findings.some((finding) => ["health", "financial", "location"].includes(finding))) return "機微情報を含むため、この発言はAIに送信しませんでした。ノート本文は変更していません。個人情報を含まない一般的な質問に言い換えてください。";
+  if (hasSensitiveCategory(safeMessage.findings)) return "機微情報を含むため、この発言はAIに送信しませんでした。ノート本文は変更していません。個人情報を含まない一般的な質問に言い換えてください。";
   const omitStoredMemory = shouldOmitStoredMemory(message);
   const [history, matches, policy] = await Promise.all([
     env.DB.prepare("SELECT role, content FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 12").bind(chatId).all(),
@@ -1069,7 +1070,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     const wholeInspection = inspectWholeContent(note.content, env);
     // Keep the source note intact, but never send health, financial, or location-sensitive content to Gemini.
     if (wholeInspection.credentials
-      || wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) continue;
+      || hasSensitiveCategory(wholeInspection.findings)) continue;
     const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
     const safeExcerpt = inspectAndRedact(excerpt(note.content, message, 800), { blocklist: env.PRIVACY_BLOCKLIST || "" });
     for (const finding of [...safeTitle.findings, ...safeExcerpt.findings]) findings.add(finding);
@@ -1090,7 +1091,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   }
   const recent = history.results.reverse().flatMap((item) => {
     const inspected = inspectAndRedact(item.content, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    if (!inspected.ok || inspected.findings.some((finding) => ["health", "financial", "location"].includes(finding))) return [];
+    if (!inspected.ok || hasSensitiveCategory(inspected.findings)) return [];
     const role = item.role === "assistant" ? "Assistant" : "User";
     return [`${role}: ${inspected.text.slice(0, 1200)}`];
   });
@@ -1351,19 +1352,6 @@ function extractTags(content, supplied) {
   return [...found].slice(0, 50);
 }
 __name(extractTags, "extractTags");
-function inspectWholeContent(content, env) {
-  const findings = /* @__PURE__ */ new Set();
-  const chunkSize = 19e3;
-  const overlap = 1e3;
-  for (let start = 0; start < content.length; start += chunkSize - overlap) {
-    const inspected = inspectAndRedact(content.slice(start, start + chunkSize), { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    for (const finding of inspected.findings) findings.add(finding);
-  }
-  const list = [...findings];
-  const credentials = list.includes("credentials");
-  return { ok: !credentials, findings: list, credentials };
-}
-__name(inspectWholeContent, "inspectWholeContent");
 async function syncNotes(request, env) {
   const body = await readJson(request);
   if (!Array.isArray(body.notes) || body.notes.length > MAX_NOTES_PER_SYNC) {
@@ -1720,7 +1708,7 @@ async function buildAiPreview(body, env) {
   if (question.length < 2) return { error: "question must contain at least 2 characters", status: 400 };
   const inspectedQuestion = inspectAndRedact(question, { blocklist: env.PRIVACY_BLOCKLIST || "" });
   if (!inspectedQuestion.ok) return { error: "\u8CEA\u554F\u306B\u5B9F\u969B\u306E\u8A8D\u8A3C\u60C5\u5831\u3089\u3057\u3044\u5024\u304C\u542B\u307E\u308C\u308B\u305F\u3081\u3001AI\u9001\u4FE1\u3092\u505C\u6B62\u3057\u307E\u3057\u305F\u3002\u8A8D\u8A3C\u60C5\u5831\u3092\u524A\u9664\u3057\u3066\u518D\u8A66\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002", status: 422, findings: inspectedQuestion.findings };
-  if (inspectedQuestion.findings.some((finding) => ["health", "financial", "location"].includes(finding))) return { error: "機微情報を含む質問はAI送信対象にできません。ノート原文は変更されません。", status: 422, findings: inspectedQuestion.findings };
+  if (hasSensitiveCategory(inspectedQuestion.findings)) return { error: "機微情報を含む質問はAI送信対象にできません。ノート原文は変更されません。", status: 422, findings: inspectedQuestion.findings };
   const matches = await findRelevantNotes(question, env, 8);
   if (!matches.length) return { preview: { sendable: false, reason: "no_sources", message: "\u95A2\u9023\u3059\u308B\u30CE\u30FC\u30C8\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F\u3002", findings: inspectedQuestion.findings, sources: [], payloadPreview: "" } };
   const sources = [];
@@ -1734,7 +1722,7 @@ async function buildAiPreview(body, env) {
       continue;
     }
     // Preserve the original note; sensitive categories are excluded only from the outbound AI payload.
-    if (wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+    if (hasSensitiveCategory(wholeNote.findings)) {
       blockedNotes.push({ id: note.id, title: note.title, reason: "sensitive_info_requires_confirmation" });
       continue;
     }
@@ -1833,21 +1821,15 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
         await writeAudit(env, "organize", 1, inspected.findings, 0, "blocked");
         continue;
       }
-      const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding));
       stage = "prompt_build";
       // Organize only independently inspected, non-sensitive passages. The stored source note is never rewritten.
       const safeTitleInspection = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
-      const safeTitle = safeTitleInspection.ok && !safeTitleInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))
+      const safeTitle = safeTitleInspection.ok && !hasSensitiveCategory(safeTitleInspection.findings)
         ? safeTitleInspection.text
         : "[機微情報を含む項目]";
-      const safeParagraphs = [];
-      for (const paragraph of String(note.content || "").split(/\n\s*\n/).map((value) => value.trim()).filter(Boolean)) {
-        const paragraphInspection = inspectAndRedact(paragraph, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-        if (!paragraphInspection.ok) throw new Error("AI excerpt failed credential inspection");
-        if (paragraphInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) continue;
-        if (paragraphInspection.text.trim()) safeParagraphs.push(paragraphInspection.text.trim());
-      }
-      const safeContent = safeParagraphs.join("\n\n").slice(0, 12e3);
+      const selectedParagraphs = selectSafeParagraphs(note.content, env.PRIVACY_BLOCKLIST || "");
+      if (!selectedParagraphs.ok) throw new Error("AI excerpt failed credential inspection");
+      const safeContent = selectedParagraphs.paragraphs.join("\n\n").slice(0, 12e3);
       if (!safeContent) {
         // A wholly sensitive note cannot be meaningfully organized without exposing its content.
         // Hold only this case for explicit review; notes with safe passages continue through automatic organization.
@@ -2020,7 +2002,7 @@ async function callGemini(env, prompt, maxOutputTokens, options = {}) {
   if (!privacyCheck.ok) {
     throw new Error("AI request blocked by credential detection");
   }
-  if (privacyCheck.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+  if (hasSensitiveCategory(privacyCheck.findings)) {
     throw new Error("AI request blocked by sensitive-data detection");
   }
   const model = maxOutputTokens <= 500
@@ -2054,7 +2036,7 @@ async function callGeminiWebResearch(env, query, options = {}) {
   if (!queryInspection.ok) {
     throw new Error(queryInspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
   }
-  if (queryInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+  if (hasSensitiveCategory(queryInspection.findings)) {
     throw new Error("pii_masking_failed");
   }
 
@@ -2070,7 +2052,7 @@ async function callGeminiWebResearch(env, query, options = {}) {
   if (!promptInspection.ok) {
     throw new Error(promptInspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
   }
-  if (promptInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+  if (hasSensitiveCategory(promptInspection.findings)) {
     throw new Error("pii_masking_failed");
   }
   if (!inspectWholeContent(promptInspection.text, env).ok) throw new Error("credentials_detected");
@@ -2108,71 +2090,6 @@ async function callGeminiWebResearch(env, query, options = {}) {
   return parseGroundedWebResearch(data, new Date().toISOString());
 }
 __name(callGeminiWebResearch, "callGeminiWebResearch");
-var REDACTION_RULES = [
-  { id: "email", pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, replacement: "[EMAIL]" },
-  { id: "phone", pattern: /(?<!\d)(?:\+81[-\s]?)?0\d{1,4}[-\s]?\d{1,4}[-\s]?\d{3,4}(?!\d)/gu, replacement: "[PHONE]" },
-  { id: "postal_code", pattern: /(?<!\d)〒?\d{3}[-ー]?\d{4}(?!\d)/gu, replacement: "[POSTAL_CODE]" },
-  { id: "bank_account", pattern: /((?:銀行口座|口座)番号(?:は|が|[:=：])?\s*)\d{6,14}(?!\d)/giu, replacement: "$1[ACCOUNT_NUMBER]" },
-  { id: "card_number", pattern: /((?:クレジットカード|カード)番号(?:は|が|[:=：])?\s*)(?:\d[ -]?){13,19}(?!\d)/giu, replacement: "$1[CARD_NUMBER]" },
-  { id: "personal_id", pattern: /((?:マイナンバー|個人番号)(?:は|が|[:=：])?\s*)\d{12}(?!\d)/giu, replacement: "$1[PERSONAL_ID]" },
-  { id: "street_address", pattern: /((?:自宅住所|住所)(?:は|が|[:=：])\s*)[^\n。！？!?]{3,100}/giu, replacement: "$1[ADDRESS]" },
-  { id: "ipv4", pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu, replacement: "[IP_ADDRESS]" },
-  { id: "url_query", pattern: /https?:\/\/[^\s?#]+\?[^\s#]*/giu, replacement: "[URL_WITH_QUERY]" }
-];
-var CREDENTIAL_RULES = [
-  { id: "api_key", pattern: /\b(?:AIza[0-9A-Za-z_-]{25,}|sk-(?:live|test|proj)?-?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/gu },
-  { id: "credential_assignment", pattern: /(?<![A-Za-z0-9_])["']?(?:password|passwd|passphrase|パスワード|api[_ -]?key|apiキー|access[_ -]?token|refresh[_ -]?token|secret|client_secret|private[_ -]?key|秘密鍵|認証トークン|authorization|auth[_ -]?token|token|credential|credentials|cookie|session)["']?(?![A-Za-z0-9_])\s*[:=：]\s*(?:"[^"\r\n]{1,}"|'[^'\r\n]{1,}'|[^\s"',;]{1,})/giu },
-  { id: "bearer_token", pattern: /\bBearer\s+[A-Za-z0-9._~+\/-]{16,}={0,2}/giu },
-  { id: "private_key_block", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]{20,}?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/gu }
-];
-var SENSITIVE_INFO_RULES = [
-  { id: "health", pattern: /病歴|既往歴|診断|処方薬|服薬|通院|Crohn'?s disease|クローン病|潰瘍性大腸炎|精神疾患|障害者手帳/iu },
-  { id: "financial", pattern: /クレジットカード番号|カード番号|口座番号|マイナンバー|個人番号/iu },
-  { id: "location", pattern: /自宅住所|住所は|住んでいる住所|番地|部屋番号/iu }
-];
-function inspectAndRedact(value, { blocklist = "" } = {}) {
-  if (typeof value !== "string") return { ok: false, text: "", findings: ["invalid_input"], blocked: true };
-  if (value.length > 2e4) return { ok: false, text: "", findings: ["input_too_long"], blocked: true };
-  const findings = [];
-  for (const rule of SENSITIVE_INFO_RULES) {
-    if (rule.pattern.test(value)) findings.push(rule.id);
-  }
-  let text2 = value;
-  let credentialDetected = false;
-  for (const rule of CREDENTIAL_RULES) {
-    rule.pattern.lastIndex = 0;
-    if (rule.pattern.test(text2)) {
-      findings.push("credentials", rule.id);
-      credentialDetected = true;
-      rule.pattern.lastIndex = 0;
-      text2 = text2.replace(rule.pattern, "[CREDENTIAL_BLOCKED]");
-    }
-  }
-  for (const rule of REDACTION_RULES) {
-    rule.pattern.lastIndex = 0;
-    if (rule.pattern.test(text2)) {
-      findings.push(rule.id);
-      rule.pattern.lastIndex = 0;
-      text2 = text2.replace(rule.pattern, rule.replacement);
-    }
-  }
-  const terms = blocklist.split(/[\n,、]/u).map((s) => s.trim()).filter((s) => s.length >= 2).slice(0, 100);
-  for (let i = 0; i < terms.length; i++) {
-    const term = terms[i];
-    if (text2.toLocaleLowerCase().includes(term.toLocaleLowerCase())) {
-      findings.push(`custom_${i + 1}`);
-      text2 = text2.replace(new RegExp(escapeRegExp(term), "giu"), "[REDACTED]");
-    }
-  }
-  const uniqueFindings = [...new Set(findings)];
-  const blocked = credentialDetected || uniqueFindings.includes("invalid_input") || uniqueFindings.includes("input_too_long");
-  return { ok: !blocked, text: text2, findings: uniqueFindings, blocked };
-}
-__name(inspectAndRedact, "inspectAndRedact");
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-__name(escapeRegExp, "escapeRegExp");
 var create = /* @__PURE__ */ __name(() => /* @__PURE__ */ new Map(), "create");
 var copy = /* @__PURE__ */ __name((m) => {
   const r = create();
@@ -11893,11 +11810,10 @@ async function searchAgentTaskNotes(query, env) {
   for (const note of matches) {
     if (note.ai_allowed !== 1) continue;
     const wholeInspection = inspectWholeContent(note.content, env);
-    if (wholeInspection.credentials || wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) continue;
+    if (wholeInspection.credentials || hasSensitiveCategory(wholeInspection.findings)) continue;
     const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
     const safeExcerpt = inspectAndRedact(excerpt(note.content, query, 800), { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    const sensitive = [...safeTitle.findings, ...safeExcerpt.findings]
-      .some((finding) => ["health", "financial", "location"].includes(finding));
+    const sensitive = hasSensitiveCategory([...safeTitle.findings, ...safeExcerpt.findings]);
     if (safeTitle.ok && safeExcerpt.ok && !sensitive) {
       notes.push({
         id: note.id,
@@ -11992,7 +11908,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           if (!inspection.ok) {
             throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
           }
-          if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+          if (hasSensitiveCategory(inspection.findings)) {
             throw new Error("pii_masking_failed");
           }
           return {
@@ -12061,7 +11977,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           if (!inspection.ok) {
             throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
           }
-          if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+          if (hasSensitiveCategory(inspection.findings)) {
             throw new Error("pii_masking_failed");
           }
           const estimatedTokens = Math.max(1, Math.ceil(inspection.text.length / 4) + prepared.maxOutputTokens);
@@ -12094,7 +12010,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               if (!inspection.ok) {
                 throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
               }
-              if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+              if (hasSensitiveCategory(inspection.findings)) {
                 throw new Error("pii_masking_failed");
               }
               const estimatedTokens = Math.max(1, Math.ceil(inspection.text.length / 4) + prepared.maxOutputTokens);
@@ -12110,7 +12026,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               if (!safeResponse.ok) {
                 throw new Error(safeResponse.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
               }
-              if (safeResponse.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+              if (hasSensitiveCategory(safeResponse.findings)) {
                 throw new Error("pii_masking_failed");
               }
               return safeResponse.text;
@@ -12137,7 +12053,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                 const planInspection = inspectAndRedact(JSON.stringify(plan), { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
                 if (!planInspection.ok || planInspection.findings.includes("credentials")) throw new Error("credentials_detected");
                 if (planInspection.text !== JSON.stringify(plan)) throw new Error("pii_masking_failed");
-                if (planInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) throw new Error("pii_masking_failed");
+                if (hasSensitiveCategory(planInspection.findings)) throw new Error("pii_masking_failed");
                 const planHash = await hashGitHubWritePlan(plan);
                 const pendingGitHubWrite = {
                   status: "pending",
@@ -12156,7 +12072,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                 });
                 const inspected = inspectAndRedact(JSON.stringify(result), { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
                 if (!inspected.ok || inspected.findings.includes("credentials")) throw new Error("credentials_detected");
-                if (inspected.findings.some((finding) => ["health", "financial", "location"].includes(finding))) throw new Error("pii_masking_failed");
+                if (hasSensitiveCategory(inspected.findings)) throw new Error("pii_masking_failed");
                 try { return JSON.parse(inspected.text); } catch { throw new Error("invalid_input"); }
               }
               if (tool === "web_research" && prepared.allowWebResearch) {
@@ -12164,7 +12080,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                 if (!queryInspection.ok) {
                   throw new Error(queryInspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
                 }
-                if (queryInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+                if (hasSensitiveCategory(queryInspection.findings)) {
                   throw new Error("pii_masking_failed");
                 }
                 const estimatedTokens = Math.max(1, Math.ceil(queryInspection.text.length / 4) + 1200 + 12000);
@@ -12180,7 +12096,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                 if (!report.ok) {
                   throw new Error(report.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
                 }
-                if (report.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+                if (hasSensitiveCategory(report.findings)) {
                   throw new Error("pii_masking_failed");
                 }
                 const sources = [];
@@ -12363,7 +12279,7 @@ var wrapper_default = {
         return Response.json({ error: "web_research_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
       }
       const inspection = inspectAndRedact(body.prompt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-      if (!inspection.ok || inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+      if (!inspection.ok || hasSensitiveCategory(inspection.findings)) {
         return Response.json({ error: "sensitive_input_blocked" }, { status: 422, headers: JSON_HEADERS2 });
       }
       const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 512;

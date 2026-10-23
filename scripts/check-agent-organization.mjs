@@ -69,12 +69,11 @@ for (const contract of [
 }
 
 for (const contract of [
-  'inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))',
+  'hasSensitiveCategory(inspection.findings)',
   'const sensitiveCandidates = []',
   '["allow", scan.eligible], ["revoke", scan.credentialAllowed], ["hold", scan.sensitiveCandidates]',
   'candidate.action === "hold"',
   "UPDATE notes SET sensitivity = 'sensitive', review_state = 'ready'",
-  'const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding))',
   "機微情報を含むノート"
 ]) {
   assert.ok(source.includes(contract), "Missing sensitive-note review gate: " + contract);
@@ -84,25 +83,24 @@ const answerStart = source.indexOf("async function answerTelegramMessage");
 const answerEnd = source.indexOf("\nasync function ", answerStart + 30);
 const answerSource = source.slice(answerStart, answerEnd);
 assert.ok(answerSource.includes("const wholeInspection = inspectWholeContent(note.content, env)"), "Chat answers must inspect the complete source note before prompt construction");
-assert.ok(answerSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Chat answer prompts must not include notes flagged as health, financial, or location-sensitive");
+assert.ok(answerSource.includes('hasSensitiveCategory(wholeInspection.findings)'), "Chat answer prompts must not include notes flagged as health, financial, or location-sensitive");
 assert.ok(answerSource.includes("continue;"), "Sensitive source notes must be skipped without mutating the stored note");
 assert.ok(answerSource.includes("inspectAndRedact("), "Chat answer payloads must be checked at the outbound boundary");
 
 const previewStart = source.indexOf("function buildAiPreview");
 const previewEnd = source.indexOf("\nasync function ", previewStart + 30);
 const previewSource = source.slice(previewStart, previewEnd);
-assert.ok(previewSource.includes('wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "AI previews must exclude sensitive notes from the outgoing payload");
+assert.ok(previewSource.includes('hasSensitiveCategory(wholeNote.findings)'), "AI previews must exclude sensitive notes from the outgoing payload");
 assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"'), "AI preview must explain why sensitive notes were excluded");
 assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be checked at the outbound boundary");
 
 const organizeStart = source.indexOf("async function organizePending");
 const organizeEnd = source.indexOf("\nasync function ", organizeStart + 30);
 const organizeSource = source.slice(organizeStart, organizeEnd);
-assert.ok(organizeSource.includes("const sensitiveFindings = inspected.findings.filter"), "Organization must detect sensitive categories");
-assert.ok(organizeSource.includes("const safeParagraphs = []"), "Sensitive notes must retain safe passages for automatic organization");
-assert.ok(organizeSource.includes("paragraphInspection.findings.some((finding) =>"), "Sensitive passages must be inspected before building the AI prompt");
-assert.ok(organizeSource.includes('["health", "financial", "location"].includes(finding)'), "Health, financial, and location-sensitive passages must be excluded from outbound content");
-assert.ok(organizeSource.includes("const safeContent = safeParagraphs.join"), "Automatic organization must use only the inspected safe passages");
+assert.ok(organizeSource.includes("selectSafeParagraphs(note.content"), "Sensitive notes must retain safe passages for automatic organization");
+assert.ok(organizeSource.includes("selectedParagraphs.ok"), "Sensitive passages must be inspected before building the AI prompt");
+assert.ok(organizeSource.includes('hasSensitiveCategory('), "Health, financial, and location-sensitive passages must be excluded from outbound content");
+assert.ok(organizeSource.includes("const safeContent = selectedParagraphs.paragraphs.join"), "Automatic organization must use only the inspected safe passages");
 assert.ok(organizeSource.includes('"[機微情報を含む項目]"'), "Sensitive titles must be replaced before outbound processing");
 assert.ok(organizeSource.includes("if (!safeContent)"), "Notes without any safe passages must not be falsely marked organized");
 assert.ok(organizeSource.includes("review_state = 'pending_confirmation'"), "Wholly sensitive notes must wait for explicit review when safe organization is impossible");
@@ -122,22 +120,22 @@ const summaryStart = source.indexOf("async function summarizeConversationToKnowl
 const summaryEnd = source.indexOf("function isFolderOrganizationRequest", summaryStart);
 const summarySource = source.slice(summaryStart, summaryEnd);
 assert.ok(summarySource.includes("results.reverse().flatMap"), "Conversation summaries must build an outbound-safe copy of history");
-assert.ok(summarySource.includes('["health", "financial", "location"].includes(finding)'), "Sensitive history messages must be excluded from AI summaries without altering stored history");
+assert.ok(summarySource.includes('hasSensitiveCategory('), "Sensitive history messages must be excluded from AI summaries without altering stored history");
 
-assert.ok(answerSource.includes('safeMessage.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Sensitive current messages must not be sent to Gemini");
+assert.ok(answerSource.includes('hasSensitiveCategory(safeMessage.findings)'), "Sensitive current messages must not be sent to Gemini");
 assert.ok(answerSource.includes("history.results.reverse().flatMap"), "Chat prompts must filter sensitive stored history at send time");
 
-assert.ok(previewSource.includes('inspectedQuestion.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "AI previews must block sensitive questions before sending");
+assert.ok(previewSource.includes('hasSensitiveCategory(inspectedQuestion.findings)'), "AI previews must block sensitive questions before sending");
 
 const taskNotesStart = source.indexOf("async function searchAgentTaskNotes");
 const taskNotesEnd = source.indexOf("__name(searchAgentTaskNotes", taskNotesStart);
 const taskNotesSource = source.slice(taskNotesStart, taskNotesEnd);
-assert.ok(taskNotesSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Background tasks must exclude sensitive notes from their context");
+assert.ok(taskNotesSource.includes('hasSensitiveCategory(wholeInspection.findings)'), "Background tasks must exclude sensitive notes from their context");
 
 const geminiStart = source.indexOf("async function callGemini");
 const geminiEnd = source.indexOf("__name(callGemini", geminiStart);
 const geminiSource = source.slice(geminiStart, geminiEnd);
-assert.ok(geminiSource.includes('privacyCheck.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "The final Gemini boundary must reject sensitive payloads regardless of caller");
+assert.ok(geminiSource.includes('hasSensitiveCategory(privacyCheck.findings)'), "The final Gemini boundary must reject sensitive payloads regardless of caller");
 
 const storeStart = source.indexOf("async function storeTelegramNote");
 const storeEnd = source.indexOf("__name(storeTelegramNote", storeStart);
