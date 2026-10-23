@@ -832,13 +832,13 @@ async function proposeBulkAiPermission(env, chatId) {
     return "一括許可の確認状態を保存できないため、処理を中止しました。必要なデータベース移行が未適用の可能性があります。ノートは変更していません。";
   }
   if (!previewNotes.length) {
-    return "AI送信許可の一括確認が完了しました。対象ノート: " + scan.total + "件 / 新たに許可できるノート: 0件 / 認証情報を検出: " + scan.credentials + "件 / 機微情報のため確認待ち: " + scan.sensitive + "件 / 既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件。ノートは変更していません。";
+    return "AI送信許可の一括確認が完了しました。対象ノート: " + scan.total + "件 / 新たに許可できるノート: 0件 / 認証情報を検出: " + scan.credentials + "件 / 機微情報を含むノート: " + scan.sensitive + "件 / 既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件。ノートは変更していません。";
   }
   return "AI送信許可の一括反映待ちです。\n"
     + "対象ノート: " + scan.total + "件\n"
     + "新たに許可できるノート: " + scan.eligible.length + "件\n"
     + "認証情報を検出: " + scan.credentials + "件（許可対象から除外し、既に許可済みなら許可を解除）\n"
-    + "機微情報のため確認待ち: " + scan.sensitive + "件（自動許可せず、反映時に確認待ちへ移動）\n"
+    + "機微情報のため確認待ち: " + scan.sensitive + "件（許可設定は変更せず、本文を送信する処理から除外）\n"
     + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n"
     + "この確認は10分で失効します。\n\n"
     + "この時点では設定を変更していません。許可対象を確認し、反映する場合だけ「AI送信許可を一括反映して」と送ってください。確認時点の対象ノートだけを反映します。";
@@ -936,7 +936,7 @@ async function applyBulkAiPermission(env, chatId) {
     + "新たに許可: " + changed + "件\n"
     + "認証情報検出: " + credentials + "件\n"
     + "認証情報検出により許可解除: " + revoked + "件\n"
-    + "機微情報のため確認待ちへ移動: " + held + "件\n"
+    + "機微情報ノートの安全処理へ移行: " + held + "件\n"
     + "内容変更・状態変化・競合で見送り: " + skipped + "件\n"
     + "既に許可済み（安全確認済み）: " + alreadyAllowed + "件\n\n"
     + "確認時点の対象だけを再検査し、本文が一致したノートだけを変更しました。";
