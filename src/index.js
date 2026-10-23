@@ -11866,23 +11866,23 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const taskId = typeof event?.payload?.taskId === "string" ? event.payload.taskId : "";
     if (!taskId) throw new Error("invalid_input");
-    const leaseToken = await step.do("create-lease-token", { retries: { limit: 0 } }, async () => crypto.randomUUID());
+    const leaseToken = await step.do("create-lease-token", { retries: { limit: 0, delay: 1000 } }, async () => crypto.randomUUID());
 
     for (let attempt = 1; attempt <= 4; attempt++) {
-      const claim = await step.do("claim-" + attempt, { retries: { limit: 0 } }, async () => {
+      const claim = await step.do("claim-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
         const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: 120 });
         return task ? { claimed: true, attempts: task.attempts } : { claimed: false };
       });
       if (!claim.claimed) {
         const current = await getAgentTask(this.env.DB, taskId);
         if (["succeeded", "failed", "cancelled"].includes(current?.status)) {
-          await step.do("notify-existing-terminal", { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+          await step.do("notify-existing-terminal", { retries: { limit: 0, delay: 1000 } }, async () => flushAgentTaskNotifications(this.env, 5));
         }
         return { taskId, status: current?.status || "missing", stopReason: current?.stop_reason || null };
       }
 
       try {
-        const prepared = await step.do("prepare-" + attempt, { retries: { limit: 0 } }, async () => {
+        const prepared = await step.do("prepare-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
           const task = await getAgentTask(this.env.DB, taskId);
           if (!task || task.status !== "running" || task.lease_token !== leaseToken) throw new Error("lease_lost");
           if (!["knowledge_query", "github_query"].includes(task.task_type) || typeof task.payload?.prompt !== "string") throw new Error("invalid_input");
@@ -11942,18 +11942,18 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         });
 
         if (prepared.resumeCompleted) {
-          const completed = await step.do("complete-resumed-" + attempt, { retries: { limit: 0 } }, async () => {
+          const completed = await step.do("complete-resumed-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
             return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
           });
           if (completed) {
-            await step.do("notify-complete-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+            await step.do("notify-complete-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => flushAgentTaskNotifications(this.env, 5));
             return { taskId, status: "succeeded" };
           }
           const current = await getAgentTask(this.env.DB, taskId);
           return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
         }
 
-        const context = await step.do("retrieve-context-" + attempt, { retries: { limit: 0 } }, async () => {
+        const context = await step.do("retrieve-context-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
           if (prepared.contextNotes) return { notes: prepared.contextNotes };
           if (prepared.allowGitHubRead) {
             const saved = await saveAgentTaskCheckpoint(this.env.DB, {
@@ -11972,7 +11972,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           return { notes };
         });
 
-        const composed = await step.do("compose-prompt-" + attempt, { retries: { limit: 0 } }, async () => {
+        const composed = await step.do("compose-prompt-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
           if (prepared.resumePrompt) {
             return { prompt: prepared.resumePrompt, estimatedTokens: prepared.estimatedTokens };
           }
@@ -12022,7 +12022,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           allowGitHubWrite: prepared.allowGitHubWrite,
           callModel: async ({ prompt, modelCall }) => step.do(
             "agent-model-" + attempt + "-" + modelCall,
-            { retries: { limit: 0 } },
+            { retries: { limit: 0, delay: 1000 } },
             async () => {
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const inspection = inspectAndRedact(prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
@@ -12053,7 +12053,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           ),
           executeTool: async (tool, args, state) => step.do(
             "agent-tool-" + attempt + "-" + (state.transcript.filter((item) => item?.role === "tool").length + 1),
-            { retries: { limit: 0 } },
+            { retries: { limit: 0, delay: 1000 } },
             async () => {
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               if (tool === "search_notes") {
@@ -12145,7 +12145,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               : checkpoint.pendingAction ? "action" : "result";
             const saved = await step.do(
               "agent-checkpoint-" + attempt + "-" + checkpoint.modelCalls + "-" + checkpoint.toolCalls.length + "-" + checkpointName,
-              { retries: { limit: 0 } },
+              { retries: { limit: 0, delay: 1000 } },
               async () => saveAgentTaskCheckpoint(this.env.DB, {
                 taskId, leaseToken, nowMs: Date.now(), checkpoint
               }),
@@ -12182,7 +12182,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             + "\n拒否: /github reject " + taskId
             + "\n承認期限: " + pendingGitHubWrite.expiresAt
           : (reply || "関連ノートから回答を作成できませんでした。");
-        const finalSaved = await step.do("save-formatted-output-" + attempt, { retries: { limit: 0 } }, async () => {
+        const finalSaved = await step.do("save-formatted-output-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
           return saveAgentTaskCheckpoint(this.env.DB, {
             taskId, leaseToken, nowMs: Date.now(),
             checkpoint: {
@@ -12201,11 +12201,11 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
         }
 
-        const completed = await step.do("complete-" + attempt, { retries: { limit: 0 } }, async () => {
+        const completed = await step.do("complete-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
           return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
         });
         if (completed) {
-            await step.do("notify-complete-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+            await step.do("notify-complete-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => flushAgentTaskNotifications(this.env, 5));
             return { taskId, status: "succeeded" };
           }
         const current = await getAgentTask(this.env.DB, taskId);
@@ -12213,7 +12213,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
       } catch (error) {
         const errorClass = classifyAgentTaskError(error);
         const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted"].includes(errorClass);
-        const failure = await step.do("record-failure-" + attempt, { retries: { limit: 0 } }, async () => {
+        const failure = await step.do("record-failure-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => {
           return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, retryable, nowMs: Date.now() });
         });
         if (!failure.applied) {
@@ -12224,11 +12224,11 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           await step.sleepUntil("retry-" + attempt, failure.decision.retryAtMs);
           continue;
         }
-        await step.do("notify-failure-" + attempt, { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+        await step.do("notify-failure-" + attempt, { retries: { limit: 0, delay: 1000 } }, async () => flushAgentTaskNotifications(this.env, 5));
         return { taskId, status: "failed", stopReason: failure.decision?.stopReason || "non_retryable_or_unknown_error" };
       }
     }
-    await step.do("notify-attempt-budget-exhausted", { retries: { limit: 0 } }, async () => flushAgentTaskNotifications(this.env, 5));
+    await step.do("notify-attempt-budget-exhausted", { retries: { limit: 0, delay: 1000 } }, async () => flushAgentTaskNotifications(this.env, 5));
     return { taskId, status: "failed", stopReason: "attempt_budget_exhausted" };
   }
 }
