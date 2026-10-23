@@ -108,7 +108,7 @@ assert.ok(folderSource.includes("!inspection.credentials"), "Folder organization
 assert.ok(folderSource.includes('!inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Folder organization must not send sensitive note metadata to AI");
 
 const summaryStart = source.indexOf("async function summarizeConversationToKnowledge");
-const summaryEnd = source.indexOf("\\nfunction isFolderOrganizationRequest", summaryStart);
+const summaryEnd = source.indexOf("function isFolderOrganizationRequest", summaryStart);
 const summarySource = source.slice(summaryStart, summaryEnd);
 assert.ok(summarySource.includes("results.reverse().flatMap"), "Conversation summaries must build an outbound-safe copy of history");
 assert.ok(summarySource.includes('["health", "financial", "location"].includes(finding)'), "Sensitive history messages must be excluded from AI summaries without altering stored history");
