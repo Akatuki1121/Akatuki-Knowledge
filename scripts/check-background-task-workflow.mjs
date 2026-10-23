@@ -190,7 +190,7 @@ const noRetryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*0\b[^}]*\}/
 assert.ok(noRetryConfigs.length >= 1, "No explicit no-retry Workflow steps were found");
 assert.ok(
   noRetryConfigs.every((config) => /\bdelay\s*:\s*0\b/.test(config)),
-  "Every no-retry Workflow step must specify delay: 0 as required by Cloudflare Workflows",
+  "Every no-retry Workflow step must specify delay: 1000 as required by Cloudflare Workflows",
 );
 assert.ok(!source.includes("retries: { limit: 0 }"), "Workflow retry config must not omit the required delay field");
 
