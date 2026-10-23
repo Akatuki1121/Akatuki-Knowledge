@@ -91,7 +91,7 @@ assert.match(source, /enqueueAgentMemoryJob\(env\.DB/u);
 assert.match(source, /ctx\.waitUntil\(drainAgentMemoryQueue\(env, 1\)\)/u);
 assert.match(source, /event: "telegram_answer_timing"/u);
 assert.match(source, /event: "agent_memory_timing"/u);
-assert.match(source, /searchMs, memoryQueueMs, generationMs/u);
+assert.match(source, /searchMs, generationMs/u);
 const answerStart = source.indexOf("async function answerTelegramMessage");
 const answerEnd = source.indexOf('__name(answerTelegramMessage', answerStart);
 const answerBody = source.slice(answerStart, answerEnd);
