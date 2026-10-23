@@ -769,21 +769,29 @@ function isBulkAiPermissionRejection(message) {
 async function inspectBulkAiPermissionCandidates(env) {
   const { results } = await env.DB.prepare("SELECT id, content, content_hash, ai_allowed FROM notes WHERE deleted_at IS NULL AND path IS NOT NULL").all();
   let credentials = 0;
+  let sensitive = 0;
   let alreadyAllowed = 0;
   const eligible = [];
   const credentialAllowed = [];
+  const sensitiveCandidates = [];
   for (const note of results || []) {
     const content = typeof note.content === "string" ? note.content : "";
     const candidate = { id: note.id, content, contentHash: note.content_hash ?? null };
-    if (inspectWholeContent(content, env).credentials) {
+    const inspection = inspectWholeContent(content, env);
+    if (inspection.credentials) {
       credentials++;
       if (note.ai_allowed === 1) credentialAllowed.push(candidate);
+      continue;
+    }
+    if (inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) {
+      sensitive++;
+      sensitiveCandidates.push(candidate);
       continue;
     }
     if (note.ai_allowed === 1) alreadyAllowed++;
     else eligible.push(candidate);
   }
-  return { total: (results || []).length, eligible, credentials, credentialAllowed, alreadyAllowed };
+  return { total: (results || []).length, eligible, credentials, credentialAllowed, sensitive, sensitiveCandidates, alreadyAllowed };
 }
 async function hashBulkAiPermissionContent(content) {
   const bytes = new TextEncoder().encode(content);
@@ -798,7 +806,7 @@ async function proposeBulkAiPermission(env, chatId) {
     return "一括許可の確認状態を保存できないため、処理を中止しました。データベースの準備が必要です。ノートは変更していません。";
   }
   const previewNotes = [];
-  for (const [action, notes] of [["allow", scan.eligible], ["revoke", scan.credentialAllowed]]) {
+  for (const [action, notes] of [["allow", scan.eligible], ["revoke", scan.credentialAllowed], ["hold", scan.sensitiveCandidates]]) {
     for (const note of notes) {
       previewNotes.push({
         id: String(note.id),
@@ -820,12 +828,13 @@ async function proposeBulkAiPermission(env, chatId) {
     return "一括許可の確認状態を保存できないため、処理を中止しました。必要なデータベース移行が未適用の可能性があります。ノートは変更していません。";
   }
   if (!previewNotes.length) {
-    return "AI送信許可の一括確認が完了しました。対象ノート: " + scan.total + "件 / 新たに許可できるノート: 0件 / 認証情報を検出: " + scan.credentials + "件 / 既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件。ノートは変更していません。";
+    return "AI送信許可の一括確認が完了しました。対象ノート: " + scan.total + "件 / 新たに許可できるノート: 0件 / 認証情報を検出: " + scan.credentials + "件 / 機微情報のため確認待ち: " + scan.sensitive + "件 / 既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件。ノートは変更していません。";
   }
   return "AI送信許可の一括反映待ちです。\n"
     + "対象ノート: " + scan.total + "件\n"
     + "新たに許可できるノート: " + scan.eligible.length + "件\n"
     + "認証情報を検出: " + scan.credentials + "件（許可対象から除外し、既に許可済みなら許可を解除）\n"
+    + "機微情報のため確認待ち: " + scan.sensitive + "件（自動許可せず、反映時に確認待ちへ移動）\n"
     + "既に許可済み（安全確認済み）: " + scan.alreadyAllowed + "件\n"
     + "この確認は10分で失効します。\n\n"
     + "この時点では設定を変更していません。許可対象を確認し、反映する場合だけ「AI送信許可を一括反映して」と送ってください。確認時点の対象ノートだけを反映します。";
@@ -853,7 +862,7 @@ async function applyBulkAiPermission(env, chatId) {
   try {
     candidates = JSON.parse(preview.candidates_json);
     if (!Array.isArray(candidates) || candidates.length > 1000 || candidates.some((item) =>
-      !item || typeof item.id !== "string" || !/^[a-f0-9]{64}$/u.test(item.hash) || !["allow", "revoke"].includes(item.action))) {
+      !item || typeof item.id !== "string" || !/^[a-f0-9]{64}$/u.test(item.hash) || !["allow", "revoke", "hold"].includes(item.action))) {
       throw new Error("invalid_preview");
     }
   } catch {
@@ -878,10 +887,12 @@ async function applyBulkAiPermission(env, chatId) {
         skipped++;
         continue;
       }
-      const hasCredentials = inspectWholeContent(note.content, env).credentials;
+      const inspection = inspectWholeContent(note.content, env);
+      const hasCredentials = inspection.credentials;
+      const isSensitive = inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding));
       if (hasCredentials) credentials++;
-      if (candidate.action === "allow" && (hasCredentials || note.ai_allowed === 1)) {
-        if (!hasCredentials) alreadyAllowed++;
+      if (candidate.action === "allow" && (hasCredentials || isSensitive || note.ai_allowed === 1)) {
+        if (!hasCredentials && !isSensitive) alreadyAllowed++;
         skipped++;
         continue;
       }
@@ -889,11 +900,18 @@ async function applyBulkAiPermission(env, chatId) {
         skipped++;
         continue;
       }
+      if (candidate.action === "hold" && (!isSensitive || hasCredentials)) {
+        skipped++;
+        continue;
+      }
       const statement = candidate.action === "allow"
         ? env.DB.prepare("UPDATE notes SET ai_allowed = 1, sensitivity = 'user-approved', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 0 AND content_hash IS ? AND content = ?")
             .bind(note.id, note.content_hash ?? null, note.content)
-        : env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?")
-            .bind(note.id, note.content_hash ?? null, note.content);
+        : candidate.action === "revoke"
+          ? env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?")
+              .bind(note.id, note.content_hash ?? null, note.content)
+          : env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'sensitive', review_state = 'pending_confirmation', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND content_hash IS ? AND content = ?")
+              .bind(note.id, note.content_hash ?? null, note.content);
       statements.push(statement);
       actions.push(candidate.action);
     }
@@ -902,7 +920,7 @@ async function applyBulkAiPermission(env, chatId) {
       batchResults.forEach((result, index) => {
         if (result.meta?.changes) {
           if (actions[index] === "allow") changed++;
-          else revoked++;
+          else if (actions[index] === "revoke") revoked++;
         } else skipped++;
       });
     }
@@ -912,6 +930,7 @@ async function applyBulkAiPermission(env, chatId) {
     + "新たに許可: " + changed + "件\n"
     + "認証情報検出: " + credentials + "件\n"
     + "認証情報検出により許可解除: " + revoked + "件\n"
+    + "機微情報のため確認待ちへ移動: " + (candidates.filter((item) => item.action === "hold").length - skipped) + "件\n"
     + "内容変更・状態変化・競合で見送り: " + skipped + "件\n"
     + "既に許可済み（安全確認済み）: " + alreadyAllowed + "件\n\n"
     + "確認時点の対象だけを再検査し、本文が一致したノートだけを変更しました。";
@@ -1788,8 +1807,15 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
       const inspected = inspectWholeContent(note.content, env);
       if (!inspected.ok) {
         blocked++;
-        await env.DB.prepare(`UPDATE ${table} SET ai_allowed = 0, review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND content_hash = ?`).bind(note.id, note.content_hash).run();
+        await env.DB.prepare(`UPDATE ${table} SET ai_allowed = 0, review_state = 'blocked_credentials', sensitivity = 'credentials', next_retry_at = NULL WHERE id = ? AND content_hash = ?`).bind(note.id, note.content_hash).run();
         await writeAudit(env, "organize", 1, inspected.findings, 0, "blocked");
+        continue;
+      }
+      const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding));
+      if (sensitiveFindings.length) {
+        blocked++;
+        await env.DB.prepare(`UPDATE ${table} SET ai_allowed = 0, review_state = 'pending_confirmation', sensitivity = 'sensitive', next_retry_at = NULL WHERE id = ? AND content_hash = ?`).bind(note.id, note.content_hash).run();
+        await writeAudit(env, "organize", 1, inspected.findings, 0, "pending_confirmation");
         continue;
       }
       stage = "prompt_build";
