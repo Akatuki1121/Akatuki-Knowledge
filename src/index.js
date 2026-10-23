@@ -1830,25 +1830,24 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
         continue;
       }
       const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding));
-      if (sensitiveFindings.length) {
-        blocked++;
-        await env.DB.prepare(`UPDATE ${table} SET ai_allowed = 0, review_state = 'pending_confirmation', sensitivity = 'sensitive', next_retry_at = NULL WHERE id = ? AND content_hash = ?`).bind(note.id, note.content_hash).run();
-        await writeAudit(env, "organize", 1, inspected.findings, 0, "pending_confirmation");
-        continue;
-      }
       stage = "prompt_build";
-      const excerptForAi = inspectAndRedact(excerpt(note.content, "", 12e3), { blocklist: env.PRIVACY_BLOCKLIST || "" });
+      // Keep sensitive notes in the organization queue, but never send their body to Gemini.
+      const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
+      const titleHasSensitiveInfo = safeTitle.findings.some((finding) => ["health", "financial", "location", "credentials"].includes(finding));
+      const excerptForAi = sensitiveFindings.length
+        ? { ok: true, text: titleHasSensitiveInfo || !safeTitle.ok ? "[機微情報を含むノート]" : "ノートのタイトル: " + safeTitle.text + "\n本文は機微情報を含むため送信していません。" }
+        : inspectAndRedact(excerpt(note.content, "", 12e3), { blocklist: env.PRIVACY_BLOCKLIST || "" });
       if (!excerptForAi.ok) throw new Error("AI excerpt failed privacy inspection");
-      const prompt = `\u6B21\u306E\u500B\u4EBA\u30E1\u30E2\u306E\u629C\u7C8B\u3092\u6574\u7406\u3057\u3066\u304F\u3060\u3055\u3044\u3002\u610F\u5473\u3092\u5909\u3048\u305A\u3001\u4E8B\u5B9F\u3092\u8FFD\u52A0\u305B\u305A\u3001JSON\u3060\u3051\u3092\u8FD4\u3057\u3066\u304F\u3060\u3055\u3044\u3002
-\u5F62\u5F0F: {"summary":"\u65E5\u672C\u8A9E\u30671\u301C3\u6587\u306E\u8981\u7D04","tags":["\u77ED\u3044\u30BF\u30B0"],"related":["\u95A2\u9023\u30CE\u30FC\u30C8\u691C\u7D22\u7528\u306E\u8A9E"],"knowledge_type":"fact|rationale|procedure","knowledge_scope":"project|general"}
-knowledge_type\u306F\u4E8B\u5B9F\u30FB\u7D4C\u7DEF\u3001\u5224\u65AD\u6839\u62E0\u3001\u518D\u5229\u7528\u3067\u304D\u308B\u624B\u9806\u306E\u3044\u305A\u308C\u304B\u3002knowledge_scope\u306F\u7279\u5B9A\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306B\u9650\u5B9A\u3055\u308C\u308B\u77E5\u8B58\u306A\u3089project\u3001\u5E45\u5E83\u304F\u518D\u5229\u7528\u3067\u304D\u308B\u77E5\u8B58\u306A\u3089general\u3002\u65E2\u5B58\u306E\u30E6\u30FC\u30B6\u30FC\u30BF\u30B0\u306F\u5909\u66F4\u3057\u307E\u305B\u3093\u3002\u30BF\u30B0\u30FBrelated\u306F\u5404\u6700\u59278\u500B\u3002\u30BF\u30A4\u30C8\u30EB\u3084\u30D1\u30B9\u306F\u9001\u4FE1\u3057\u307E\u305B\u3093\u3002
-\u672C\u6587:
+      const prompt = `次のノート情報を整理してください。意味を変えず、事実を追加せず、JSONだけを返してください。
+形式: {"summary":"日本語で1〜3文の要約","tags":["短いタグ"],"related":["関連ノート検索用の語"],"knowledge_type":"fact|rationale|procedure","knowledge_scope":"project|general"}
+knowledge_typeは事実・経緯、判断根拠、再利用できる手順のいずれか。knowledge_scopeは特定プロジェクトに限定される知識ならproject、幅広く再利用できる知識ならgeneral。既存のユーザータグは変更しません。タグ・relatedは各最大8個。本文が送信されていない場合、要約や関連語を推測で補わず、保守的に分類してください。
+入力:
 ${excerptForAi.text}`;
       stage = "gemini_call";
       const raw = await callGemini(env, prompt, 500);
       stage = "parse_result";
       const parsed = parseJsonObject(raw);
-      const summary = typeof parsed.summary === "string" ? parsed.summary.slice(0, 1500) : "";
+      const summary = sensitiveFindings.length ? "" : typeof parsed.summary === "string" ? parsed.summary.slice(0, 1500) : "";
       const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((x) => typeof x === "string").slice(0, 8) : [];
       const relatedTerms = Array.isArray(parsed.related) ? parsed.related.filter((x) => typeof x === "string").map((x) => x.trim()).filter((x) => x.length >= 2).slice(0, 8) : [];
       const knowledgeType = ["fact", "rationale", "procedure"].includes(parsed.knowledge_type) ? parsed.knowledge_type : note.knowledge_type || "unknown";
@@ -1856,7 +1855,7 @@ ${excerptForAi.text}`;
       stage = "link_related";
       const linkedIds = await linkRelatedNotes(env, note, relatedTerms);
       stage = "save_result";
-      await env.DB.prepare(`UPDATE ${table} SET summary = ?, ai_tags_json = ?, related_json = ?, knowledge_type = ?, knowledge_scope = ?, organized_hash = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ? AND content_hash = ? AND ai_allowed = 1`).bind(summary, JSON.stringify(tags), JSON.stringify(linkedIds), knowledgeType, knowledgeScope, note.content_hash, note.id, note.content_hash).run();
+      await env.DB.prepare(`UPDATE ${table} SET summary = CASE WHEN ? = 1 THEN summary ELSE ? END, ai_tags_json = ?, related_json = ?, knowledge_type = CASE WHEN ? = 1 THEN knowledge_type ELSE ? END, knowledge_scope = CASE WHEN ? = 1 THEN knowledge_scope ELSE ? END, organized_hash = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ? AND content_hash = ? AND ai_allowed = 1`).bind(sensitiveFindings.length ? 1 : 0, summary, JSON.stringify(tags), sensitiveFindings.length ? 1 : 0, knowledgeType, sensitiveFindings.length ? 1 : 0, knowledgeScope, note.content_hash, note.id, note.content_hash).run();
       await writeAudit(env, "organize", 1, inspected.findings, prompt.length, "success");
       organized++;
     } catch (error) {
