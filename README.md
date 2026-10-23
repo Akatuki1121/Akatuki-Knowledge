@@ -56,6 +56,7 @@ npm run check:sync   # 同期・バックグラウンドタスク関連のみ
 | [`AGENTS.md`](AGENTS.md) | AI エージェント向けの作業ルール |
 | [`docs/AGENT_MEMORY.md`](docs/AGENT_MEMORY.md) | 長期記憶の分類、信頼度、競合、失効ポリシー |
 | [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) | バックグラウンドタスクの設計と制限 |
+| [`docs/AI_SEND_POLICY.md`](docs/AI_SEND_POLICY.md) | AI 送信の許可・機微情報の扱い(Issue #61) |
 | [`docs/YAOS_EVENT_SYNC.md`](docs/YAOS_EVENT_SYNC.md) | YAOS イベント同期 |
 | [`docs/PRODUCTION_STATUS.md`](docs/PRODUCTION_STATUS.md) | 本番環境の観測記録 |
 | [`migrations/README.md`](migrations/README.md) | D1 マイグレーションの扱いと復旧の経緯 |
