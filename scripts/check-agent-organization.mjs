@@ -108,8 +108,10 @@ assert.ok(!organizeSource.includes("SET content ="), "Organization must never ov
 const folderStart = source.indexOf("async function proposeFolderOrganization");
 const folderEnd = source.indexOf("async function applyLatestFolderOrganization", folderStart);
 const folderSource = source.slice(folderStart, folderEnd);
-assert.ok(folderSource.includes("!inspection.credentials"), "Folder organization must exclude notes with credentials");
-assert.ok(folderSource.includes('!inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Folder organization must not send sensitive note metadata to AI");
+assert.ok(folderSource.includes("!inspectWholeContent(note.content || \"\", env).credentials"), "Folder organization must exclude notes with credentials");
+assert.ok(!folderSource.includes("!inspection.findings.some"), "Sensitive categories alone must not exclude notes from folder organization");
+assert.ok(folderSource.includes("const safeField = (value)"), "Folder organization must sanitize outbound metadata for sensitive fields");
+assert.ok(folderSource.includes('"[機微情報を含む項目]"'), "Sensitive title, path, or summary fields must be replaced before outbound processing");
 
 const summaryStart = source.indexOf("async function summarizeConversationToKnowledge");
 const summaryEnd = source.indexOf("function isFolderOrganizationRequest", summaryStart);
