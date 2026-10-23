@@ -184,14 +184,9 @@ const githubPrompt = source.slice(githubPromptStart, githubPromptEnd);
 assert.ok(githubPrompt.includes("依頼文と会話文脈から一意に特定できない場合は、推測で補完せず"), "GitHub tasks must ask when the repository or required Issue/PR target is ambiguous");
 assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計画を作ったりする前に不足情報を短く質問"), "Ambiguous GitHub tasks must ask before tool execution or write planning");
 
-// Cloudflare Workflows requires retries.delay whenever a custom retry config is supplied.
-// These steps intentionally disable retries to avoid repeating side effects.
-const noRetryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*0\b[^}]*\}/g)].map((match) => match[0]);
-assert.ok(noRetryConfigs.length >= 1, "No explicit no-retry Workflow steps were found");
-assert.ok(
-  noRetryConfigs.every((config) => /\bdelay\s*:\s*1000\b/.test(config)),
-  "Every no-retry Workflow step must specify delay: 1000 as required by Cloudflare Workflows",
-);
-assert.ok(!source.includes("retries: { limit: 0 }"), "Workflow retry config must not omit the required delay field");
+// Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
+const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
+assert.equal(retryConfigs.length, 17, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
+assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
