@@ -144,4 +144,16 @@ assert.ok(storeSource.includes("title, content, content_hash"), "Telegram note s
 assert.ok(storeSource.includes(".bind(id2, chatId, String(messageId), title, content, contentHash"), "Telegram note storage must bind the original content, not the redacted AI prompt");
 assert.ok(source.includes("storeTelegramNote(env, chatId, message.message_id, noteContent, now)"), "Explicit /save must preserve the user's supplied note text");
 
+
+const organizeStart = source.indexOf("async function organizePending");
+const organizeEnd = source.indexOf('__name(organizePending', organizeStart);
+const organizeSource = source.slice(organizeStart, organizeEnd);
+assert.ok(organizeSource.includes('const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding))'), "Automatic organization must detect sensitive categories without treating them as credentials");
+assert.ok(!organizeSource.includes("review_state = 'pending_confirmation'"), "Sensitive categories alone must not permanently remove notes from the automatic organization queue");
+assert.ok(organizeSource.includes('text: "[機微情報を含むノート]"'), "Sensitive note bodies must not be sent to Gemini");
+assert.ok(organizeSource.includes('summary = CASE WHEN ? = 1 THEN summary ELSE ? END'), "Sensitive-note processing must preserve the existing summary when source text is withheld");
+assert.ok(organizeSource.includes('ai_tags_json = CASE WHEN ? = 1 THEN ai_tags_json ELSE ? END'), "Sensitive-note processing must preserve existing AI tags when source text is withheld");
+assert.ok(organizeSource.includes('related_json = CASE WHEN ? = 1 THEN related_json ELSE ? END'), "Sensitive-note processing must preserve existing related-note links when source text is withheld");
+assert.ok(organizeSource.includes('organized_hash = ?'), "Processed notes must not be repeatedly retried every scheduled run");
+
 console.log("Agent organization contract checks passed.");
