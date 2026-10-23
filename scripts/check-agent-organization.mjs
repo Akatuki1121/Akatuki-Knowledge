@@ -99,7 +99,7 @@ const organizeStart = source.indexOf("async function organizePending");
 const organizeEnd = source.indexOf("\nasync function ", organizeStart + 30);
 const organizeSource = source.slice(organizeStart, organizeEnd);
 assert.ok(organizeSource.includes("const sensitiveFindings = inspected.findings.filter"), "Organization must detect sensitive categories");
-assert.ok(organizeSource.includes("never send their body to Gemini"), "Sensitive notes must remain eligible for organization without sending their body to Gemini");
+assert.ok(organizeSource.includes("never send their body or title to Gemini"), "Sensitive notes must remain eligible for organization without sending their body to Gemini");
 assert.ok(organizeSource.includes('"[機微情報を含むノート]"'), "Sensitive titles must be replaced with a generic label before outbound processing");
 assert.ok(organizeSource.includes("SET summary = CASE WHEN ? = 1 THEN summary ELSE ? END"), "Sensitive notes must preserve their existing summary");
 assert.ok(!organizeSource.includes("SET ai_allowed = 0, review_state = 'pending_confirmation', sensitivity = 'sensitive'"), "Sensitive categories alone must not remove notes from the organization queue");
