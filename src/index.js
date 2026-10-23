@@ -915,7 +915,7 @@ async function applyBulkAiPermission(env, chatId) {
         : candidate.action === "revoke"
           ? env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'credentials', review_state = 'blocked_credentials', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND ai_allowed = 1 AND content_hash IS ? AND content = ?")
               .bind(note.id, note.content_hash ?? null, note.content)
-          : env.DB.prepare("UPDATE notes SET ai_allowed = 0, sensitivity = 'sensitive', review_state = 'pending_confirmation', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND content_hash IS ? AND content = ?")
+          : env.DB.prepare("UPDATE notes SET sensitivity = 'sensitive', review_state = 'ready', next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL AND content_hash IS ? AND content = ?")
               .bind(note.id, note.content_hash ?? null, note.content);
       statements.push(statement);
       actions.push(candidate.action);
