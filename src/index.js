@@ -1060,22 +1060,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   const safeMessage = inspectAndRedact(message, { blocklist: env.PRIVACY_BLOCKLIST || "" });
   if (!safeMessage.ok) return "\u8A8D\u8A3C\u60C5\u5831\u3089\u3057\u3044\u5024\u304C\u542B\u307E\u308C\u3066\u3044\u305F\u305F\u3081\u3001AI\u306B\u306F\u9001\u4FE1\u3057\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u5024\u3092\u524A\u9664\u3057\u3066\u304B\u3089\u9001\u308A\u76F4\u3057\u3066\u306D\u3002";
   const omitStoredMemory = shouldOmitStoredMemory(message);
-  let memoryQueueMs = 0;
-  let memoryQueuePromise = Promise.resolve();
-  if (!omitStoredMemory && isMemoryProcessingCandidate(safeMessage.text)) {
-    const queueStartedAt = Date.now();
-    memoryQueuePromise = enqueueAgentMemoryJob(env.DB, {
-      chatId: String(chatId),
-      messageId: String(messageId),
-      messageText: safeMessage.text,
-      nowMs: Date.parse(now)
-    }).then(() => {
-      memoryQueueMs = Date.now() - queueStartedAt;
-    }).catch(() => {
-      memoryQueueMs = Date.now() - queueStartedAt;
-      console.error("memory job enqueue failed");
-    });
-  }
+  // Memory enqueue is owned by telegramWebhook; answer generation never waits for it.
   let contextMs = 0;
   let searchMs = 0;
   let generationMs = 0;
@@ -1162,7 +1147,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
 
 \u51FA\u5178: ${cited.map((note) => note.title).join("\u3001")}`;
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings, ...safeResponse.findings], prompt.length, "success");
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "success" }));
     return reply.slice(0, 3500);
   } catch (error) {
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], promptChars, "failed");
