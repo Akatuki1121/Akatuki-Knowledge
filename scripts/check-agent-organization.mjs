@@ -137,4 +137,11 @@ const geminiEnd = source.indexOf("__name(callGemini", geminiStart);
 const geminiSource = source.slice(geminiStart, geminiEnd);
 assert.ok(geminiSource.includes('privacyCheck.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "The final Gemini boundary must reject sensitive payloads regardless of caller");
 
+const storeStart = source.indexOf("async function storeTelegramNote");
+const storeEnd = source.indexOf("__name(storeTelegramNote", storeStart);
+const storeSource = source.slice(storeStart, storeEnd);
+assert.ok(storeSource.includes("title, content, content_hash"), "Telegram note storage must persist the original note content");
+assert.ok(storeSource.includes(".bind(id2, chatId, String(messageId), title, content, contentHash"), "Telegram note storage must bind the original content, not the redacted AI prompt");
+assert.ok(source.includes("storeTelegramNote(env, chatId, message.message_id, noteContent, now)"), "Explicit /save must preserve the user's supplied note text");
+
 console.log("Agent organization contract checks passed.");
