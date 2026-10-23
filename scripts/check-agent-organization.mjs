@@ -48,7 +48,7 @@ for (const contract of [
   "proposeFolderOrganization",
   "applyLatestFolderOrganization",
   "rejectLatestFolderOrganization",
-  "inspectWholeContent(note.content || \"\", env).credentials",
+  "const inspection = inspectWholeContent(note.content || \\"\\", env)",
   "note.path !== candidate.source_path",
   "await enqueueSyncJob(env, \"notes\", note.id, \"upsert\")",
   "INSERT INTO note_revisions",
