@@ -1150,7 +1150,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     return reply.slice(0, 3500);
   } catch (error) {
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], promptChars, "failed");
-    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, memoryQueueMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
+    console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
     await enqueueBotAlert(env, classifyOperationalFailure(error));
     console.error("Telegram chat response failed");
     return classifyOperationalFailure(error) === "gemini_limit" ? "AI\u306E\u5229\u7528\u4E0A\u9650\u306B\u9054\u3057\u305F\u3088\u3046\u3067\u3001\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u306A\u304B\u3063\u305F\u3088\u3002\u5C11\u3057\u6642\u9593\u3092\u7F6E\u3044\u3066\u8A66\u3057\u3066\u306D\u3002" : "\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30A8\u30E9\u30FC\u3092\u8A18\u9332\u3057\u305F\u306E\u3067\u3001\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u3082\u3046\u4E00\u5EA6\u9001\u3063\u3066\u307F\u3066\u306D\u3002";
