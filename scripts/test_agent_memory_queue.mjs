@@ -102,4 +102,27 @@ assert.doesNotMatch(answerBody, /memoryQueueMs/u);
 assert.doesNotMatch(answerBody, /parsed\.improvement/u);
 assert.match(source, /async function processAgentMemoryJob/u);
 
+// Sensitive-category boundary (Issue #82 / #61 handoff). This pins the current safe-side
+// behaviour: health/financial/location text is never kept in Telegram history or queued for
+// memory extraction. Changing it (e.g. retaining the original and filtering only at each
+// model-send boundary) is an Issue #61 privacy decision, so this test must be updated
+// deliberately together with that decision rather than drifting silently.
+const hookStart = source.indexOf("const inspectedHistory = inspectAndRedact(text2");
+const hookEnd = source.indexOf("let processingMessageId", hookStart);
+assert.ok(hookStart > 0 && hookEnd > hookStart, "Telegram webhook history/queue block not found");
+const hook = source.slice(hookStart, hookEnd);
+assert.match(hook, /new Set\(\["health", "financial", "location"\]\)/u);
+assert.match(hook, /containsSensitiveInfo \? "\[SENSITIVE_INFO_REDACTED\]" : inspectedHistory\.text/u);
+const historyInsert = hook.match(/INSERT OR IGNORE INTO telegram_messages[^\n]*\.bind\(([^)]*)\)/u);
+assert.ok(historyInsert, "telegram_messages insert not found");
+assert.match(historyInsert[1], /\bsafeHistoryText\b/u);
+assert.doesNotMatch(historyInsert[1], /\btext2\b/u);
+const enqueueGuard = hook.match(/if \(([^{]*)\) \{\s*await enqueueAgentMemoryJob\(env\.DB, \{([^}]*)\}/u);
+assert.ok(enqueueGuard, "memory job enqueue block not found");
+assert.match(enqueueGuard[1], /inspectedHistory\.ok/u);
+assert.match(enqueueGuard[1], /!containsSensitiveInfo/u);
+assert.match(enqueueGuard[2], /messageText: safeHistoryText/u);
+assert.doesNotMatch(enqueueGuard[2], /\btext2\b/u);
+assert.equal((hook.match(/enqueueAgentMemoryJob\(/gu) || []).length, 1);
+
 console.log("Agent memory queue contracts passed.");
