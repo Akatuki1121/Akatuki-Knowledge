@@ -73,9 +73,9 @@ for (const contract of [
   'const sensitiveCandidates = []',
   '["allow", scan.eligible], ["revoke", scan.credentialAllowed], ["hold", scan.sensitiveCandidates]',
   'candidate.action === "hold"',
-  "review_state = 'pending_confirmation'",
+  "UPDATE notes SET sensitivity = 'sensitive', review_state = 'ready'",
   'const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding))',
-  "機微情報のため確認待ち"
+  "機微情報を含むノート"
 ]) {
   assert.ok(source.includes(contract), "Missing sensitive-note review gate: " + contract);
 }
