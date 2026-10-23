@@ -96,7 +96,7 @@ assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"
 assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be checked at the outbound boundary");
 
 const folderStart = source.indexOf("async function proposeFolderOrganization");
-const folderEnd = source.indexOf('__name(proposeFolderOrganization', folderStart);
+const folderEnd = source.indexOf("async function applyLatestFolderOrganization", folderStart);
 const folderSource = source.slice(folderStart, folderEnd);
 assert.ok(folderSource.includes('!inspectWholeContent(note.content || "", env).credentials'), "Folder organization may exclude credentials, but not notes merely because they contain health, financial, or location information");
 assert.ok(!folderSource.includes('findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Sensitive categories must not blanket-exclude notes from automatic organization");
