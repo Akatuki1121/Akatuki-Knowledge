@@ -68,4 +68,16 @@ for (const contract of [
   assert.ok(migration.includes(contract), "Missing folder organization schema contract: " + contract);
 }
 
+for (const contract of [
+  'inspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))',
+  'const sensitiveCandidates = []',
+  '["allow", scan.eligible], ["revoke", scan.credentialAllowed], ["hold", scan.sensitiveCandidates]',
+  'candidate.action === "hold"',
+  "review_state = 'pending_confirmation'",
+  'const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding))',
+  "機微情報のため確認待ち"
+]) {
+  assert.ok(source.includes(contract), "Missing sensitive-note review gate: " + contract);
+}
+
 console.log("Agent organization contract checks passed.");
