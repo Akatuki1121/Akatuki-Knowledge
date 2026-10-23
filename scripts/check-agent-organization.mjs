@@ -96,7 +96,7 @@ assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"
 assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be checked at the outbound boundary");
 
 const organizeStart = source.indexOf("async function organizePending");
-const organizeEnd = source.indexOf("\\nasync function ", organizeStart + 30);
+const organizeEnd = source.indexOf("\nasync function ", organizeStart + 30);
 const organizeSource = source.slice(organizeStart, organizeEnd);
 assert.ok(organizeSource.includes("const sensitiveFindings = inspected.findings.filter"), "Organization must detect sensitive categories");
 assert.ok(organizeSource.includes("never send their body to Gemini"), "Sensitive notes must remain eligible for organization without sending their body to Gemini");
