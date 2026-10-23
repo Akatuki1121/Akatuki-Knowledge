@@ -872,6 +872,7 @@ async function applyBulkAiPermission(env, chatId) {
   const now = new Date().toISOString();
   let changed = 0;
   let revoked = 0;
+  let held = 0;
   let credentials = 0;
   let skipped = 0;
   let alreadyAllowed = 0;
@@ -921,6 +922,7 @@ async function applyBulkAiPermission(env, chatId) {
         if (result.meta?.changes) {
           if (actions[index] === "allow") changed++;
           else if (actions[index] === "revoke") revoked++;
+          else if (actions[index] === "hold") held++;
         } else skipped++;
       });
     }
@@ -930,7 +932,7 @@ async function applyBulkAiPermission(env, chatId) {
     + "新たに許可: " + changed + "件\n"
     + "認証情報検出: " + credentials + "件\n"
     + "認証情報検出により許可解除: " + revoked + "件\n"
-    + "機微情報のため確認待ちへ移動: " + (candidates.filter((item) => item.action === "hold").length - skipped) + "件\n"
+    + "機微情報のため確認待ちへ移動: " + held + "件\n"
     + "内容変更・状態変化・競合で見送り: " + skipped + "件\n"
     + "既に許可済み（安全確認済み）: " + alreadyAllowed + "件\n\n"
     + "確認時点の対象だけを再検査し、本文が一致したノートだけを変更しました。";
