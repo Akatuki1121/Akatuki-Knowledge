@@ -1076,8 +1076,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
         searchMs = Date.now() - searchStartedAt;
       }
     })(),
-    env.DB.prepare("SELECT category, rule_text FROM bot_behavior_rules WHERE active = 1 ORDER BY rule_id DESC LIMIT 20").all(),
-    memoryQueuePromise
+    env.DB.prepare("SELECT category, rule_text FROM bot_behavior_rules WHERE active = 1 ORDER BY rule_id DESC LIMIT 20").all()
   ]);
   contextMs = Date.now() - contextStartedAt;
   const findings = new Set(safeMessage.findings);
