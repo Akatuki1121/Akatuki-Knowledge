@@ -102,6 +102,9 @@ assert.ok(organizeSource.includes("const sensitiveFindings = inspected.findings.
 assert.ok(organizeSource.includes("never send their body or title to Gemini"), "Sensitive notes must remain eligible for organization without sending their body to Gemini");
 assert.ok(organizeSource.includes('"[機微情報を含むノート]"'), "Sensitive titles must be replaced with a generic label before outbound processing");
 assert.ok(organizeSource.includes("SET summary = CASE WHEN ? = 1 THEN summary ELSE ? END"), "Sensitive notes must preserve their existing summary");
+assert.ok(organizeSource.includes("ai_tags_json = CASE WHEN ? = 1 THEN ai_tags_json ELSE ? END"), "Sensitive notes must preserve their existing AI tags");
+assert.ok(organizeSource.includes("related_json = CASE WHEN ? = 1 THEN related_json ELSE ? END"), "Sensitive notes must preserve their existing related-note links");
+assert.ok(organizeSource.includes("sensitiveFindings.length ? 1 : 0, JSON.stringify(tags), sensitiveFindings.length ? 1 : 0, JSON.stringify(linkedIds)"), "Metadata bindings must match the conditional update statement");
 assert.ok(!organizeSource.includes("SET ai_allowed = 0, review_state = 'pending_confirmation', sensitivity = 'sensitive'"), "Sensitive categories alone must not remove notes from the organization queue");
 assert.ok(!organizeSource.includes("SET content ="), "Organization must never overwrite the original note body");
 
