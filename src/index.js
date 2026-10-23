@@ -1835,7 +1835,7 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
       const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
       const titleHasSensitiveInfo = safeTitle.findings.some((finding) => ["health", "financial", "location", "credentials"].includes(finding));
       const excerptForAi = sensitiveFindings.length
-        ? { ok: true, text: titleHasSensitiveInfo || !safeTitle.ok ? "[機微情報を含むノート]" : "ノートのタイトル: " + safeTitle.text + "\n本文は機微情報を含むため送信していません。" }
+        ? { ok: true, text: titleHasSensitiveInfo || !safeTitle.ok ? "[機微情報を含むノート]" : "[機微情報を含むノート]" }
         : inspectAndRedact(excerpt(note.content, "", 12e3), { blocklist: env.PRIVACY_BLOCKLIST || "" });
       if (!excerptForAi.ok) throw new Error("AI excerpt failed privacy inspection");
       const prompt = `次のノート情報を整理してください。意味を変えず、事実を追加せず、JSONだけを返してください。
