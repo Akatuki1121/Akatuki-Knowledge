@@ -96,6 +96,9 @@ const answerStart = source.indexOf("async function answerTelegramMessage");
 const answerEnd = source.indexOf('__name(answerTelegramMessage', answerStart);
 const answerBody = source.slice(answerStart, answerEnd);
 assert.doesNotMatch(answerBody, /await applyTelegramCapture/u);
+assert.doesNotMatch(answerBody, /enqueueAgentMemoryJob/u);
+assert.doesNotMatch(answerBody, /memoryQueuePromise/u);
+assert.doesNotMatch(answerBody, /memoryQueueMs/u);
 assert.doesNotMatch(answerBody, /parsed\.improvement/u);
 assert.match(source, /async function processAgentMemoryJob/u);
 
