@@ -150,15 +150,19 @@ async function telegramWebhook(request, env, ctx) {
     const text2 = message.text.trim();
     const userMessageId = `${chatId}:${message.message_id}`;
     const inspectedHistory = inspectAndRedact(text2, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    await env.DB.prepare("INSERT OR IGNORE INTO telegram_messages (message_id, chat_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)").bind(userMessageId, chatId, inspectedHistory.text, now).run();
+    const sensitiveFindings = new Set(["health", "financial", "location"]);
+    const containsSensitiveInfo = inspectedHistory.findings.some((finding) => sensitiveFindings.has(finding));
+    // Never retain detected health, financial, or address details in Telegram history or memory jobs.
+    const safeHistoryText = containsSensitiveInfo ? "[SENSITIVE_INFO_REDACTED]" : inspectedHistory.text;
+    await env.DB.prepare("INSERT OR IGNORE INTO telegram_messages (message_id, chat_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)").bind(userMessageId, chatId, safeHistoryText, now).run();
     // Persist eligible ordinary conversation for background memory extraction.
-    // Commands and privacy-blocked/redacted content are not sent to the memory model.
-    if (!text2.startsWith("/") && inspectedHistory.ok
-      && !shouldOmitStoredMemory(inspectedHistory.text)) {
+    // Commands, credential-bearing messages, and sensitive categories are excluded.
+    if (!text2.startsWith("/") && inspectedHistory.ok && !containsSensitiveInfo
+      && !shouldOmitStoredMemory(safeHistoryText)) {
       await enqueueAgentMemoryJob(env.DB, {
         chatId,
         messageId: String(message.message_id),
-        messageText: inspectedHistory.text,
+        messageText: safeHistoryText,
         nowMs: Date.parse(now)
       });
     }
