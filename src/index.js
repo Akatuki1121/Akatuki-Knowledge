@@ -1834,15 +1834,11 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
         continue;
       }
       const sensitiveFindings = inspected.findings.filter((finding) => ["health", "financial", "location"].includes(finding));
-      if (sensitiveFindings.length) {
-        // Keep the original note and all existing metadata intact; require confirmation before AI processing.
-        blocked++;
-        await env.DB.prepare(`UPDATE ${table} SET ai_allowed = 0, review_state = 'pending_confirmation', sensitivity = 'sensitive', next_retry_at = NULL WHERE id = ? AND content_hash = ?`).bind(note.id, note.content_hash).run();
-        await writeAudit(env, "organize", 1, inspected.findings, 0, "pending_confirmation");
-        continue;
-      }
       stage = "prompt_build";
-      const excerptForAi = inspectAndRedact(excerpt(note.content, "", 12e3), { blocklist: env.PRIVACY_BLOCKLIST || "" });
+      // Keep sensitive notes in the organization queue, but never send their body or title to Gemini.
+      const excerptForAi = sensitiveFindings.length
+        ? { ok: true, text: "[機微情報を含むノート]" }
+        : inspectAndRedact(excerpt(note.content, "", 12e3), { blocklist: env.PRIVACY_BLOCKLIST || "" });
       if (!excerptForAi.ok) throw new Error("AI excerpt failed privacy inspection");
       const prompt = `次のノート情報を整理してください。意味を変えず、事実を追加せず、JSONだけを返してください。
 形式: {"summary":"日本語で1〜3文の要約","tags":["短いタグ"],"related":["関連ノート検索用の語"],"knowledge_type":"fact|rationale|procedure","knowledge_scope":"project|general"}
@@ -1861,7 +1857,7 @@ ${excerptForAi.text}`;
       stage = "link_related";
       const linkedIds = await linkRelatedNotes(env, note, relatedTerms);
       stage = "save_result";
-      await env.DB.prepare(`UPDATE ${table} SET summary = CASE WHEN ? = 1 THEN summary ELSE ? END, ai_tags_json = ?, related_json = ?, knowledge_type = CASE WHEN ? = 1 THEN knowledge_type ELSE ? END, knowledge_scope = CASE WHEN ? = 1 THEN knowledge_scope ELSE ? END, organized_hash = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ? AND content_hash = ? AND ai_allowed = 1`).bind(sensitiveFindings.length ? 1 : 0, summary, JSON.stringify(tags), sensitiveFindings.length ? 1 : 0, knowledgeType, sensitiveFindings.length ? 1 : 0, knowledgeScope, note.content_hash, note.id, note.content_hash).run();
+      await env.DB.prepare(`UPDATE ${table} SET summary = CASE WHEN ? = 1 THEN summary ELSE ? END, ai_tags_json = CASE WHEN ? = 1 THEN ai_tags_json ELSE ? END, related_json = CASE WHEN ? = 1 THEN related_json ELSE ? END, knowledge_type = CASE WHEN ? = 1 THEN knowledge_type ELSE ? END, knowledge_scope = CASE WHEN ? = 1 THEN knowledge_scope ELSE ? END, organized_hash = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ? AND content_hash = ? AND ai_allowed = 1`).bind(sensitiveFindings.length ? 1 : 0, summary, sensitiveFindings.length ? 1 : 0, JSON.stringify(tags), sensitiveFindings.length ? 1 : 0, JSON.stringify(linkedIds), sensitiveFindings.length ? 1 : 0, knowledgeType, sensitiveFindings.length ? 1 : 0, knowledgeScope, note.content_hash, note.id, note.content_hash).run();
       await writeAudit(env, "organize", 1, inspected.findings, prompt.length, "success");
       organized++;
     } catch (error) {
