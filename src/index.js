@@ -1841,13 +1841,13 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
         ? safeTitleInspection.text
         : "[機微情報を含む項目]";
       const safeParagraphs = [];
-      for (const paragraph of String(note.content || "").split(/\\n\\s*\\n/).map((value) => value.trim()).filter(Boolean)) {
+      for (const paragraph of String(note.content || "").split(/\n\s*\n/).map((value) => value.trim()).filter(Boolean)) {
         const paragraphInspection = inspectAndRedact(paragraph, { blocklist: env.PRIVACY_BLOCKLIST || "" });
         if (!paragraphInspection.ok) throw new Error("AI excerpt failed credential inspection");
         if (paragraphInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))) continue;
         if (paragraphInspection.text.trim()) safeParagraphs.push(paragraphInspection.text.trim());
       }
-      const safeContent = safeParagraphs.join("\\n\\n").slice(0, 12e3);
+      const safeContent = safeParagraphs.join("\n\n").slice(0, 12e3);
       if (!safeContent) {
         // A wholly sensitive note cannot be meaningfully organized without exposing its content.
         // Hold only this case for explicit review; notes with safe passages continue through automatic organization.
