@@ -178,4 +178,10 @@ const notificationDispatchSource = source.slice(notificationDispatchStart, notif
 assert.ok(notificationDispatchSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Failure notifications must explain the stop reason");
 assert.ok(notificationDispatchSource.includes('"\\n次の操作: " + guidance.nextAction'), "Failure notifications must include a next action");
 
+const githubPromptStart = source.indexOf("あなたは日本語のGitHub作業エージェントです。");
+const githubPromptEnd = source.indexOf("\\n              : prepared.allowGitHubRead", githubPromptStart);
+const githubPrompt = source.slice(githubPromptStart, githubPromptEnd);
+assert.ok(githubPrompt.includes("依頼文と会話文脈から一意に特定できない場合は、推測で補完せず"), "GitHub tasks must ask when the repository or required Issue/PR target is ambiguous");
+assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計画を作ったりする前に不足情報を短く質問"), "Ambiguous GitHub tasks must ask before tool execution or write planning");
+
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
