@@ -80,4 +80,17 @@ for (const contract of [
   assert.ok(source.includes(contract), "Missing sensitive-note review gate: " + contract);
 }
 
+const answerStart = source.indexOf("async function answerTelegramMessage");
+const answerEnd = source.indexOf('__name(answerTelegramMessage', answerStart);
+const answerSource = source.slice(answerStart, answerEnd);
+assert.ok(answerSource.includes("const wholeInspection = inspectWholeContent(note.content, env)"), "Chat answers must inspect the complete source note before prompt construction");
+assert.ok(answerSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Sensitive source notes must not be included in chat answer prompts");
+assert.ok(answerSource.includes("continue;"), "Sensitive source notes must be skipped without mutating the stored note");
+
+const previewStart = source.indexOf("function buildAiPreview");
+const previewEnd = source.indexOf('__name(buildAiPreview', previewStart);
+const previewSource = source.slice(previewStart, previewEnd);
+assert.ok(previewSource.includes('wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Explicit AI previews must exclude sensitive notes from the outgoing payload");
+assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"'), "AI preview must explain why sensitive notes were excluded");
+
 console.log("Agent organization contract checks passed.");
