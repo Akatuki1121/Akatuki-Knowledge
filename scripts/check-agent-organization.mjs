@@ -81,7 +81,7 @@ for (const contract of [
 }
 
 const answerStart = source.indexOf("async function answerTelegramMessage");
-const answerEnd = source.indexOf('__name(answerTelegramMessage', answerStart);
+const answerEnd = source.indexOf("\nasync function ", answerStart + 30);
 const answerSource = source.slice(answerStart, answerEnd);
 assert.ok(answerSource.includes("const wholeInspection = inspectWholeContent(note.content, env)"), "Chat answers must inspect the complete source note before prompt construction");
 assert.ok(answerSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Chat answer prompts must not include notes flagged as health, financial, or location-sensitive");
@@ -89,7 +89,7 @@ assert.ok(answerSource.includes("continue;"), "Sensitive source notes must be sk
 assert.ok(answerSource.includes("inspectAndRedact("), "Chat answer payloads must be checked at the outbound boundary");
 
 const previewStart = source.indexOf("function buildAiPreview");
-const previewEnd = source.indexOf('__name(buildAiPreview', previewStart);
+const previewEnd = source.indexOf("\nasync function ", previewStart + 30);
 const previewSource = source.slice(previewStart, previewEnd);
 assert.ok(previewSource.includes('wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "AI previews must exclude sensitive notes from the outgoing payload");
 assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"'), "AI preview must explain why sensitive notes were excluded");
