@@ -151,6 +151,17 @@ async function telegramWebhook(request, env, ctx) {
     const userMessageId = `${chatId}:${message.message_id}`;
     const inspectedHistory = inspectAndRedact(text2, { blocklist: env.PRIVACY_BLOCKLIST || "" });
     await env.DB.prepare("INSERT OR IGNORE INTO telegram_messages (message_id, chat_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)").bind(userMessageId, chatId, inspectedHistory.text, now).run();
+    // Persist eligible ordinary conversation for background memory extraction.
+    // Commands and privacy-blocked/redacted content are not sent to the memory model.
+    if (!text2.startsWith("/") && inspectedHistory.ok
+      && !shouldOmitStoredMemory(inspectedHistory.text)) {
+      await enqueueAgentMemoryJob(env.DB, {
+        chatId,
+        messageId: String(message.message_id),
+        messageText: inspectedHistory.text,
+        nowMs: Date.parse(now)
+      });
+    }
     await env.DB.prepare("DELETE FROM telegram_messages WHERE chat_id = ? AND message_id NOT IN (SELECT message_id FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 40)").bind(chatId, chatId).run();
     let reply;
     let processingMessageId = null;
