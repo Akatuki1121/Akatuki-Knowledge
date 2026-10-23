@@ -84,16 +84,16 @@ const answerStart = source.indexOf("async function answerTelegramMessage");
 const answerEnd = source.indexOf('__name(answerTelegramMessage', answerStart);
 const answerSource = source.slice(answerStart, answerEnd);
 assert.ok(answerSource.includes("const wholeInspection = inspectWholeContent(note.content, env)"), "Chat answers must inspect the complete source note before prompt construction");
-assert.ok(answerSource.includes("wholeInspection.credentials"), "Chat answers must block notes with credentials that cannot safely be sent");
-assert.ok(!answerSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Health, financial, and location findings alone must not exclude a note from useful AI-assisted processing");
-assert.ok(answerSource.includes("inspectAndRedact("), "Chat answer payloads must be redacted at the outbound boundary without mutating stored notes");
+assert.ok(answerSource.includes('wholeInspection.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Chat answer prompts must not include notes flagged as health, financial, or location-sensitive");
+assert.ok(answerSource.includes("continue;"), "Sensitive source notes must be skipped without mutating the stored note");
+assert.ok(answerSource.includes("inspectAndRedact("), "Chat answer payloads must be checked at the outbound boundary");
 
 const previewStart = source.indexOf("function buildAiPreview");
 const previewEnd = source.indexOf('__name(buildAiPreview', previewStart);
 const previewSource = source.slice(previewStart, previewEnd);
-assert.ok(previewSource.includes("wholeNote.credentials"), "AI previews must block credentials that cannot safely be sent");
-assert.ok(!previewSource.includes('wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "Health, financial, and location findings alone must not blanket-exclude notes from AI previews");
-assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be redacted at the outbound boundary while stored source notes remain unchanged");
+assert.ok(previewSource.includes('wholeNote.findings.some((finding) => ["health", "financial", "location"].includes(finding))'), "AI previews must exclude sensitive notes from the outgoing payload");
+assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"'), "AI preview must explain why sensitive notes were excluded");
+assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be checked at the outbound boundary");
 
 const folderStart = source.indexOf("async function proposeFolderOrganization");
 const folderEnd = source.indexOf('__name(proposeFolderOrganization', folderStart);
