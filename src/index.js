@@ -1855,7 +1855,7 @@ ${excerptForAi.text}`;
       const knowledgeType = ["fact", "rationale", "procedure"].includes(parsed.knowledge_type) ? parsed.knowledge_type : note.knowledge_type || "unknown";
       const knowledgeScope = ["project", "general"].includes(parsed.knowledge_scope) ? parsed.knowledge_scope : note.knowledge_scope || "project";
       stage = "link_related";
-      const linkedIds = await linkRelatedNotes(env, note, relatedTerms);
+      const linkedIds = sensitiveFindings.length ? [] : await linkRelatedNotes(env, note, relatedTerms);
       stage = "save_result";
       await env.DB.prepare(`UPDATE ${table} SET summary = CASE WHEN ? = 1 THEN summary ELSE ? END, ai_tags_json = CASE WHEN ? = 1 THEN ai_tags_json ELSE ? END, related_json = CASE WHEN ? = 1 THEN related_json ELSE ? END, knowledge_type = CASE WHEN ? = 1 THEN knowledge_type ELSE ? END, knowledge_scope = CASE WHEN ? = 1 THEN knowledge_scope ELSE ? END, organized_hash = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ? AND content_hash = ? AND ai_allowed = 1`).bind(sensitiveFindings.length ? 1 : 0, summary, sensitiveFindings.length ? 1 : 0, JSON.stringify(tags), sensitiveFindings.length ? 1 : 0, JSON.stringify(linkedIds), sensitiveFindings.length ? 1 : 0, knowledgeType, sensitiveFindings.length ? 1 : 0, knowledgeScope, note.content_hash, note.id, note.content_hash).run();
       await writeAudit(env, "organize", 1, inspected.findings, prompt.length, "success");
