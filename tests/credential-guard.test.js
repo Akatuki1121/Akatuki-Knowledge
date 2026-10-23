@@ -1,18 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
+import { inspectAndRedact } from "../src/ai-send-guard.mjs";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const rulesMatch = source.match(/var CREDENTIAL_RULES = \[([\s\S]*?)\n\];/);
-assert.ok(rulesMatch, "CREDENTIAL_RULES must exist in the Worker source");
-const rules = vm.runInNewContext("[" + rulesMatch[1] + "]");
 
 function detectsCredential(value) {
-  return rules.some(({ pattern }) => {
-    pattern.lastIndex = 0;
-    return pattern.test(value);
-  });
+  return inspectAndRedact(value).findings.includes("credentials");
 }
 
 test("blocks common credential assignment formats", () => {
@@ -54,4 +48,7 @@ test("shared Gemini boundary checks assembled prompt before fetch", () => {
   assert.ok(body.includes("if (!privacyCheck.ok)"));
   assert.ok(body.indexOf("inspectWholeContent(prompt, env)") < body.indexOf("await fetch(endpoint"));
   assert.ok(body.includes('throw new Error("AI request blocked by credential detection")'));
+  assert.ok(body.includes("hasSensitiveCategory(privacyCheck.findings)"));
+  assert.ok(body.indexOf("hasSensitiveCategory(privacyCheck.findings)") < body.indexOf("await fetch(endpoint"));
+  assert.ok(body.includes('throw new Error("AI request blocked by sensitive-data detection")'));
 });
