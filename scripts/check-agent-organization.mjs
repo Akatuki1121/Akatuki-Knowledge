@@ -7,7 +7,7 @@ for (const contract of [
   "isBulkAiPermissionApproval",
   "isBulkAiPermissionRejection",
   "inspectBulkAiPermissionCandidates",
-  "inspectWholeContent(content, env).credentials",
+  "const inspection = inspectWholeContent(content, env)",
   "AI送信許可の一括反映待ちです",
   "AI送信許可を一括反映して",
   "sensitivity = 'user-approved'",
