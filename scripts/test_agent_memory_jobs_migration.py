@@ -4,7 +4,7 @@ import sqlite3
 import textwrap
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations" / "pending" / "0014_agent_memory_jobs.sql"
+MIGRATION = ROOT / "migrations" / "0014_agent_memory_jobs.sql"
 
 connection = sqlite3.connect(":memory:")
 connection.executescript(MIGRATION.read_text(encoding="utf-8"))
