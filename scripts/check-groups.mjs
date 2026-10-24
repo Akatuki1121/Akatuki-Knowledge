@@ -3,7 +3,9 @@ export const checks = [
   ["check-group-coverage", process.execPath, ["scripts/test-check-groups.mjs"]],
   ["sync-module-syntax", process.execPath, ["--check", "src/sync-outbox.mjs"]],
   ["ai-send-guard-syntax", process.execPath, ["--check", "src/ai-send-guard.mjs"]],
-  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/organize-failure.test.js"]],
+  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/organize-failure.test.js", "tests/log-sanitize.test.js"]],
+  ["log-sanitize-syntax", process.execPath, ["--check", "src/log-sanitize.mjs"]],
+  ["log-hygiene", process.execPath, ["scripts/check-log-hygiene.mjs"]],
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
   ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
   ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
@@ -36,6 +38,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name === "sync-telegram-agent-notifications")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
 }
