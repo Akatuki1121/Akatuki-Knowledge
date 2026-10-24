@@ -98,3 +98,32 @@ export function selectSafeParagraphs(content, blocklist = "") {
   }
   return { ok: true, paragraphs };
 }
+
+
+// Telegram 発言を履歴へ保存するときの方針を決める（Issue #94）。
+// - 機微カテゴリ（health / financial / location）だけを含む発言は、原文のまま履歴へ保存する。
+//   メモ自体が残らない状態を避けるため。AI へ送るかどうかは、保存ではなく送信の境界で決める。
+// - 認証情報を含む発言は、これまで通り伏字済みの本文だけを保存する（原文は残さない）。
+// - 機微カテゴリを含む発言は、記憶抽出（AI 処理）のジョブに積まない。
+export function planTelegramHistory(text, { blocklist = "" } = {}) {
+  const inspected = inspectAndRedact(text, { blocklist });
+  const sensitive = hasSensitiveCategory(inspected.findings);
+  return {
+    inspected,
+    sensitive,
+    historyText: inspected.ok && sensitive ? String(text) : inspected.text,
+    queueMemory: inspected.ok && !sensitive
+  };
+}
+
+// 保存済みの会話履歴から、AI へ送ってよい行だけを "User: ..." / "Assistant: ..." の形で返す（Issue #94）。
+// 認証情報を含む行と機微カテゴリを含む行は除外し、残りは伏字にする。呼び出し側は新しい順で渡し、
+// 必要なら reverse() してから渡す。
+export function selectAiSafeHistory(rows, { blocklist = "", maxChars = 1200 } = {}) {
+  return (rows || []).flatMap((item) => {
+    const inspected = inspectAndRedact(item?.content, { blocklist });
+    if (!inspected.ok || hasSensitiveCategory(inspected.findings)) return [];
+    const role = item.role === "assistant" ? "Assistant" : "User";
+    return [`${role}: ${inspected.text.slice(0, maxChars)}`];
+  });
+}

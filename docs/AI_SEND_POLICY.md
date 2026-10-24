@@ -24,6 +24,14 @@ Issue #61 の判断記録です。`fix/sensitive-note-review-gate`(PR #85)の実
 
 ノート原文はどの経路でも書き換えない。
 
+## Telegram 履歴の保存(Issue #94、所有者の判断 2026-10-23)
+
+- 機微カテゴリ(`health` / `financial` / `location`)を含む発言も、`telegram_messages` に**原文のまま**保存する。メモ自体が残らない状態を避けるため。
+- 認証情報を含む発言は、従来どおり `[CREDENTIAL_BLOCKED]` に置き換えた本文だけを保存する。原文は残さない。
+- 保存した原文は、AI へ送る境界で除外する。会話履歴は `selectAiSafeHistory`(`src/ai-send-guard.mjs`)で機微行と認証情報の行を取り除いてからプロンプトに入れ、最終プロンプトは `callGemini` が全文を検査する。
+- 機微カテゴリを含む発言は、記憶抽出のジョブに積まない。つまり記憶候補は AI に送られず、履歴にだけ原文が残る。人の確認を経て記憶に保存する経路は、#92 の確認 UX ができてから検討する。
+- 検出キーワードの調整は別 Issue(誤検知・見逃しの計測)で判断する。
+
 ## ノートの状態
 
 | 状態 | `ai_allowed` | `review_state` | `sensitivity` | 条件 |
