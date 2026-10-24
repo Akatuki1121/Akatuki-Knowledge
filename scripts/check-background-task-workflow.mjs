@@ -65,7 +65,7 @@ for (const required of [
   "inspectAndRedact(body.prompt",
   "payload: { prompt: inspection.text, maxOutputTokens: 512, allowWebResearch, allowGitHubRead, allowGitHubWrite },",
   "payload: { prompt: inspection.text, maxOutputTokens, allowWebResearch },",
-  '["health", "financial", "location"]',
+  "hasSensitiveCategory(",
   "reserveAgentAiBudget",
   "step.sleepUntil",
   "AbortSignal.timeout(30_000)",
@@ -177,5 +177,16 @@ const notificationDispatchEnd = source.indexOf('__name(flushAgentTaskNotificatio
 const notificationDispatchSource = source.slice(notificationDispatchStart, notificationDispatchEnd);
 assert.ok(notificationDispatchSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Failure notifications must explain the stop reason");
 assert.ok(notificationDispatchSource.includes('"\\n次の操作: " + guidance.nextAction'), "Failure notifications must include a next action");
+
+const githubPromptStart = source.indexOf("あなたは日本語のGitHub作業エージェントです。");
+const githubPromptEnd = source.indexOf("\n              : prepared.allowGitHubRead", githubPromptStart);
+const githubPrompt = source.slice(githubPromptStart, githubPromptEnd);
+assert.ok(githubPrompt.includes("依頼文と会話文脈から一意に特定できない場合は、推測で補完せず"), "GitHub tasks must ask when the repository or required Issue/PR target is ambiguous");
+assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計画を作ったりする前に不足情報を短く質問"), "Ambiguous GitHub tasks must ask before tool execution or write planning");
+
+// Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
+const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
+assert.equal(retryConfigs.length, 17, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
+assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
