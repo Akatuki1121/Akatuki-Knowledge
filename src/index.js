@@ -2194,7 +2194,7 @@ async function callGemini(env, prompt, maxOutputTokens, options = {}) {
     method: "POST",
     signal: options.signal,
     headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens } })
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens, ...(options.responseMimeType ? { responseMimeType: options.responseMimeType } : {}) } })
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -12209,6 +12209,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               if (!reserved) throw new Error("ai_token_budget_exhausted");
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const raw = await callGemini(this.env, inspection.text, prepared.maxOutputTokens, {
+                responseMimeType: "application/json",
                 signal: AbortSignal.timeout(30_000)
               });
               const safeResponse = inspectAndRedact(raw, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
