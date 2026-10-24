@@ -105,6 +105,14 @@ assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledg
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
 assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
+const geminiStart = source.indexOf("async function callGemini(");
+const geminiEnd = source.indexOf('__name(callGemini, "callGemini");', geminiStart);
+const geminiSource = source.slice(geminiStart, geminiEnd);
+assert.ok(geminiSource.includes("options.responseMimeType"), "Gemini calls must support an explicit response MIME type");
+const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall })");
+const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
+assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
+assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output from Gemini");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
 assert.ok(toolLoop.includes("maxModelCalls: 5") && toolLoop.includes("maxToolCalls: 4"), "Agent loop budgets must remain bounded");
