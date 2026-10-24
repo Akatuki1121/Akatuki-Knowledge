@@ -1655,7 +1655,27 @@ async function listTelegramHistory(url, env) {
   return json({ messages: results.reverse() });
 }
 __name(listTelegramHistory, "listTelegramHistory");
+// D1 rejects LIKE patterns longer than 50 bytes ("LIKE or GLOB pattern too complex"). The pattern is %term%, so cap each term at 48 UTF-8 bytes.
+function capLikeTerm(term) {
+  const encoder = new TextEncoder();
+  let out = "";
+  let bytes = 0;
+  for (const ch of term) {
+    const size = encoder.encode(ch).length;
+    if (bytes + size > 48) break;
+    out += ch;
+    bytes += size;
+  }
+  return out;
+}
+__name(capLikeTerm, "capLikeTerm");
+
 function searchTerms(q) {
+  return [...new Set(searchTermsUncapped(q).map(capLikeTerm).filter((term) => [...term].length >= 2))];
+}
+__name(searchTerms, "searchTerms");
+
+function searchTermsUncapped(q) {
   const trimmed = q.trim().slice(0, 200);
   const terms = /* @__PURE__ */ new Set();
   const spaced = trimmed.split(/[\s,，、。.!?！？:：;；()（）\[\]{}「」『』]+/u).filter((x) => x.length >= 2);
@@ -1679,7 +1699,7 @@ function searchTerms(q) {
   }
   return [...terms].slice(0, maxNgrams);
 }
-__name(searchTerms, "searchTerms");
+__name(searchTermsUncapped, "searchTermsUncapped");
 async function findRelevantNotes(q, env, limit = MAX_SEARCH_RESULTS) {
   const terms = searchTerms(q);
   if (!terms.length) return [];
