@@ -80,6 +80,7 @@ jobs:
               - '.github/workflows/check.yml'
             agent_tests:
               - 'src/index.js'
+              - 'src/organize.mjs'
               - 'scripts/test_agent_*.mjs'
               - 'scripts/test_agent_*.py'
               - 'scripts/check-agent-*.mjs'
@@ -109,6 +110,7 @@ jobs:
               - 'scripts/test_worker_sql_compatibility.py'
             deploy:
               - 'src/index.js'
+              - 'src/organize.mjs'
               - 'wrangler.toml'
               - 'package.json'
               - 'package-lock.json'
