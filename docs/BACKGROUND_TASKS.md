@@ -32,6 +32,7 @@ Terminal alternatives: `failed` and `cancelled`. Lease expiry permits recovery o
 ## Safety invariants
 
 - Inspect AI-bound content immediately before the provider call. Credential detection blocks the call.
+- Agent tool-loop calls request Gemini JSON output explicitly and validate the returned action shape before running any tool or accepting a result.
 - Redact direct identifiers such as email, phone, address and account/card identifiers before sending.
 - Health/financial/location-sensitive content that the current redactor cannot safely mask is blocked rather than sent unredacted.
 - No `ai_allowed` switch or per-operation AI permission gate is added.
