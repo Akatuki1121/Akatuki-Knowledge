@@ -37,6 +37,7 @@ import {
 } from "./agent-memory-queue.mjs";
 import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent, planTelegramHistory, selectAiSafeHistory, selectSafeParagraphs } from "./ai-send-guard.mjs";
 import { classifyOperationalFailure, createOrganizeRunner } from "./organize.mjs";
+import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
 const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
@@ -52,7 +53,7 @@ var worker_default = {
       try {
         return await telegramWebhook(request, env, ctx);
       } catch (error) {
-        console.error("telegram webhook failed");
+        console.error("telegram webhook failed", JSON.stringify(describeSafeFailure("telegram_webhook_failed", error)));
         return json({ error: "Webhook processing failed" }, 500);
       }
     }
@@ -78,7 +79,7 @@ var worker_default = {
         if (request.method === "POST" && url.pathname === "/api/organize") return organizePending(env, 5);
         return json({ error: "Not found" }, 404);
       } catch (error) {
-        console.error("request failed");
+        console.error("request failed", JSON.stringify(describeSafeFailure("request_failed", error)));
         return json({ error: "Request failed. Check Worker logs for details." }, 500);
       }
     }
@@ -101,7 +102,7 @@ async function runScheduledMaintenance(env) {
       await organizePending(env, Number(env.ORGANIZE_PER_RUN || 2));
     } catch (error) {
       await enqueueBotAlert(env, classifyOperationalFailure(error));
-      console.error("scheduled organization failed");
+      console.error("scheduled organization failed", JSON.stringify(describeSafeFailure("scheduled_organization_failed", error)));
     }
   }
   await flushBotAlerts(env, String(env.TELEGRAM_ALLOWED_CHAT_ID || ""), 3);
@@ -584,8 +585,8 @@ async function enqueueBotAlert(env, category) {
     await env.DB.prepare(`INSERT INTO bot_alerts (alert_key, category, first_seen_at, last_seen_at, occurrences, status, next_attempt_at, send_attempts)
       VALUES (?, ?, ?, ?, 1, 'pending', ?, 0)
       ON CONFLICT(alert_key) DO UPDATE SET last_seen_at = excluded.last_seen_at, occurrences = bot_alerts.occurrences + 1`).bind(alertWindowKey(safeCategory, new Date(now)), safeCategory, now, now, now).run();
-  } catch {
-    console.error("could not persist operational alert");
+  } catch (error) {
+    console.error("could not persist operational alert", JSON.stringify(describeSafeFailure("operational_alert_persist_failed", error)));
   }
 }
 __name(enqueueBotAlert, "enqueueBotAlert");
@@ -604,8 +605,8 @@ async function flushBotAlerts(env, chatId, limit = 3) {
   try {
     const result = await env.DB.prepare("SELECT alert_key, category, occurrences, send_attempts FROM bot_alerts WHERE ((status = 'pending' AND next_attempt_at <= ?) OR (status = 'sending' AND claim_expires_at <= ?)) ORDER BY first_seen_at ASC LIMIT ?").bind((/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString(), Math.max(1, Math.min(5, limit))).all();
     alerts = result.results || [];
-  } catch {
-    console.error("could not read operational alerts");
+  } catch (error) {
+    console.error("could not read operational alerts", JSON.stringify(describeSafeFailure("operational_alert_read_failed", error)));
     return;
   }
   for (const alert of alerts) {
@@ -620,8 +621,8 @@ async function flushBotAlerts(env, chatId, limit = 3) {
       const retryAt = new Date(Date.now() + Math.min(24 * 60, 5 * 2 ** (attempts - 1)) * 6e4).toISOString();
       try {
         await env.DB.prepare("UPDATE bot_alerts SET status = 'pending', claim_expires_at = NULL, send_attempts = ?, next_attempt_at = ? WHERE alert_key = ? AND status = 'sending'").bind(attempts, retryAt, alert.alert_key).run();
-      } catch {
-        console.error("could not reschedule operational alert");
+      } catch (error) {
+        console.error("could not reschedule operational alert", JSON.stringify(describeSafeFailure("operational_alert_reschedule_failed", error)));
       }
     }
   }
@@ -772,7 +773,7 @@ ${saved}`.slice(0, 3500);
   } catch (error) {
     await writeAudit(env, "telegram_summary", 0, [], 0, "failed");
     await enqueueBotAlert(env, classifyOperationalFailure(error));
-    console.error("Telegram conversation summary failed");
+    console.error("Telegram conversation summary failed", JSON.stringify(describeSafeFailure("telegram_conversation_summary_failed", error)));
     return "\u4F1A\u8A71\u306E\u307E\u3068\u3081\u3092\u4F5C\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u8A66\u3057\u3066\u307F\u3066\u306D\u3002";
   }
 }
@@ -1176,7 +1177,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
     await writeAudit(env, "telegram_chat", contextNotes.length, [...findings], promptChars, "failed");
     console.log(JSON.stringify({ event: "telegram_answer_timing", contextMs, searchMs, generationMs, answerMs: Date.now() - requestStartedAt, noteCount: contextNotes.length, promptChars, result: "failed" }));
     await enqueueBotAlert(env, classifyOperationalFailure(error));
-    console.error("Telegram chat response failed");
+    console.error("Telegram chat response failed", JSON.stringify(describeSafeFailure("telegram_chat_response_failed", error)));
     return classifyOperationalFailure(error) === "gemini_limit" ? "AI\u306E\u5229\u7528\u4E0A\u9650\u306B\u9054\u3057\u305F\u3088\u3046\u3067\u3001\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u306A\u304B\u3063\u305F\u3088\u3002\u5C11\u3057\u6642\u9593\u3092\u7F6E\u3044\u3066\u8A66\u3057\u3066\u306D\u3002" : "\u4ECA\u306F\u8FD4\u7B54\u3092\u4F5C\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30A8\u30E9\u30FC\u3092\u8A18\u9332\u3057\u305F\u306E\u3067\u3001\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u3082\u3046\u4E00\u5EA6\u9001\u3063\u3066\u307F\u3066\u306D\u3002";
   }
 }
@@ -1283,8 +1284,8 @@ async function drainAgentMemoryQueue(env, requestedLimit = 1) {
     let job;
     try {
       job = await claimNextAgentMemoryJob(env.DB);
-    } catch {
-      console.error("agent memory queue claim failed");
+    } catch (error) {
+      console.error("agent memory queue claim failed", JSON.stringify(describeSafeFailure("agent_memory_queue_claim_failed", error)));
       return;
     }
     if (!job) return;
@@ -1301,11 +1302,11 @@ async function drainAgentMemoryQueue(env, requestedLimit = 1) {
             : error instanceof TypeError ? "network_error" : "memory_processing_failed";
       try {
         await failAgentMemoryJob(env.DB, Number(job.job_id), { retryable, errorClass });
-      } catch {
-        console.error("agent memory job state update failed");
+      } catch (updateError) {
+        console.error("agent memory job state update failed", JSON.stringify(describeSafeFailure("agent_memory_job_state_update_failed", updateError)));
         return;
       }
-      console.error("agent memory job failed");
+      console.error("agent memory job failed", JSON.stringify(describeSafeFailure("agent_memory_job_failed", error)));
     }
   }
 }
@@ -1411,8 +1412,8 @@ async function processAgentMemoryJob(env, job) {
   if (notification) {
     try {
       await sendTelegramMessage(env, chatId, notification.slice(0, 3000));
-    } catch {
-      console.error("agent memory notification failed");
+    } catch (error) {
+      console.error("agent memory notification failed", JSON.stringify(describeSafeFailure("agent_memory_notification_failed", error)));
     }
   }
 }
@@ -2074,8 +2075,9 @@ async function callGemini(env, prompt, maxOutputTokens, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = data?.error?.message || `Gemini API returned ${response.status}`;
-    const failure = new Error(message.slice(0, 300));
+    // 上流の自由文字列 (data.error.message) は例外メッセージに残さない (Issue #63)。
+    // 未捕捉例外として保存型ログへ記録される経路でも、ステータスと分類コードだけが出るようにする。
+    const failure = new Error(`Gemini API returned ${response.status}`);
     failure.httpStatus = response.status;
     failure.apiStatus = typeof data?.error?.status === "string" ? data.error.status : void 0;
     throw failure;
@@ -12494,8 +12496,8 @@ var wrapper_default = {
         if (recovery.dispatched > 0 || recovery.deferred > 0 || notifications.sent > 0 || notifications.deferred > 0) {
           console.log(JSON.stringify({ agentTaskRecovery: recovery, agentTaskNotifications: notifications }));
         }
-      } catch {
-        console.log(JSON.stringify({ agentTaskRecovery: { ok: false } }));
+      } catch (error) {
+        console.log(JSON.stringify({ agentTaskRecovery: { ok: false }, failure: describeSafeFailure("agent_task_recovery_failed", error) }));
       }
       return;
     }
@@ -12503,15 +12505,15 @@ var wrapper_default = {
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
-        if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, error: result.error } }));
+        if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, errorCode: safeErrorCode(result.error) } }));
         const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
         await persistRecoveryDiagnostics(env, reconcile);
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
-          console.log(JSON.stringify({ safeNoteIdRecovery: reconcile }));
+          console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
         }
       } catch (error) {
-        console.log(JSON.stringify({ pull: { ok: false, error: String(error).slice(0, 200) } }));
+        console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
       }
       return worker_default.scheduled(event, env, ctx);
     }

@@ -4,6 +4,9 @@
 // createOrganizeRunner への注入によって渡す (sync-outbox.mjs と同じ方式)。
 // 送信前の認証情報検査 (ai_allowed と inspectWholeContent) はここでは変更しない。
 import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent, selectSafeParagraphs } from "./ai-send-guard.mjs";
+import { classifyOperationalFailure, describeSafeFailure } from "./log-sanitize.mjs";
+
+export { classifyOperationalFailure };
 
 // src/index.js のバンドル由来のヘルパー。移動した関数本文が内部で使うため同じ定義を置く。
 const __name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });
@@ -11,26 +14,9 @@ const __name = (target, value) => Object.defineProperty(target, "name", { value,
 // D1 の LIKE パターンは 50 バイト上限。検索語はこれを超えないよう切り詰める。
 export const D1_LIKE_PATTERN_MAX_BYTES = 50;
 
-export function classifyOperationalFailure(error) {
-  const message = error instanceof Error ? error.message : String(error || "");
-  if (/429|quota|resource.?exhausted|rate.?limit|daily.?limit|制限|上限/iu.test(message)) return "gemini_limit";
-  if (/GEMINI_API_KEY|not configured|configuration/iu.test(message)) return "configuration";
-  return "processing_failure";
-}
-
 export function describeOrganizeFailure(stage, source, error) {
-  const message = String(error?.message || "");
-  const reason = message === "Gemini returned no text" ? "empty_response" : message === "AI response did not contain JSON" ? "no_json" : error instanceof SyntaxError ? "invalid_json" : void 0;
-  return {
-    stage,
-    source,
-    kind: classifyOperationalFailure(error),
-    errorName: typeof error?.name === "string" ? error.name : "Error",
-    httpStatus: Number.isInteger(error?.httpStatus) ? error.httpStatus : void 0,
-    apiStatus: typeof error?.apiStatus === "string" ? error.apiStatus.slice(0, 40) : void 0,
-    sqlite: message.match(/SQLITE_[A-Z_]+/)?.[0],
-    reason
-  };
+  const { event: _event, ...described } = describeSafeFailure("organize_failed", error, { stage, source });
+  return described;
 }
 
 export async function linkRelatedNotes(env, note, relatedTerms) {

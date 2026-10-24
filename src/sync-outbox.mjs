@@ -1,4 +1,5 @@
 // D1-backed event outbox for syncing knowledge notes with YAOS.
+import { describeSafeFailure } from "./log-sanitize.mjs";
 // Dependencies are injected so the queue can be tested independently of the Worker entry point.
 export function createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid }) {
 async function enqueueSyncJob(env, entityType, entityId, operation, options = {}) {
@@ -24,8 +25,8 @@ async function enqueueSyncJob(env, entityType, entityId, operation, options = {}
     // Archive state is authoritative; preserve each event's baseline so updates can be conflict-checked in order.
     const effectiveOperation = row.deleted_at ? "delete" : operation;
     await env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)").bind(crypto.randomUUID(), entityType, entityId, effectiveOperation, JSON.stringify(payload), now, now, now).run();
-  } catch {
-    console.error("sync outbox enqueue failed");
+  } catch (error) {
+    console.error("sync outbox enqueue failed", JSON.stringify(describeSafeFailure("sync_outbox_enqueue_failed", error)));
     throw new Error("sync_outbox_enqueue_failed");
   }
 }
