@@ -119,11 +119,14 @@ assert.ok(folderSource.includes('"[機微情報を含む項目]"'), "Sensitive t
 const summaryStart = source.indexOf("async function summarizeConversationToKnowledge");
 const summaryEnd = source.indexOf("function isFolderOrganizationRequest", summaryStart);
 const summarySource = source.slice(summaryStart, summaryEnd);
-assert.ok(summarySource.includes("results.reverse().flatMap"), "Conversation summaries must build an outbound-safe copy of history");
-assert.ok(summarySource.includes('hasSensitiveCategory('), "Sensitive history messages must be excluded from AI summaries without altering stored history");
+assert.ok(summarySource.includes("selectAiSafeHistory(results.reverse()"), "Conversation summaries must build an outbound-safe copy of history");
+const guardSource = await readFile(new URL("../src/ai-send-guard.mjs", import.meta.url), "utf8");
+const safeHistoryStart = guardSource.indexOf("export function selectAiSafeHistory");
+const safeHistorySource = guardSource.slice(safeHistoryStart);
+assert.ok(safeHistoryStart > 0 && safeHistorySource.includes("hasSensitiveCategory(inspected.findings)"), "Sensitive history messages must be excluded from AI summaries without altering stored history");
 
 assert.ok(answerSource.includes('hasSensitiveCategory(safeMessage.findings)'), "Sensitive current messages must not be sent to Gemini");
-assert.ok(answerSource.includes("history.results.reverse().flatMap"), "Chat prompts must filter sensitive stored history at send time");
+assert.ok(answerSource.includes("selectAiSafeHistory(history.results.reverse()"), "Chat prompts must filter sensitive stored history at send time");
 
 assert.ok(previewSource.includes('hasSensitiveCategory(inspectedQuestion.findings)'), "AI previews must block sensitive questions before sending");
 

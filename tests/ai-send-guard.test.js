@@ -5,6 +5,8 @@ import {
   hasSensitiveCategory,
   inspectAndRedact,
   inspectWholeContent,
+  planTelegramHistory,
+  selectAiSafeHistory,
   selectSafeParagraphs
 } from "../src/ai-send-guard.mjs";
 
@@ -103,4 +105,54 @@ test("既知の限界: 『診断』を含む技術的な文も health として�
 
 test("既知の限界: キーワードを含まない住所は機微として検出されない（見逃し）", () => {
   assert.equal(hasSensitiveCategory(inspectAndRedact("東京都大田区の駅の近くに住んでいる").findings), false);
+});
+
+test("機微語を含む Telegram 発言は、履歴に原文のまま保存し、記憶ジョブには積まない (#94)", () => {
+  const original = "先月から通院していて、診断を受けました";
+  const plan = planTelegramHistory(original);
+  assert.equal(plan.sensitive, true);
+  assert.equal(plan.historyText, original);
+  assert.equal(plan.queueMemory, false);
+});
+
+test("機微語を含まない発言は、伏字済みの本文を保存し、記憶ジョブに積む (#94)", () => {
+  const plan = planTelegramHistory("連絡先は test@example.com です");
+  assert.equal(plan.sensitive, false);
+  assert.equal(plan.historyText, "連絡先は [EMAIL] です");
+  assert.equal(plan.queueMemory, true);
+});
+
+test("認証情報を含む発言は、機微語があっても原文を保存しない (#94)", () => {
+  const plan = planTelegramHistory("通院の記録。password=hunter2hunter2");
+  assert.equal(plan.inspected.ok, false);
+  assert.ok(!plan.historyText.includes("hunter2"));
+  assert.ok(plan.historyText.includes("[CREDENTIAL_BLOCKED]"));
+  assert.equal(plan.queueMemory, false);
+});
+
+test("保存した原文があっても、AI へ送る履歴からは機微行と認証情報の行を除外する (#94)", () => {
+  const stored = [
+    { role: "user", content: "先月から通院しています" },
+    { role: "assistant", content: "お大事にしてください" },
+    { role: "user", content: "明日は大学で発表です" },
+    { role: "user", content: "連絡先は test@example.com です" },
+    { role: "user", content: "password=hunter2hunter2" }
+  ];
+  const selected = selectAiSafeHistory(stored);
+  assert.deepEqual(selected, [
+    "Assistant: お大事にしてください",
+    "User: 明日は大学で発表です",
+    "User: 連絡先は [EMAIL] です"
+  ]);
+  // callGemini は送信直前に全文を検査する。除外後の履歴はその検査を通り、除外しない場合は止まる。
+  const gate = inspectWholeContent(selected.join("\n"), env);
+  assert.equal(gate.ok, true);
+  assert.equal(hasSensitiveCategory(gate.findings), false);
+  const ungated = inspectWholeContent(stored.map((row) => row.content).join("\n"), env);
+  assert.ok(hasSensitiveCategory(ungated.findings) || !ungated.ok);
+});
+
+test("AI へ送る履歴は、1 行あたりの文字数を maxChars で切り詰める (#94)", () => {
+  const [line] = selectAiSafeHistory([{ role: "user", content: "あ".repeat(50) }], { maxChars: 10 });
+  assert.equal(line, `User: ${"あ".repeat(10)}`);
 });
