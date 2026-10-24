@@ -37,18 +37,25 @@ const exactKeys = (value, keys) => {
 
 const exactKeysOneOf = (value, alternatives) => alternatives.some((keys) => exactKeys(value, keys));
 
+// Keep the classified message "invalid_input" (classifyAgentTaskError matches it by substring)
+// and add a fixed reason so last_error shows which check rejected the input. Never put
+// model output or user text in the reason.
+function invalidInput(reason) {
+  return new Error("invalid_input:" + reason);
+}
+
 function parseResponse(raw) {
   if (typeof raw !== "string" || raw.length > 16_000) {
-    throw new Error("invalid_input");
+    throw invalidInput("model_response_size");
   }
   let response;
   try {
     response = JSON.parse(raw);
   } catch {
-    throw new Error("invalid_input");
+    throw invalidInput("model_response_not_json");
   }
   if (!response || typeof response !== "object" || Array.isArray(response)) {
-    throw new Error("invalid_input");
+    throw invalidInput("model_response_not_object");
   }
   return response;
 }
@@ -69,7 +76,7 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
         && (!Array.isArray(response.web_source_urls)
           || response.web_source_urls.length > AGENT_WEB_RESEARCH_LIMITS.maxCalls * AGENT_WEB_RESEARCH_LIMITS.maxSourcesPerCall
           || response.web_source_urls.some((url) => typeof url !== "string" || url.length > 2048)))) {
-      throw new Error("invalid_input");
+      throw invalidInput("final_action_shape");
     }
     return {
       action: "final",
@@ -80,7 +87,7 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
   }
 
   if (response?.action !== "tool" || !exactKeys(response, ["action", "tool", "arguments"])) {
-    throw new Error("invalid_input");
+    throw invalidInput("action_shape");
   }
   const definition = response.tool === "web_research" && allowWebResearch
     ? AGENT_WEB_RESEARCH_TOOL
@@ -92,16 +99,16 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
   if (!definition) throw new Error("unknown_tool");
 
   const args = response.arguments;
-  if (!exactKeys(args, definition.arguments)) throw new Error("invalid_input");
+  if (!exactKeys(args, definition.arguments)) throw invalidInput("tool_argument_keys");
   if (response.tool === "search_notes") {
     if (typeof args.query !== "string" || args.query.trim().length < 2 || args.query.length > 500) {
-      throw new Error("invalid_input");
+      throw invalidInput("search_notes_query");
     }
     return { action: "tool", tool: response.tool, arguments: { query: args.query.trim() } };
   }
   if (response.tool === "web_research") {
     if (typeof args.query !== "string" || args.query.trim().length < 4 || args.query.length > 500) {
-      throw new Error("invalid_input");
+      throw invalidInput("web_research_query");
     }
     return { action: "tool", tool: response.tool, arguments: { query: args.query.trim() } };
   }
@@ -111,19 +118,19 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
   }
   if (response.tool.startsWith("github_")) {
     if (typeof args.repository !== "string" || !/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u.test(args.repository)
-      || args.repository.includes("..")) throw new Error("invalid_input");
+      || args.repository.includes("..")) throw invalidInput("github_repository");
     if (response.tool === "github_get_issue" || response.tool === "github_get_pull_request" || response.tool === "github_get_pr_checks") {
-      if (!Number.isSafeInteger(args.number) || args.number < 1 || args.number > 1_000_000) throw new Error("invalid_input");
+      if (!Number.isSafeInteger(args.number) || args.number < 1 || args.number > 1_000_000) throw invalidInput("github_number");
     } else if (response.tool === "github_list_pull_requests") {
-      if (!["open", "closed", "all"].includes(args.state)) throw new Error("invalid_input");
+      if (!["open", "closed", "all"].includes(args.state)) throw invalidInput("github_state");
     } else if (response.tool === "github_read_file") {
       if (typeof args.path !== "string" || !args.path.trim() || args.path.length > 240
-        || typeof args.ref !== "string" || args.ref.length > 120) throw new Error("invalid_input");
+        || typeof args.ref !== "string" || args.ref.length > 120) throw invalidInput("github_read_file_args");
     }
     return { action: "tool", tool: response.tool, arguments: { ...args, repository: args.repository.trim() } };
   }
   if (typeof args.id !== "string" || !args.id.trim() || args.id.length > 128) {
-    throw new Error("invalid_input");
+    throw invalidInput("get_note_id");
   }
   return { action: "tool", tool: response.tool, arguments: { id: args.id.trim() } };
 }
@@ -135,7 +142,7 @@ function restoreLoop(checkpoint, allowWebResearch, allowGitHubRead, allowGitHubW
     || checkpoint.modelCalls < 0
     || !Array.isArray(checkpoint.toolCalls)
     || !Array.isArray(checkpoint.transcript)) {
-    throw new Error("invalid_input");
+    throw invalidInput("checkpoint_shape");
   }
   const parsed = {
     modelCalls: checkpoint.modelCalls,
@@ -145,7 +152,7 @@ function restoreLoop(checkpoint, allowWebResearch, allowGitHubRead, allowGitHubW
   };
   if (checkpoint.pendingAction !== undefined && checkpoint.pendingAction !== null) {
     parsed.pendingAction = validateAgentToolAction(checkpoint.pendingAction, { allowWebResearch, allowGitHubRead, allowGitHubWrite });
-    if (parsed.pendingAction.action !== "tool") throw new Error("invalid_input");
+    if (parsed.pendingAction.action !== "tool") throw invalidInput("checkpoint_pending_action");
   }
   if (parsed.modelCalls > AGENT_TOOL_LIMITS.maxModelCalls
     || parsed.toolCalls.length > AGENT_TOOL_LIMITS.maxToolCalls
@@ -157,7 +164,7 @@ function restoreLoop(checkpoint, allowWebResearch, allowGitHubRead, allowGitHubW
   if (savedToolResults.length !== parsed.toolCalls.length
     || savedActions.length !== parsed.toolCalls.length + (parsed.pendingAction ? 1 : 0)
     || (parsed.pendingAction && JSON.stringify(savedActions.at(-1)?.action) !== JSON.stringify(parsed.pendingAction))) {
-    throw new Error("invalid_input");
+    throw invalidInput("checkpoint_action_mismatch");
   }
   for (let index = 0; index < parsed.toolCalls.length; index++) {
     const call = parsed.toolCalls[index];
@@ -170,7 +177,7 @@ function restoreLoop(checkpoint, allowWebResearch, allowGitHubRead, allowGitHubW
       call.result = validateSavedWebResearchResult(call.result);
     }
     if (JSON.stringify(savedToolResults[index]?.result) !== JSON.stringify(call.result)) {
-      throw new Error("invalid_input");
+      throw invalidInput("checkpoint_tool_result_mismatch");
     }
     const serialized = JSON.stringify(call.result);
     if (typeof serialized !== "string" || serialized.length > AGENT_TOOL_LIMITS.maxToolOutputChars) {

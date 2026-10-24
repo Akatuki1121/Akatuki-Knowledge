@@ -96,6 +96,39 @@ assert.equal(saved.at(-1).stage, "completed");
 assert.equal(saved.at(-1).result, result.reply);
 assert.ok(saved.every((checkpoint) => checkpoint.initialPrompt === "What deployment decision was recorded?"));
 
+// invalid_input keeps its class (substring match) and carries a fixed reason for last_error.
+for (const [response, reason] of [
+  [{ action: "tool", tool: "search_notes", arguments: { query: "x" } }, "search_notes_query"],
+  [{ action: "tool", tool: "search_notes", arguments: { query: "deployment", extra: true } }, "tool_argument_keys"],
+  [{ action: "final", reply: "Answer", source_ids: ["note-1"], extra: true }, "final_action_shape"],
+  [{ action: "answer", reply: "Answer" }, "action_shape"],
+  [{ action: "tool", tool: "get_note", arguments: { id: "" } }, "get_note_id"],
+]) {
+  assert.throws(
+    () => validateAgentToolAction(response),
+    (error) => error.message === `invalid_input:${reason}`,
+    `expected invalid_input:${reason}`,
+  );
+}
+for (const [raw, reason] of [
+  ["The count is 12.", "model_response_not_json"],
+  ["[1, 2]", "model_response_not_object"],
+  ["x".repeat(16_001), "model_response_size"],
+  [undefined, "model_response_size"],
+]) {
+  await assert.rejects(
+    () => runAgentToolLoop({
+      initialPrompt: "How many notes are saved?",
+      contextNotes: [],
+      callModel: async () => raw,
+      executeTool: async () => assert.fail("no tool should run"),
+      saveCheckpoint: async () => true,
+    }),
+    (error) => error.message === `invalid_input:${reason}`,
+    `expected invalid_input:${reason}`,
+  );
+}
+
 const webResult = {
   report: "The official pages agree on the release date.",
   sources: [{
