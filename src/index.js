@@ -11952,6 +11952,14 @@ async function recoverAgentTaskWorkflows(env, limit = 5) {
 }
 __name(recoverAgentTaskWorkflows, "recoverAgentTaskWorkflows");
 
+function describeAgentTaskError(error, env) {
+  const name = typeof error?.name === "string" ? error.name : "Error";
+  const raw = typeof error?.message === "string" ? error.message.replace(/\s+/g, " ").slice(0, 160) : "";
+  const checked = inspectAndRedact(raw, { blocklist: env?.PRIVACY_BLOCKLIST || "" });
+  return checked.ok && !hasSensitiveCategory(checked.findings) ? (name + ": " + checked.text).slice(0, 200) : name;
+}
+__name(describeAgentTaskError, "describeAgentTaskError");
+
 function classifyAgentTaskError(error) {
   const message = typeof error?.message === "string" ? error.message : "";
   for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "model_call_budget_exhausted", "tool_output_too_large", "ai_token_budget_exhausted"]) {
@@ -12354,9 +12362,10 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
       } catch (error) {
         const errorClass = classifyAgentTaskError(error);
+        const errorDetail = describeAgentTaskError(error, this.env);
         const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted"].includes(errorClass);
         const failure = await step.do("record-failure-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
-          return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, retryable, nowMs: Date.now() });
+          return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, errorDetail, retryable, nowMs: Date.now() });
         });
         if (!failure.applied) {
           const current = await getAgentTask(this.env.DB, taskId);

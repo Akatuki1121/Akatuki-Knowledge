@@ -498,21 +498,26 @@ export async function recordAgentTaskFailure(db, input) {
     const result = await db.prepare(`
       UPDATE agent_tasks
       SET status = 'waiting', next_attempt_at = ?, updated_at = ?,
-          last_error_class = ?, last_error = NULL, stop_reason = NULL,
+          last_error_class = ?, last_error = ?, stop_reason = NULL,
           lease_token = NULL, lease_expires_at = NULL
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
         AND lease_expires_at > ?
-    `).bind(retryAt, now, input.errorClass ?? "unknown", input.taskId, input.leaseToken, now).run();
+    `).bind(retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), input.taskId, input.leaseToken, now).run();
     return { applied: result?.meta?.changes === 1, decision };
   }
 
   const result = await db.prepare(`
     UPDATE agent_tasks
     SET status = 'failed', completed_at = ?, updated_at = ?,
-        last_error_class = ?, last_error = NULL, stop_reason = ?,
+        last_error_class = ?, last_error = ?, stop_reason = ?,
         lease_token = NULL, lease_expires_at = NULL
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
       AND lease_expires_at > ?
-  `).bind(now, now, input.errorClass ?? "unknown", decision.stopReason, input.taskId, input.leaseToken, now).run();
+  `).bind(now, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), decision.stopReason, input.taskId, input.leaseToken, now).run();
   return { applied: result?.meta?.changes === 1, decision };
+}
+
+// Diagnostic text for a failed attempt. Callers pass an already redacted, content-free string; keep it short.
+function safeErrorDetail(value) {
+  return typeof value === "string" && value ? value.slice(0, 200) : null;
 }

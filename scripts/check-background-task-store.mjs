@@ -22,7 +22,7 @@ for (const required of [
   "checkpoint_json = ?",
   "status = 'succeeded'",
   "decideTaskRetry(",
-  "last_error = NULL",
+  "safeErrorDetail(input.errorDetail)",
   "task_deadline_exceeded",
   "attempt_budget_exhausted",
   "ai_call_budget_exhausted",
