@@ -12095,7 +12095,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
 
           const inspection = inspectAndRedact(task.payload.prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
           if (!inspection.ok) {
-            throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
+            throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input:prompt_" + (inspection.findings.includes("input_too_long") ? "too_long" : "not_string"));
           }
           if (hasSensitiveCategory(inspection.findings)) {
             throw new Error("pii_masking_failed");
@@ -12164,7 +12164,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           ].join("\n\n");
           const inspection = inspectAndRedact(prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
           if (!inspection.ok) {
-            throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
+            throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input:prompt_" + (inspection.findings.includes("input_too_long") ? "too_long" : "not_string"));
           }
           if (hasSensitiveCategory(inspection.findings)) {
             throw new Error("pii_masking_failed");
@@ -12197,7 +12197,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const inspection = inspectAndRedact(prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
               if (!inspection.ok) {
-                throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
+                throw new Error(inspection.findings.includes("credentials") ? "credentials_detected" : "invalid_input:prompt_" + (inspection.findings.includes("input_too_long") ? "too_long" : "not_string"));
               }
               if (hasSensitiveCategory(inspection.findings)) {
                 throw new Error("pii_masking_failed");
@@ -12213,7 +12213,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               });
               const safeResponse = inspectAndRedact(raw, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
               if (!safeResponse.ok) {
-                throw new Error(safeResponse.findings.includes("credentials") ? "credentials_detected" : "invalid_input");
+                throw new Error(safeResponse.findings.includes("credentials") ? "credentials_detected" : "invalid_input:model_output_" + (safeResponse.findings.includes("input_too_long") ? "too_long" : "not_string"));
               }
               if (hasSensitiveCategory(safeResponse.findings)) {
                 throw new Error("pii_masking_failed");
