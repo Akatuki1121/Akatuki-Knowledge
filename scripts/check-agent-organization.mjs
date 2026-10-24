@@ -94,9 +94,8 @@ assert.ok(previewSource.includes('hasSensitiveCategory(wholeNote.findings)'), "A
 assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"'), "AI preview must explain why sensitive notes were excluded");
 assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be checked at the outbound boundary");
 
-const organizeStart = source.indexOf("async function organizePending");
-const organizeEnd = source.indexOf("\nasync function ", organizeStart + 30);
-const organizeSource = source.slice(organizeStart, organizeEnd);
+const organizeSource = await readFile(new URL("../src/organize.mjs", import.meta.url), "utf8");
+assert.ok(organizeSource.includes("async function organizePending"), "organizePending must exist in src/organize.mjs");
 assert.ok(organizeSource.includes("selectSafeParagraphs(note.content"), "Sensitive notes must retain safe passages for automatic organization");
 assert.ok(organizeSource.includes("selectedParagraphs.ok"), "Sensitive passages must be inspected before building the AI prompt");
 assert.ok(organizeSource.includes('hasSensitiveCategory('), "Health, financial, and location-sensitive passages must be excluded from outbound content");
