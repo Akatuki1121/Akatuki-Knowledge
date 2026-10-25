@@ -81,6 +81,7 @@ jobs:
             agent_tests:
               - 'src/index.js'
               - 'src/gemini-client.mjs'
+              - 'src/ai-permission.mjs'
               - 'scripts/test_agent_*.mjs'
               - 'scripts/test_agent_*.py'
               - 'scripts/check-agent-*.mjs'
@@ -111,6 +112,7 @@ jobs:
             deploy:
               - 'src/index.js'
               - 'src/gemini-client.mjs'
+              - 'src/ai-permission.mjs'
               - 'wrangler.toml'
               - 'package.json'
               - 'package-lock.json'
