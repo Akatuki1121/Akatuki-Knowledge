@@ -167,14 +167,15 @@ async function telegramWebhook(request, env, ctx) {
     }
     const text2 = message.text.trim();
     const userMessageId = `${chatId}:${message.message_id}`;
-    // Issue #94: keep the original text of sensitive-category messages in history (credentials are still masked).
-    // Sensitive text is excluded at the AI-send boundary (selectAiSafeHistory / callGemini), not at save time.
+    // Issue #94 (revised 2026-10-25): history stores the inspected, redacted text.
+    // At the AI-send boundary only credential-bearing content is excluded (selectAiSafeHistory / callGemini);
+    // sensitive-word matches no longer exclude a message. Credentials are always masked.
     const historyPlan = planTelegramHistory(text2, { blocklist: env.PRIVACY_BLOCKLIST || "" });
     const inspectedHistory = historyPlan.inspected;
     const safeHistoryText = historyPlan.historyText;
     await env.DB.prepare("INSERT OR IGNORE INTO telegram_messages (message_id, chat_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)").bind(userMessageId, chatId, safeHistoryText, now).run();
     // Persist eligible ordinary conversation for background memory extraction.
-    // Commands, credential-bearing messages, and sensitive categories are never queued for AI memory extraction.
+    // Commands and credential-bearing messages are never queued for AI memory extraction.
     if (!text2.startsWith("/") && historyPlan.queueMemory
       && !shouldOmitStoredMemory(safeHistoryText)) {
       await enqueueAgentMemoryJob(env.DB, {
@@ -977,7 +978,7 @@ async function answerTelegramMessage(env, chatId, message, { messageId, now }) {
   const contextNotes = [];
   for (const note of matches) {
     const wholeInspection = inspectWholeContent(note.content, env);
-    // Keep the source note intact, but never send health, financial, or location-sensitive content to Gemini.
+    // Keep the source note intact; notes are excluded from the prompt only when credentials are detected (2026-10-25 policy).
     if (wholeInspection.credentials
       || hasSensitiveCategory(wholeInspection.findings)) continue;
     const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });

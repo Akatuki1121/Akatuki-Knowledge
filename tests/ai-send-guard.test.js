@@ -12,17 +12,27 @@ import {
 
 const env = { PRIVACY_BLOCKLIST: "" };
 
-test("機微カテゴリは health / financial / location の 3 つ", () => {
+test("機微カテゴリの定義は互換のため残るが、検査はカテゴリを findings に出さない", () => {
   assert.deepEqual([...SENSITIVE_CATEGORIES], ["health", "financial", "location"]);
   assert.equal(hasSensitiveCategory(["health"]), true);
   assert.equal(hasSensitiveCategory(["email", "credentials"]), false);
   assert.equal(hasSensitiveCategory(undefined), false);
 });
 
-test("機微語を含む入力を、カテゴリごとに検出する", () => {
-  assert.ok(inspectAndRedact("先月から通院している").findings.includes("health"));
-  assert.ok(inspectAndRedact("クレジットカード番号を控えた").findings.includes("financial"));
-  assert.ok(inspectAndRedact("自宅住所をメモ").findings.includes("location"));
+// 2026-10-25 の所有者方針変更: 送信ブロックは認証情報の検出のみ。
+// 機微語リスト (診断・クローン病・服薬・部屋番号・金融系など) の一致は
+// カテゴリ findings を生まず、ブロック理由にもならない。
+test("機微語を含む入力でも、カテゴリ検出は行わずブロックしない（方針変更）", () => {
+  for (const [text, category] of [
+    ["先月から通院している", "health"],
+    ["クレジットカード番号を控えた", "financial"],
+    ["自宅住所をメモ", "location"]
+  ]) {
+    const result = inspectAndRedact(text);
+    assert.ok(!result.findings.includes(category), `${category} must not be reported for: ${text}`);
+    assert.equal(result.ok, true);
+    assert.equal(result.blocked, false);
+  }
 });
 
 test("認証情報は ok:false で本文が伏字になり、機微判定とは別に扱われる", () => {
@@ -40,7 +50,7 @@ test("メール・電話は伏字にして送信可能のまま返す", () => {
   assert.ok(!result.text.includes("03-1234-5678"));
 });
 
-test("selectSafeParagraphs: 混在ノートは機微でない段落だけを返す", () => {
+test("selectSafeParagraphs: 混在ノートは機微語の段落も含め全段落を返す（方針変更）", () => {
   const note = [
     "Unityのシェーダー課題の進め方をまとめる。",
     "先月から通院しているので、締め切りに余裕を持たせたい。",
@@ -48,17 +58,18 @@ test("selectSafeParagraphs: 混在ノートは機微でない段落だけを返�
   ].join("\n\n");
   const result = selectSafeParagraphs(note);
   assert.equal(result.ok, true);
-  assert.equal(result.paragraphs.length, 2);
+  assert.equal(result.paragraphs.length, 3);
   const joined = result.paragraphs.join("\n");
   assert.ok(joined.includes("シェーダー"));
   assert.ok(joined.includes("ブランチ"));
-  assert.ok(!joined.includes("通院"), "機微な段落は送信側に残さない");
+  assert.ok(joined.includes("通院"), "機微語だけの段落は除外しない");
 });
 
-test("selectSafeParagraphs: 全段落が機微なら空配列を返す（呼び出し側は保留にする）", () => {
+test("selectSafeParagraphs: 機微語だけのノートも段落をそのまま返す（保留にしない）", () => {
   const result = selectSafeParagraphs("口座番号を控えた。\n\n自宅住所は別紙。");
   assert.equal(result.ok, true);
-  assert.deepEqual(result.paragraphs, []);
+  assert.equal(result.paragraphs.length, 2);
+  assert.ok(result.paragraphs.join("").includes("口座番号"));
 });
 
 test("selectSafeParagraphs: 認証情報を含む段落があれば全体を送らない", () => {
@@ -81,14 +92,19 @@ test("selectSafeParagraphs: ユーザー定義のブロックリスト語は伏�
   assert.ok(result.paragraphs.join("").includes("[REDACTED]"));
 });
 
-test("inspectWholeContent: 長い本文の後ろの方にある機微語・認証情報も検出する", () => {
+test("inspectWholeContent: 長い本文の後ろの方にある認証情報も検出する", () => {
   const filler = "あ".repeat(30000);
-  const sensitive = inspectWholeContent(filler + "通院の記録", env);
-  assert.equal(sensitive.credentials, false);
-  assert.ok(hasSensitiveCategory(sensitive.findings));
   const credential = inspectWholeContent(filler + "\npassword=hunter2", env);
   assert.equal(credential.credentials, true);
   assert.equal(credential.ok, false);
+});
+
+test("inspectWholeContent: 機微語を含む長い本文もブロックしない（方針変更）", () => {
+  const filler = "あ".repeat(30000);
+  const sensitive = inspectWholeContent(filler + "通院の記録", env);
+  assert.equal(sensitive.credentials, false);
+  assert.equal(hasSensitiveCategory(sensitive.findings), false);
+  assert.equal(sensitive.ok, true);
 });
 
 test("inspectWholeContent: 機微語のない通常のノートは何も検出しない", () => {
@@ -97,22 +113,22 @@ test("inspectWholeContent: 機微語のない通常のノートは何も検出�
   assert.deepEqual(result.findings, []);
 });
 
-// 既知の限界。検出はキーワードによるベストエフォートで、方針は docs/AI_SEND_POLICY.md に記載。
-// 検出範囲を変えたら、このテストも意図して更新すること。
-test("既知の限界: 『診断』を含む技術的な文も health として扱われる（誤検知）", () => {
-  assert.ok(hasSensitiveCategory(inspectAndRedact("シェーダーの診断ツールを使った").findings));
+// 語リストの誤検知 (例: 技術文の『診断』) は、リスト自体の廃止により解消した。
+// 住所のような記述も、認証情報でなければブロック理由にならない。
+test("『診断』を含む技術的な文もブロックされない（語リスト廃止）", () => {
+  const result = inspectAndRedact("シェーダーの診断ツールを使った");
+  assert.equal(result.ok, true);
+  assert.equal(hasSensitiveCategory(result.findings), false);
+  assert.equal(inspectAndRedact("東京都大田区の駅の近くに住んでいる").ok, true);
 });
 
-test("既知の限界: キーワードを含まない住所は機微として検出されない（見逃し）", () => {
-  assert.equal(hasSensitiveCategory(inspectAndRedact("東京都大田区の駅の近くに住んでいる").findings), false);
-});
-
-test("機微語を含む Telegram 発言は、履歴に原文のまま保存し、記憶ジョブには積まない (#94)", () => {
-  const original = "先月から通院していて、診断を受けました";
-  const plan = planTelegramHistory(original);
-  assert.equal(plan.sensitive, true);
-  assert.equal(plan.historyText, original);
-  assert.equal(plan.queueMemory, false);
+// #94 の機微語特例（原文のまま保存・記憶ジョブに積まない）は 2026-10-25 の
+// 方針変更で廃止。通常の発言と同じく、伏字済み本文を保存し記憶ジョブに積む。
+test("機微語を含む Telegram 発言も、伏字済み本文を保存し、記憶ジョブに積む（方針変更）", () => {
+  const plan = planTelegramHistory("先月から通院していて、診断を受けました。連絡は test@example.com へ");
+  assert.equal(plan.sensitive, false);
+  assert.equal(plan.historyText, "先月から通院していて、診断を受けました。連絡は [EMAIL] へ");
+  assert.equal(plan.queueMemory, true);
 });
 
 test("機微語を含まない発言は、伏字済みの本文を保存し、記憶ジョブに積む (#94)", () => {
@@ -130,7 +146,7 @@ test("認証情報を含む発言は、機微語があっても原文を保存�
   assert.equal(plan.queueMemory, false);
 });
 
-test("保存した原文があっても、AI へ送る履歴からは機微行と認証情報の行を除外する (#94)", () => {
+test("AI へ送る履歴からは認証情報の行だけを除外し、機微語の行は伏字済みで含める（方針変更）", () => {
   const stored = [
     { role: "user", content: "先月から通院しています" },
     { role: "assistant", content: "お大事にしてください" },
@@ -140,16 +156,18 @@ test("保存した原文があっても、AI へ送る履歴からは機微行�
   ];
   const selected = selectAiSafeHistory(stored);
   assert.deepEqual(selected, [
+    "User: 先月から通院しています",
     "Assistant: お大事にしてください",
     "User: 明日は大学で発表です",
     "User: 連絡先は [EMAIL] です"
   ]);
-  // callGemini は送信直前に全文を検査する。除外後の履歴はその検査を通り、除外しない場合は止まる。
+  // callGemini は送信直前に全文を検査する。選択後の履歴はその検査を通り、
+  // 認証情報を含む全文は引き続き止まる。
   const gate = inspectWholeContent(selected.join("\n"), env);
   assert.equal(gate.ok, true);
   assert.equal(hasSensitiveCategory(gate.findings), false);
   const ungated = inspectWholeContent(stored.map((row) => row.content).join("\n"), env);
-  assert.ok(hasSensitiveCategory(ungated.findings) || !ungated.ok);
+  assert.equal(ungated.ok, false);
 });
 
 test("AI へ送る履歴は、1 行あたりの文字数を maxChars で切り詰める (#94)", () => {

@@ -75,7 +75,7 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
         continue;
       }
       stage = "prompt_build";
-      // Organize only independently inspected, non-sensitive passages. The stored source note is never rewritten.
+      // Organize only independently inspected passages (credentials abort; word-list categories no longer exclude). The stored source note is never rewritten.
       const safeTitleInspection = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
       const safeTitle = safeTitleInspection.ok && !hasSensitiveCategory(safeTitleInspection.findings)
         ? safeTitleInspection.text
@@ -84,8 +84,8 @@ async function organizePending(env, requestedLimit = 2, requestedIds = null) {
       if (!selectedParagraphs.ok) throw new Error("AI excerpt failed credential inspection");
       const safeContent = selectedParagraphs.paragraphs.join("\n\n").slice(0, 12e3);
       if (!safeContent) {
-        // A wholly sensitive note cannot be meaningfully organized without exposing its content.
-        // Hold only this case for explicit review; notes with safe passages continue through automatic organization.
+        // No inspected passage survived (e.g. effectively empty content), so there is nothing to organize from.
+        // Hold only this case for explicit review; other notes continue through automatic organization.
         await env.DB.prepare(`UPDATE ${table} SET sensitivity = 'sensitive', review_state = 'pending_confirmation', next_retry_at = NULL WHERE id = ? AND content_hash = ? AND ai_allowed = 1`).bind(note.id, note.content_hash).run();
         await writeAudit(env, "organize", 1, inspected.findings, 0, "held_sensitive_no_safe_excerpt");
         continue;

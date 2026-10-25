@@ -1,9 +1,18 @@
-// AI 送信前の検査（認証情報・機微情報・個人情報の伏字）を 1 か所に集約したモジュール。
+// AI 送信前の検査（認証情報の検出と個人情報の伏字）を 1 か所に集約したモジュール。
 // src/index.js から import され、scripts/ と tests/ からも直接実行して検証できる。
-// 注意: 検出は正規表現とキーワードによるベストエフォートであり、機微情報が存在しない保証ではない。
+// 注意: 検出は正規表現によるベストエフォートであり、認証情報が存在しない保証ではない。
 // 方針は docs/AI_SEND_POLICY.md を参照。
+//
+// 2026-10-25 の所有者方針変更: 送信ブロックは認証情報・シークレット検出
+// (credentials) のみとし、機微語リスト（診断・クローン病・服薬・部屋番号・
+// 金融系キーワードなど）によるカテゴリ検出と送信ブロックは廃止した。
+// inspectAndRedact は health / financial / location を findings に出さない。
+// 個人情報の伏字 (REDACTION_RULES) と認証情報のマスク・遮断は従来どおり維持する。
 
-// 無料枠の Gemini へ送らない機微カテゴリ。カテゴリを増減するときはここだけを変える。
+// 機微カテゴリの定義（履歴互換のため残す）。現在の inspectAndRedact は
+// カテゴリを findings に出さないため、hasSensitiveCategory は実入力では
+// 常に false を返し、各送信境界のカテゴリ判定は発火しない。
+// カテゴリ検出を復活させる場合は、このモジュールでのみ行うこと。
 export const SENSITIVE_CATEGORIES = Object.freeze(["health", "financial", "location"]);
 
 export function hasSensitiveCategory(findings) {
@@ -27,18 +36,13 @@ const CREDENTIAL_RULES = [
   { id: "bearer_token", pattern: /\bBearer\s+[A-Za-z0-9._~+\/-]{16,}={0,2}/giu },
   { id: "private_key_block", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]{20,}?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/gu }
 ];
-const SENSITIVE_INFO_RULES = [
-  { id: "health", pattern: /病歴|既往歴|診断|処方薬|服薬|通院|Crohn'?s disease|クローン病|潰瘍性大腸炎|精神疾患|障害者手帳/iu },
-  { id: "financial", pattern: /クレジットカード番号|カード番号|口座番号|マイナンバー|個人番号/iu },
-  { id: "location", pattern: /自宅住所|住所は|住んでいる住所|番地|部屋番号/iu }
-];
 export function inspectAndRedact(value, { blocklist = "" } = {}) {
   if (typeof value !== "string") return { ok: false, text: "", findings: ["invalid_input"], blocked: true };
   if (value.length > 2e4) return { ok: false, text: "", findings: ["input_too_long"], blocked: true };
+  // 機微語リストによるカテゴリ検出は廃止済み (2026-10-25 方針変更)。
+  // findings に health / financial / location は出ない。ブロック理由は
+  // 認証情報の検出と、入力として送れない構造的な理由だけに限る。
   const findings = [];
-  for (const rule of SENSITIVE_INFO_RULES) {
-    if (rule.pattern.test(value)) findings.push(rule.id);
-  }
   let text2 = value;
   let credentialDetected = false;
   for (const rule of CREDENTIAL_RULES) {
@@ -86,25 +90,28 @@ export function inspectWholeContent(content, env) {
   return { ok: !credentials, findings: list, credentials };
 }
 
-// ノート本文を段落に分け、機微でない段落だけを伏字済みで返す。
+// ノート本文を段落に分け、全段落を伏字済みで返す。
 // 認証情報を含む段落があれば ok: false（呼び出し側は送信しない）。
+// 機微語だけを含む段落も除外しない (2026-10-25 方針変更)。除外が残るのは
+// 認証情報を含む入力だけで、個人情報は伏字にして渡す。
 export function selectSafeParagraphs(content, blocklist = "") {
   const paragraphs = [];
   for (const paragraph of String(content || "").split(/\n\s*\n/).map((value) => value.trim()).filter(Boolean)) {
     const inspected = inspectAndRedact(paragraph, { blocklist });
     if (!inspected.ok) return { ok: false, paragraphs: [] };
-    if (hasSensitiveCategory(inspected.findings)) continue;
     if (inspected.text.trim()) paragraphs.push(inspected.text.trim());
   }
   return { ok: true, paragraphs };
 }
 
 
-// Telegram 発言を履歴へ保存するときの方針を決める（Issue #94）。
-// - 機微カテゴリ（health / financial / location）だけを含む発言は、原文のまま履歴へ保存する。
-//   メモ自体が残らない状態を避けるため。AI へ送るかどうかは、保存ではなく送信の境界で決める。
+// Telegram 発言を履歴へ保存するときの方針を決める（Issue #94、2026-10-25 方針変更で改定）。
+// - 保存する本文は常に伏字済みの検査結果。機微語の有無で保存方法は変えない
+//   （#94 の「機微カテゴリの発言は原文のまま保存」は方針変更で廃止）。
 // - 認証情報を含む発言は、これまで通り伏字済みの本文だけを保存する（原文は残さない）。
-// - 機微カテゴリを含む発言は、記憶抽出（AI 処理）のジョブに積まない。
+// - 記憶抽出（AI 処理）のジョブには、認証情報を含まない発言を積む。
+//   機微語だけを理由に積まない扱いも方針変更で廃止した。
+// - sensitive は呼び出し側の互換のため残すが、カテゴリ検出の廃止により常に false。
 export function planTelegramHistory(text, { blocklist = "" } = {}) {
   const inspected = inspectAndRedact(text, { blocklist });
   const sensitive = hasSensitiveCategory(inspected.findings);
@@ -117,12 +124,13 @@ export function planTelegramHistory(text, { blocklist = "" } = {}) {
 }
 
 // 保存済みの会話履歴から、AI へ送ってよい行だけを "User: ..." / "Assistant: ..." の形で返す（Issue #94）。
-// 認証情報を含む行と機微カテゴリを含む行は除外し、残りは伏字にする。呼び出し側は新しい順で渡し、
+// 除外するのは認証情報を含む行（と構造的に送れない行）だけ。機微語を含む行も
+// 伏字済みで含める（2026-10-25 方針変更）。呼び出し側は新しい順で渡し、
 // 必要なら reverse() してから渡す。
 export function selectAiSafeHistory(rows, { blocklist = "", maxChars = 1200 } = {}) {
   return (rows || []).flatMap((item) => {
     const inspected = inspectAndRedact(item?.content, { blocklist });
-    if (!inspected.ok || hasSensitiveCategory(inspected.findings)) return [];
+    if (!inspected.ok) return [];
     const role = item.role === "assistant" ? "Assistant" : "User";
     return [`${role}: ${inspected.text.slice(0, maxChars)}`];
   });

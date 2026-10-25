@@ -102,11 +102,11 @@ assert.doesNotMatch(answerBody, /memoryQueueMs/u);
 assert.doesNotMatch(answerBody, /parsed\.improvement/u);
 assert.match(source, /async function processAgentMemoryJob/u);
 
-// Sensitive-category boundary (Issue #94, decided under Issue #61). The original text of
-// health/financial/location messages is kept in Telegram history; credentials are still masked.
-// Sensitive text is excluded where it is sent to the model (selectAiSafeHistory and callGemini),
-// and sensitive messages are never queued for AI memory extraction. Runtime behaviour is covered
-// by tests/ai-send-guard.test.js; this block only pins how the webhook wires it in.
+// AI-send boundary wiring (Issue #94; policy revised 2026-10-25 under Issue #61).
+// History stores the inspected (redacted) text; credentials are masked and blocked, while
+// sensitive-word matches no longer exclude a message from history, model input, or the
+// memory-extraction queue. Runtime behaviour is covered by tests/ai-send-guard.test.js;
+// this block only pins how the webhook wires it in.
 const hookStart = source.indexOf("const historyPlan = planTelegramHistory(text2");
 const hookEnd = source.indexOf("let processingMessageId", hookStart);
 assert.ok(hookStart > 0 && hookEnd > hookStart, "Telegram webhook history/queue block not found");
