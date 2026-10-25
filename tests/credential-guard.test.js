@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { inspectAndRedact } from "../src/ai-send-guard.mjs";
-
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent } from "../src/ai-send-guard.mjs";
+import { parseGroundedWebResearch } from "../src/agent-web-research.mjs";
+import { createGeminiClient } from "../src/gemini-client.mjs";
 
 function detectsCredential(value) {
   return inspectAndRedact(value).findings.includes("credentials");
@@ -38,17 +37,24 @@ test("does not flag ordinary prose without credential assignment", () => {
     assert.equal(detectsCredential(value), false, "should not detect " + value);
 });
 
-test("shared Gemini boundary checks assembled prompt before fetch", () => {
-  const start = source.indexOf("async function callGemini(env, prompt, maxOutputTokens, options = {})");
-  assert.notEqual(start, -1);
-  const end = source.indexOf("\n}", start);
-  assert.notEqual(end, -1);
-  const body = source.slice(start, end);
-  assert.ok(body.includes("inspectWholeContent(prompt, env)"));
-  assert.ok(body.includes("if (!privacyCheck.ok)"));
-  assert.ok(body.indexOf("inspectWholeContent(prompt, env)") < body.indexOf("await fetch(endpoint"));
-  assert.ok(body.includes('throw new Error("AI request blocked by credential detection")'));
-  assert.ok(body.includes("hasSensitiveCategory(privacyCheck.findings)"));
-  assert.ok(body.indexOf("hasSensitiveCategory(privacyCheck.findings)") < body.indexOf("await fetch(endpoint"));
-  assert.ok(body.includes('throw new Error("AI request blocked by sensitive-data detection")'));
+test("shared Gemini boundary checks assembled prompt before fetch", async () => {
+  // #86 で src/gemini-client.mjs へ分離したため、文字列抽出ではなくモジュールの振る舞いで検証する
+  // (旧テストの意図: 検査が fetch より前に走り、認証情報と機微カテゴリをそれぞれ止める)。
+  const { callGemini } = createGeminiClient({ inspectWholeContent, inspectAndRedact, hasSensitiveCategory, parseGroundedWebResearch });
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }) };
+  };
+  try {
+    await assert.rejects(callGemini({}, "password=abc123", 100), /AI request blocked by credential detection/);
+    assert.equal(fetchCalls, 0, "credential prompts must be blocked before fetch");
+    await assert.rejects(callGemini({}, "今日の診断結果をまとめて", 100), /AI request blocked by sensitive-data detection/);
+    assert.equal(fetchCalls, 0, "sensitive prompts must be blocked before fetch");
+    assert.equal(await callGemini({}, "通常の質問です", 100), "ok");
+    assert.equal(fetchCalls, 1, "clean prompts reach fetch");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const geminiClientSource = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
 for (const contract of [
   "isBulkAiPermissionRequest",
   "isBulkAiPermissionApproval",
@@ -134,9 +135,9 @@ const taskNotesEnd = source.indexOf("__name(searchAgentTaskNotes", taskNotesStar
 const taskNotesSource = source.slice(taskNotesStart, taskNotesEnd);
 assert.ok(taskNotesSource.includes('hasSensitiveCategory(wholeInspection.findings)'), "Background tasks must exclude sensitive notes from their context");
 
-const geminiStart = source.indexOf("async function callGemini");
-const geminiEnd = source.indexOf("__name(callGemini", geminiStart);
-const geminiSource = source.slice(geminiStart, geminiEnd);
+const geminiStart = geminiClientSource.indexOf("async function callGemini");
+const geminiEnd = geminiClientSource.indexOf("__name(callGemini", geminiStart);
+const geminiSource = geminiClientSource.slice(geminiStart, geminiEnd);
 assert.ok(geminiSource.includes('hasSensitiveCategory(privacyCheck.findings)'), "The final Gemini boundary must reject sensitive payloads regardless of caller");
 
 const storeStart = source.indexOf("async function storeTelegramNote");
