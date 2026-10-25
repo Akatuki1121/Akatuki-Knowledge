@@ -108,3 +108,49 @@ test("web research maps provider failures to stable error codes", async () => {
     stub503.restore();
   }
 });
+
+test("web research failures keep HTTP/API status and never the upstream message (Issue #90)", async () => {
+  const env = { GEMINI_API_KEY: "k", GEMINI_WEB_RESEARCH_ENABLED: "true" };
+  const cases = [
+    { status: 400, apiStatus: "INVALID_ARGUMENT", code: "web_research_provider_error" },
+    { status: 403, apiStatus: "PERMISSION_DENIED", code: "web_research_provider_error" },
+    { status: 429, apiStatus: "RESOURCE_EXHAUSTED", code: "rate_limited" },
+    { status: 500, apiStatus: "INTERNAL", code: "upstream_5xx" },
+  ];
+  for (const { status, apiStatus, code } of cases) {
+    const stub = stubFetch(async () => ({
+      ok: false,
+      status,
+      json: async () => ({ error: { status: apiStatus, message: "upstream free text 秘密" } }),
+    }));
+    try {
+      const error = await client.callGeminiWebResearch(env, "Cloudflare Workers の料金は").then(
+        () => { throw new Error("must reject"); },
+        (caught) => caught,
+      );
+      assert.equal(error.message, code, "the stable classification code must stay the message");
+      assert.equal(error.httpStatus, status);
+      assert.equal(error.apiStatus, apiStatus);
+      assert.ok(!error.message.includes("秘密"), "upstream free text must not leak into the error message");
+      assert.ok(!JSON.stringify(error).includes("秘密"), "upstream free text must not leak into error fields");
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test("web research failure without an API status string leaves apiStatus unset", async () => {
+  const env = { GEMINI_API_KEY: "k", GEMINI_WEB_RESEARCH_ENABLED: "true" };
+  const stub = stubFetch(async () => ({ ok: false, status: 403, json: async () => ({}) }));
+  try {
+    const error = await client.callGeminiWebResearch(env, "Cloudflare Workers の料金は").then(
+      () => { throw new Error("must reject"); },
+      (caught) => caught,
+    );
+    assert.equal(error.message, "web_research_provider_error");
+    assert.equal(error.httpStatus, 403);
+    assert.equal(error.apiStatus, undefined);
+  } finally {
+    stub.restore();
+  }
+});
