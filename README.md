@@ -1,13 +1,11 @@
 # Akatuki-Knowledge
 
-Obsidian のノートを検索し、AI で整理するための個人用ナレッジサービスです。Cloudflare Workers と D1 の上で動き、Telegram ボットから操作できます。
+Obsidian のノートを検索し、AI で整理するための個人用ナレッジサービスです。Cloudflare Workers と D1 の上で動き、HTTP API から操作できます。Telegram ボットは廃止しました。
 
 ## できること
 
 - **ノート同期**: Obsidian Vault と D1 のノートを、YAOS 経由のイベント同期でそろえます。定期実行の照合は、取りこぼしを直す安全網です。
-- **Telegram ボット**: 会話から残す価値のある知識を記録し、「今のなし」で直前の記録を戻せます。
-- **フォルダ整理**: AI 利用が許可されたノート 1 件の移動案を提案します。`フォルダ整理案を反映して` と返信するまで、ノートは移動しません。
-- **バックグラウンドタスク**: `/task <質問>` で、ナレッジベースを検索して要約するタスクを非同期に実行します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
+- **バックグラウンドタスク**: `POST /api/agent-tasks` で、ナレッジベースを検索して要約するタスクを非同期に実行します。結果は `GET /api/agent-tasks` で取得します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
 - **長期記憶メタデータ**: 既存ノートに由来・信頼度・有効期限などのメタデータを付けて扱います。必要な D1 マイグレーション `0013` は `migrations/pending/` にあり、本番への適用とデプロイは保留中です。
 
 ## 安全面の方針
@@ -20,7 +18,7 @@ Obsidian のノートを検索し、AI で整理するための個人用ナレ�
 
 | コンポーネント | 役割 |
 | --- | --- |
-| Cloudflare Workers(`src/index.js`) | API と Telegram 連携 |
+| Cloudflare Workers(`src/index.js`) | API とノート同期 |
 | Cloudflare D1(`Akatuki-knowledge`) | ノート、同期状態、タスク状態の永続化 |
 | Durable Objects / Yjs | ノート同期のリアルタイム状態 |
 | Cloudflare Workflows | バックグラウンドタスクの実行 |

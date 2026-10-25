@@ -2,7 +2,7 @@
 // 関数本文は移動前と同一。いずれも外部依存のない純粋関数で
 // (excerpt は同モジュールの searchTerms だけを使う)、
 // このモジュールは Worker エントリポイントに依存しない。
-// ファクトリ形式は src/reply-text.mjs / src/ai-permission.mjs に揃えたが、
+// ファクトリ形式は src/reply-text.mjs に揃えたが、
 // 注入する依存はない。検索 SQL 本体 (findRelevantNotes) は移動していない。
 
 // src/index.js のバンドル由来のヘルパー。移動した関数の __name 注釈が使うため同じ定義を置く。

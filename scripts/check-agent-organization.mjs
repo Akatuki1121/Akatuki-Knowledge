@@ -1,100 +1,21 @@
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
+// 残る AI 送信面の安全契約: /api/ai-preview、自動整理 (organize.mjs)、
+// 背景タスクのコンテキスト検索、Gemini 境界。
+// Telegram チャット対話 (一括 AI 送信許可・フォルダ整理・会話要約・/save) の
+// 契約は、ボット廃止に伴いこのチェックからも外した。
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const geminiClientSource = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
-const aiPermissionSource = await readFile(new URL("../src/ai-permission.mjs", import.meta.url), "utf8");
-for (const contract of [
-  "isBulkAiPermissionRequest",
-  "isBulkAiPermissionApproval",
-  "isBulkAiPermissionRejection",
-  "inspectBulkAiPermissionCandidates",
-  "const inspection = inspectWholeContent(content, env)",
-  "AI送信許可の一括反映待ちです",
-  "AI送信許可を一括反映して",
-  "sensitivity = 'user-approved'",
-  "sensitivity = 'credentials'",
-  "content_hash IS ? AND content = ?",
-  "内容変更・状態変化・競合で見送り",
-  "AI送信許可の一括確認が完了しました",
-  "bot_ai_permission_previews",
-  "hashBulkAiPermissionContent",
-  "expires_at",
-  "Date.parse(preview.expires_at) <= Date.now()",
-  "確認時点の対象ノートだけを反映します",
-  "candidates.length > 1000",
-  "AND id IN (",
-  "env.DB.batch(statements)"
-]) {
-  assert.ok(aiPermissionSource.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
-}
-
-const previewMigration = await readFile(new URL("../migrations/0012_bot_ai_permission_previews.sql", import.meta.url), "utf8");
-for (const contract of [
-  "CREATE TABLE bot_ai_permission_previews",
-  "chat_id TEXT PRIMARY KEY",
-  "candidates_json TEXT NOT NULL",
-  "expires_at TEXT NOT NULL",
-  "CHECK (status IN ('pending'))",
-  "idx_bot_ai_permission_previews_expiry"
-]) {
-  assert.ok(previewMigration.includes(contract), "Missing bulk AI permission preview schema contract: " + contract);
-}
-
-const migration = await readFile(new URL("../migrations/0010_bot_organization_candidates.sql", import.meta.url), "utf8");
-
-for (const contract of [
-  "isFolderOrganizationRequest",
-  "isFolderOrganizationApproval",
-  "isFolderOrganizationRejection",
-  "proposeFolderOrganization",
-  "applyLatestFolderOrganization",
-  "rejectLatestFolderOrganization",
-  "inspectWholeContent(note.content || \"\", env).credentials",
-  "note.path !== candidate.source_path",
-  "await enqueueSyncJob(env, \"notes\", note.id, \"upsert\")",
-  "INSERT INTO note_revisions",
-  "status = 'applied'",
-  "status = 'rejected'"
-]) {
-  assert.ok(source.includes(contract), "Missing folder organization safety contract: " + contract);
-}
-
-for (const contract of [
-  "CREATE TABLE bot_organization_candidates",
-  "source_path TEXT NOT NULL",
-  "target_path TEXT NOT NULL",
-  "CHECK (status IN ('pending', 'applied', 'rejected'))",
-  "idx_bot_organization_candidates_pending"
-]) {
-  assert.ok(migration.includes(contract), "Missing folder organization schema contract: " + contract);
-}
-
-for (const contract of [
-  'hasSensitiveCategory(inspection.findings)',
-  'const sensitiveCandidates = []',
-  '["allow", scan.eligible], ["revoke", scan.credentialAllowed], ["hold", scan.sensitiveCandidates]',
-  'candidate.action === "hold"',
-  "UPDATE notes SET sensitivity = 'sensitive', review_state = 'ready'",
-  "機微情報を含むノート"
-]) {
-  assert.ok(aiPermissionSource.includes(contract), "Missing sensitive-note review gate: " + contract);
-}
-
-const answerStart = source.indexOf("async function answerTelegramMessage");
-const answerEnd = source.indexOf("\nasync function ", answerStart + 30);
-const answerSource = source.slice(answerStart, answerEnd);
-assert.ok(answerSource.includes("const wholeInspection = inspectWholeContent(note.content, env)"), "Chat answers must inspect the complete source note before prompt construction");
-assert.ok(answerSource.includes('hasSensitiveCategory(wholeInspection.findings)'), "Chat answer prompts must not include notes flagged as health, financial, or location-sensitive");
-assert.ok(answerSource.includes("continue;"), "Sensitive source notes must be skipped without mutating the stored note");
-assert.ok(answerSource.includes("inspectAndRedact("), "Chat answer payloads must be checked at the outbound boundary");
 
 const previewStart = source.indexOf("function buildAiPreview");
 const previewEnd = source.indexOf("\nasync function ", previewStart + 30);
 const previewSource = source.slice(previewStart, previewEnd);
+assert.ok(previewStart >= 0 && previewEnd > previewStart, "buildAiPreview must exist");
 assert.ok(previewSource.includes('hasSensitiveCategory(wholeNote.findings)'), "AI previews must exclude sensitive notes from the outgoing payload");
 assert.ok(previewSource.includes('reason: "sensitive_info_requires_confirmation"'), "AI preview must explain why sensitive notes were excluded");
 assert.ok(previewSource.includes("inspectAndRedact("), "AI preview payloads must be checked at the outbound boundary");
+assert.ok(previewSource.includes('hasSensitiveCategory(inspectedQuestion.findings)'), "AI previews must block sensitive questions before sending");
 
 const organizeSource = await readFile(new URL("../src/organize.mjs", import.meta.url), "utf8");
 assert.ok(organizeSource.includes("async function organizePending"), "organizePending must exist in src/organize.mjs");
@@ -109,44 +30,16 @@ assert.ok(organizeSource.includes("summary = ?, ai_tags_json = ?, related_json =
 assert.ok(!organizeSource.includes("SET ai_allowed = 0, review_state = 'pending_confirmation', sensitivity = 'sensitive'"), "Sensitive categories alone must not remove notes from the organization queue");
 assert.ok(!organizeSource.includes("SET content ="), "Organization must never overwrite the original note body");
 
-const folderStart = source.indexOf("async function proposeFolderOrganization");
-const folderEnd = source.indexOf("async function applyLatestFolderOrganization", folderStart);
-const folderSource = source.slice(folderStart, folderEnd);
-assert.ok(folderSource.includes("!inspectWholeContent(note.content || \"\", env).credentials"), "Folder organization must exclude notes with credentials");
-assert.ok(!folderSource.includes("!inspection.findings.some"), "Sensitive categories alone must not exclude notes from folder organization");
-assert.ok(folderSource.includes("const safeField = (value)"), "Folder organization must sanitize outbound metadata for sensitive fields");
-assert.ok(folderSource.includes('"[機微情報を含む項目]"'), "Sensitive title, path, or summary fields must be replaced before outbound processing");
-
-const summaryStart = source.indexOf("async function summarizeConversationToKnowledge");
-const summaryEnd = source.indexOf("async function proposeFolderOrganization", summaryStart);
-const summarySource = source.slice(summaryStart, summaryEnd);
-assert.ok(summarySource.includes("selectAiSafeHistory(results.reverse()"), "Conversation summaries must build an outbound-safe copy of history");
-const guardSource = await readFile(new URL("../src/ai-send-guard.mjs", import.meta.url), "utf8");
-const safeHistoryStart = guardSource.indexOf("export function selectAiSafeHistory");
-const safeHistorySource = guardSource.slice(safeHistoryStart);
-assert.ok(safeHistoryStart > 0 && safeHistorySource.includes("if (!inspected.ok) return [];"), "History exclusion at the AI boundary must be keyed on credential inspection only (policy change 2026-10-25: word-list categories no longer exclude)");
-
-assert.ok(answerSource.includes('hasSensitiveCategory(safeMessage.findings)'), "Sensitive current messages must not be sent to Gemini");
-assert.ok(answerSource.includes("selectAiSafeHistory(history.results.reverse()"), "Chat prompts must filter sensitive stored history at send time");
-
-assert.ok(previewSource.includes('hasSensitiveCategory(inspectedQuestion.findings)'), "AI previews must block sensitive questions before sending");
-
 const taskNotesStart = source.indexOf("async function searchAgentTaskNotes");
 const taskNotesEnd = source.indexOf("__name(searchAgentTaskNotes", taskNotesStart);
 const taskNotesSource = source.slice(taskNotesStart, taskNotesEnd);
+assert.ok(taskNotesStart >= 0 && taskNotesEnd > taskNotesStart, "searchAgentTaskNotes must exist");
 assert.ok(taskNotesSource.includes('hasSensitiveCategory(wholeInspection.findings)'), "Background tasks must exclude sensitive notes from their context");
 
 const geminiStart = geminiClientSource.indexOf("async function callGemini");
 const geminiEnd = geminiClientSource.indexOf("__name(callGemini", geminiStart);
 const geminiSource = geminiClientSource.slice(geminiStart, geminiEnd);
+assert.ok(geminiStart >= 0 && geminiEnd > geminiStart, "callGemini must exist");
 assert.ok(geminiSource.includes('hasSensitiveCategory(privacyCheck.findings)'), "The final Gemini boundary must reject sensitive payloads regardless of caller");
-
-const storeStart = source.indexOf("async function storeTelegramNote");
-const storeEnd = source.indexOf("__name(storeTelegramNote", storeStart);
-const storeSource = source.slice(storeStart, storeEnd);
-assert.ok(storeSource.includes("title, content, content_hash"), "Telegram note storage must persist the original note content");
-assert.ok(storeSource.includes(".bind(id2, chatId, String(messageId), title, content, contentHash"), "Telegram note storage must bind the original content, not the redacted AI prompt");
-assert.ok(source.includes("storeTelegramNote(env, chatId, message.message_id, noteContent, now)"), "Explicit /save must preserve the user's supplied note text");
-
 
 console.log("Agent organization contract checks passed.");

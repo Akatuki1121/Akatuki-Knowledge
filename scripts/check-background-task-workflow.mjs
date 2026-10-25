@@ -16,11 +16,6 @@ for (const required of [
   "allowGitHubRead",
   "allowGitHubWrite",
   "github_propose_write",
-  "isGitHubNaturalLanguageRequest",
-  "approveGitHubWritePlan",
-  "rejectGitHubWritePlan",
-  "executeGitHubWritePlan",
-  '{ taskType: "github_query", allowGitHubRead: true, allowGitHubWrite: true }',
   "searchAgentTaskNotes(prepared.safePrompt, this.env)",
   'step.do("retrieve-context-"',
   "if (note.ai_allowed !== 1) continue;",
@@ -38,34 +33,19 @@ for (const required of [
   "reserveAgentAiBudget(this.env.DB",
   'checkpoint.stage === "completed"',
   'taskType: "knowledge_query"',
-  "startTelegramBackgroundTask",
-  "getTelegramBackgroundTaskStatus",
-  "cancelTelegramBackgroundTask",
-  "cancelAgentTask",
-  "/cancel タスクID",
   "assertAgentTaskRunning",
-  "instance.terminate()",
   "task_cancelled",
-  "listTelegramBackgroundTasks",
   "listAgentTasks",
   "allowWebResearch",
   "GEMINI_WEB_RESEARCH_ENABLED",
   "callGeminiWebResearch",
   "parseGroundedWebResearch",
-  '/tasks(?:@\\w+)?',
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
-  "const stageLabels = {",
-  'context_ready: "関連ノートの取得完了"',
-  'prompt_ready: "要約プロンプトの準備完了"',
-  'completed: "結果の保存完了"',
-  '"\\n段階: " + (stageLabels[stage] || stage)',
-  "/task_status",
   'url.pathname === "/api/agent-tasks"',
   'request.method === "POST"',
   "await isAuthorized(request, env)",
   "inspectAndRedact(task.payload.prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || \"\" })",
   "inspectAndRedact(body.prompt",
-  "payload: { prompt: inspection.text, maxOutputTokens: 512, allowWebResearch, allowGitHubRead, allowGitHubWrite },",
   "payload: { prompt: inspection.text, maxOutputTokens, allowWebResearch },",
   "hasSensitiveCategory(",
   "reserveAgentAiBudget",
@@ -77,24 +57,16 @@ for (const required of [
   'return "restart_deferred"',
   "allowRestart = false",
   'ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false })',
-  "flushAgentTaskNotifications",
   "notificationStatus: task.notification_status",
-  "notification_status = 'sending'",
-  "notification_last_error_class = 'telegram_delivery_failed'",
-  "notifyChatId: chatId",
   'event.cron === TASK_RECOVERY_CRON',
   'export {\n  AgentTaskWorkflow,'
 ]) {
   assert.ok(source.includes(required), "Missing background workflow contract: " + required);
 }
 assert.ok(
-  source.split('task.budget_reserved === 1 && (task.status === "queued"').length - 1 >= 2,
-  "Telegram and HTTP intake must not dispatch before budget admission",
+  source.split('task.budget_reserved === 1 && (task.status === "queued"').length - 1 >= 1,
+  "HTTP intake must not dispatch before budget admission",
 );
-const terminalNotificationStart = source.indexOf('let message = "背景タスク " + statusText');
-const terminalNotificationEnd = source.indexOf('await sendTelegramMessage(env, task.notify_chat_id, message);', terminalNotificationStart);
-assert.ok(terminalNotificationStart >= 0 && terminalNotificationEnd > terminalNotificationStart, "Terminal notification message must exist");
-assert.ok(!source.slice(terminalNotificationStart, terminalNotificationEnd).includes("\\\\n"), "Terminal notification must use actual newline escapes, not literal backslash-n text");
 const taskMigration = await readFile(new URL("../migrations/0011_agent_tasks.sql", import.meta.url), "utf8");
 assert.ok(taskMigration.includes("budget_reserved INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved IN (0, 1))"), "Pending task schema must include budget reservation admission flag");
 assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
@@ -150,20 +122,6 @@ const composeStart = retrieveEnd;
 const composeEnd = workflowSource.indexOf("runAgentToolLoop({", composeStart);
 const composeSource = workflowSource.slice(composeStart, composeEnd);
 assert.ok(composeSource.includes("if (prepared.resumePrompt)"), "Saved prompts must bypass prompt recomposition after recovery");
-const taskListStart = source.indexOf("async function listTelegramBackgroundTasks");
-const taskListEnd = source.indexOf('__name(listTelegramBackgroundTasks', taskListStart);
-assert.ok(taskListStart >= 0 && taskListEnd > taskListStart, "Telegram task-list formatter must exist");
-const taskListSource = source.slice(taskListStart, taskListEnd);
-for (const label of [
-  'pending: "通知待ち"',
-  'sending: "通知中"',
-  'sent: "通知済み"',
-  'failed: "通知停止"',
-  'notificationLabels[task.notification_status]'
-]) {
-  assert.ok(taskListSource.includes(label), "Telegram task list must localize notification state: " + label);
-}
-
 const stopGuidanceStart = taskPolicy.indexOf("function describeAgentTaskStopReason");
 const stopGuidanceEnd = taskPolicy.indexOf('__name(describeAgentTaskStopReason', stopGuidanceStart);
 assert.ok(stopGuidanceStart >= 0 && stopGuidanceEnd > stopGuidanceStart, "Task stop-reason guidance must exist");
@@ -177,17 +135,6 @@ for (const required of [
 ]) {
   assert.ok(stopGuidance.includes(required), "Missing actionable stop-reason guidance: " + required);
 }
-const taskStatusStart = source.indexOf("async function getTelegramBackgroundTaskStatus");
-const taskStatusEnd = source.indexOf('__name(getTelegramBackgroundTaskStatus', taskStatusStart);
-const taskStatusSource = source.slice(taskStatusStart, taskStatusEnd);
-assert.ok(taskStatusSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Task status must explain failures");
-assert.ok(taskStatusSource.includes('"\\n次の操作: " + guidance.nextAction'), "Task status must include a next action");
-const notificationDispatchStart = source.indexOf("async function flushAgentTaskNotifications");
-const notificationDispatchEnd = source.indexOf('__name(flushAgentTaskNotifications', notificationDispatchStart);
-const notificationDispatchSource = source.slice(notificationDispatchStart, notificationDispatchEnd);
-assert.ok(notificationDispatchSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Failure notifications must explain the stop reason");
-assert.ok(notificationDispatchSource.includes('"\\n次の操作: " + guidance.nextAction'), "Failure notifications must include a next action");
-
 const githubPromptStart = source.indexOf("あなたは日本語のGitHub作業エージェントです。");
 const githubPromptEnd = source.indexOf("\n              : prepared.allowGitHubRead", githubPromptStart);
 const githubPrompt = source.slice(githubPromptStart, githubPromptEnd);
@@ -196,7 +143,8 @@ assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計�
 
 // Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
 const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
-assert.equal(retryConfigs.length, 17, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
+// Telegram 通知ステップ5件の廃止で 17 から 12 に減った。
+assert.equal(retryConfigs.length, 12, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
 assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
