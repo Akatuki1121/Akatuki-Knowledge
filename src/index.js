@@ -29,12 +29,7 @@ import {
   saveAgentMemoryMetadata,
   shouldOmitStoredMemory
 } from "./agent-memory.mjs";
-import {
-  enqueueAgentMemoryJob,
-  claimNextAgentMemoryJob,
-  completeAgentMemoryJob,
-  failAgentMemoryJob
-} from "./agent-memory-queue.mjs";
+import { enqueueAgentMemoryJob } from "./agent-memory-queue.mjs";
 import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent, planTelegramHistory, selectAiSafeHistory, selectSafeParagraphs } from "./ai-send-guard.mjs";
 import { classifyOperationalFailure, createOrganizeRunner } from "./organize.mjs";
 import { createGeminiClient } from "./gemini-client.mjs";
@@ -46,6 +41,7 @@ import { createTelegramClient } from "./telegram-client.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
 import { createTelegramIntent } from "./telegram-intent.mjs";
 import { classifyAgentTaskError, describeAgentTaskStopReason } from "./background-task-policy.mjs";
+import { createAgentMemoryDrain } from "./agent-memory-drain.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
@@ -64,6 +60,9 @@ const { sendTelegramMessage, editTelegramMessage } = createTelegramClient();
 const { enqueueBotAlert, flushBotAlerts } = createBotAlerts({ sendTelegramMessage });
 // Telegram 意図判定の述語群は src/telegram-intent.mjs に分離した (#86)。
 const { isConversationSummaryRequest, extractReorganizationQuery, isUndoRequest, isPolicyUndoRequest, isImprovementApproval, isImprovementRejection, isImprovementStatusRequest, isFolderOrganizationRequest, isFolderOrganizationApproval, isFolderOrganizationRejection, validateOrganizationPath, isMemoryProcessingCandidate } = createTelegramIntent();
+// 記憶キューの drain (claim/完了/失敗分類) は src/agent-memory-drain.mjs に分離した (#86)。
+// queue 群と安全化ログはモジュール側で直接 import し、処理本体はこちらから注入する。
+const { drainAgentMemoryQueue } = createAgentMemoryDrain({ processAgentMemoryJob });
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
 const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
@@ -1028,41 +1027,6 @@ ${content}`;
       : `\u300C${old.title}\u300D\u306B\u8FFD\u8A18\u3057\u305F\u3088\u3002${savedMetadata.status === "unverified" ? "\u672A\u78BA\u8A8D\u306E\u60C5\u5831\u3068\u3057\u3066\u5206\u985E\u3057\u305F\u3088\u3002" : "\u51FA\u5178\u3068\u66F4\u65B0\u65E5\u3092\u8A18\u9332\u3057\u305F\u3088\u3002"}`;
 }
 __name(applyTelegramCapture, "applyTelegramCapture");
-
-async function drainAgentMemoryQueue(env, requestedLimit = 1) {
-  if (!env?.DB || !env.GEMINI_API_KEY) return;
-  const limit = Math.max(1, Math.min(2, Number(requestedLimit) || 1));
-  for (let i = 0; i < limit; i++) {
-    let job;
-    try {
-      job = await claimNextAgentMemoryJob(env.DB);
-    } catch (error) {
-      console.error("agent memory queue claim failed", JSON.stringify(describeSafeFailure("agent_memory_queue_claim_failed", error)));
-      return;
-    }
-    if (!job) return;
-    try {
-      await processAgentMemoryJob(env, job);
-      await completeAgentMemoryJob(env.DB, Number(job.job_id));
-    } catch (error) {
-      const status = Number(error?.httpStatus || 0);
-      const retryable = status === 429 || status >= 500 || error?.name === "AbortError"
-        || error?.name === "TimeoutError" || error instanceof TypeError;
-      const errorClass = status === 429 ? "gemini_limit"
-        : status >= 500 ? "gemini_server_error"
-          : error?.name === "TimeoutError" || error?.name === "AbortError" ? "timeout"
-            : error instanceof TypeError ? "network_error" : "memory_processing_failed";
-      try {
-        await failAgentMemoryJob(env.DB, Number(job.job_id), { retryable, errorClass });
-      } catch (updateError) {
-        console.error("agent memory job state update failed", JSON.stringify(describeSafeFailure("agent_memory_job_state_update_failed", updateError)));
-        return;
-      }
-      console.error("agent memory job failed", JSON.stringify(describeSafeFailure("agent_memory_job_failed", error)));
-    }
-  }
-}
-__name(drainAgentMemoryQueue, "drainAgentMemoryQueue");
 
 async function processAgentMemoryJob(env, job) {
   const jobStartedAt = Date.now();
