@@ -96,9 +96,18 @@ async function callGeminiWebResearch(env, query, options = {}) {
     throw new Error("web_research_invalid_response");
   }
   if (!response.ok) {
-    if (response.status === 429) throw new Error("rate_limited");
-    if (response.status >= 500) throw new Error("upstream_5xx");
-    throw new Error("web_research_provider_error");
+    // 上流の自由文字列 (data.error.message) は例外メッセージに残さない (Issue #63)。
+    // 通常経路 (callGemini) と同様に、分類コードをメッセージに保ったまま、
+    // HTTP ステータスと分類コード (data.error.status) だけを例外に保持する。
+    // これにより describeSafeFailure 経由で本番記録から失敗理由を判別できる (Issue #90)。
+    const failure = new Error(
+      response.status === 429 ? "rate_limited"
+        : response.status >= 500 ? "upstream_5xx"
+          : "web_research_provider_error"
+    );
+    failure.httpStatus = response.status;
+    failure.apiStatus = typeof data?.error?.status === "string" ? data.error.status : void 0;
+    throw failure;
   }
 
   return parseGroundedWebResearch(data, new Date().toISOString());
