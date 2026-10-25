@@ -38,6 +38,15 @@ assert.ok(!geminiSource.includes("data?.error?.message"), "callGemini must not r
 assert.ok(geminiSource.includes("failure.httpStatus = response.status"), "callGemini must keep the HTTP status on the failure");
 assert.ok(geminiSource.includes("failure.apiStatus"), "callGemini must keep the API status on the failure");
 
+// callGeminiWebResearch も同様に、上流の自由文字列を残さずステータスだけを保持する (Issue #90)。
+const webResearchStart = geminiClientSource.indexOf("async function callGeminiWebResearch");
+const webResearchEnd = geminiClientSource.indexOf("__name(callGeminiWebResearch", webResearchStart);
+assert.ok(webResearchStart >= 0 && webResearchEnd > webResearchStart, "callGeminiWebResearch must exist");
+const webResearchSource = geminiClientSource.slice(webResearchStart, webResearchEnd);
+assert.ok(!webResearchSource.includes("data?.error?.message"), "callGeminiWebResearch must not retain the upstream free-form error message");
+assert.ok(webResearchSource.includes("failure.httpStatus = response.status"), "callGeminiWebResearch must keep the HTTP status on the failure");
+assert.ok(webResearchSource.includes("failure.apiStatus"), "callGeminiWebResearch must keep the API status on the failure");
+
 // アプリ側の console.* は、固定のイベント名だけの出力 (分類 A のタイミングログ等) か、
 // describeSafeFailure 経由の構造化出力を伴うものだけに限る。
 const APP_CONSOLE_LINES = /console\.(?:log|error|warn)\(/u;
