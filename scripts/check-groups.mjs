@@ -3,7 +3,7 @@ export const checks = [
   ["check-group-coverage", process.execPath, ["scripts/test-check-groups.mjs"]],
   ["sync-module-syntax", process.execPath, ["--check", "src/sync-outbox.mjs"]],
   ["ai-send-guard-syntax", process.execPath, ["--check", "src/ai-send-guard.mjs"]],
-  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/organize-failure.test.js", "tests/log-sanitize.test.js", "tests/gemini-client.test.js", "tests/ai-permission.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/telegram-client.test.js", "tests/bot-alerts.test.js", "tests/telegram-intent.test.js"]],
+  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/organize-failure.test.js", "tests/log-sanitize.test.js", "tests/gemini-client.test.js", "tests/ai-permission.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/telegram-client.test.js", "tests/bot-alerts.test.js", "tests/telegram-intent.test.js", "tests/agent-memory-drain.test.js"]],
   ["log-sanitize-syntax", process.execPath, ["--check", "src/log-sanitize.mjs"]],
   ["gemini-client-syntax", process.execPath, ["--check", "src/gemini-client.mjs"]],
   ["ai-permission-syntax", process.execPath, ["--check", "src/ai-permission.mjs"]],
@@ -12,6 +12,7 @@ export const checks = [
   ["telegram-client-syntax", process.execPath, ["--check", "src/telegram-client.mjs"]],
   ["bot-alerts-syntax", process.execPath, ["--check", "src/bot-alerts.mjs"]],
   ["telegram-intent-syntax", process.execPath, ["--check", "src/telegram-intent.mjs"]],
+  ["agent-memory-drain-syntax", process.execPath, ["--check", "src/agent-memory-drain.mjs"]],
   ["log-hygiene", process.execPath, ["scripts/check-log-hygiene.mjs"]],
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
   ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
@@ -49,6 +50,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name === "sync-telegram-agent-notifications")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "gemini-client-syntax", "ai-permission-syntax", "reply-text-syntax", "note-search-text-syntax", "telegram-client-syntax", "bot-alerts-syntax", "telegram-intent-syntax", "log-hygiene", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "gemini-client-syntax", "ai-permission-syntax", "reply-text-syntax", "note-search-text-syntax", "telegram-client-syntax", "bot-alerts-syntax", "telegram-intent-syntax", "agent-memory-drain-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
 }
