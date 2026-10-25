@@ -406,6 +406,33 @@ async function restoreNote(url, env) {
   return json({ ok: true, id: id2, restored: true, aiAllowed: Boolean(aiAllowed), reviewState });
 }
 __name(restoreNote, "restoreNote");
+// #91 の計測で作られたテスト行 (telegram_notes) の一回性の掃除。
+// 対象は id の末尾セグメント (update_id) が計測セッションの範囲に入る行だけに限定する。
+// 所有者の実利用行は範囲外の update_id しか持たないため、対象にはならない。
+const MEASUREMENT_UPDATE_ID_RANGES = [[9100001037, 9100001072], [9100002001, 9100002036]];
+function measurementUpdateId(noteId) {
+  const match2 = /^tg:-?\d+:(\d+)$/.exec(String(noteId ?? ""));
+  return match2 ? Number(match2[1]) : null;
+}
+__name(measurementUpdateId, "measurementUpdateId");
+function isMeasurementNoteId(noteId) {
+  const updateId = measurementUpdateId(noteId);
+  return updateId !== null && MEASUREMENT_UPDATE_ID_RANGES.some(([from, to]) => updateId >= from && updateId <= to);
+}
+__name(isMeasurementNoteId, "isMeasurementNoteId");
+async function cleanupMeasurementNotes(env, apply) {
+  const { results } = await env.DB.prepare("SELECT id FROM telegram_notes WHERE deleted_at IS NULL").all();
+  const targets = (results || []).map((row) => row.id).filter(isMeasurementNoteId).sort();
+  let archived = 0;
+  if (apply && targets.length > 0) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const statements = targets.map((id2) => env.DB.prepare("UPDATE telegram_notes SET deleted_at = ?, ai_allowed = 0, review_state = 'deleted' WHERE id = ? AND deleted_at IS NULL").bind(now, id2));
+    const batchResults = await env.DB.batch(statements);
+    archived = batchResults.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
+  }
+  return { ok: true, dryRun: !apply, targets: targets.length, archived };
+}
+__name(cleanupMeasurementNotes, "cleanupMeasurementNotes");
 async function correctNote(request, url, env) {
   const id2 = noteIdFromRoute(url, "correction");
   if (!id2) return json({ error: "Invalid note route" }, 400);
@@ -11032,6 +11059,14 @@ var wrapper_default = {
         const action = url.pathname === "/sync/telegram" ? "telegram" : url.pathname === "/sync/telegram-rename" ? "telegram-rename" : url.pathname === "/sync/strip-frontmatter-ids" ? "strip-frontmatter-ids" : "apply";
         const res = await env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}?${params2}`));
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
+      }
+      if (url.pathname === "/sync/cleanup-measurement-notes" && request.method === "POST") {
+        try {
+          const result = await cleanupMeasurementNotes(env, url.searchParams.get("apply") === "1");
+          return Response.json(result, { status: 200, headers: JSON_HEADERS2 });
+        } catch {
+          return Response.json({ ok: false, error: "cleanup_failed" }, { status: 502, headers: JSON_HEADERS2 });
+        }
       }
       if (url.pathname === "/sync/pull" && request.method === "POST") {
         const result = await pullFromVault(env, ctx, url.origin, url.searchParams.get("apply") === "1");
