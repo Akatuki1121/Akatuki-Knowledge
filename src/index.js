@@ -11007,6 +11007,204 @@ var YjsClientDO = class extends DurableObject {
     }
     return { ...base, applied: moved.length > 0, movedCount: moved.length, verified, unverified, rejected, d1Updated: d1Updated.length, d1Failed };
   }
+  // 段階移行ステップ2(Issue #107): 旧規則(ファイル名末尾に -<16桁hex>)のTelegramファイルを
+  // 新規則(タイトルslugのみ)のファイル名へ一括リネームする移行専用処理。dry-run既定。
+  // 対象はファイル名と pathToId だけで、本文(idToText)には一切触らない。
+  // 対象の特定は二重突合: ファイルの frontmatter id(UUID)と、ファイル名hex16から逆引きした
+  // D1行(telegram_notes.id の sha256 先頭16桁が一致する行)の期待UUIDが一致した場合のみ候補にする。
+  // 期待UUIDはステップ1と同じ優先順(D1本文の有効な frontmatter UUID → deterministicUuid(row.id))。
+  // 不一致・UUID欠落・UUID重複(conflictコピー等)・D1行なし・リネーム先の占有があるファイルは
+  // 候補から外して理由付きで報告する(fail-closed、連番は付けない)。
+  // 墓石(Vaultで削除済み)も対象に含め、墓石のままリネームする。D1側は id と content の読み取りのみで、
+  // 書き込みはしない(TelegramノートのパスはD1に保存されていない)。
+  // 適用は pullVault のトランザクション内で適用直前の再走査と突き合わせ、適用後に読み戻し検証する。
+  // ロールバックはファイル名(と pathToId)を旧名へ戻すだけでよい(本文不変のため)。
+  async renameTelegramFiles(apply, limit) {
+    const TG_DIR = `${RESERVED_ROOT}/Telegram/`;
+    const LEGACY_SUFFIX = /-([0-9a-f]{16})\.md$/;
+    const metaPath = /* @__PURE__ */ __name((v) => {
+      const p = v instanceof YMap ? v.get("path") : v?.path;
+      return typeof p === "string" ? norm(p) : null;
+    }, "metaPath");
+    const metaDeleted = /* @__PURE__ */ __name((v) => v instanceof YMap ? v.get("deletedAt") !== void 0 || v.get("deleted") === true : v?.deletedAt !== void 0 || v?.deleted === true, "metaDeleted");
+    const scan = /* @__PURE__ */ __name((doc3) => {
+      const files = [];
+      const usedPaths = /* @__PURE__ */ new Set();
+      const uuidOwners = /* @__PURE__ */ new Map();
+      const texts = doc3.getMap("idToText");
+      doc3.getMap("meta").forEach((v, fileId) => {
+        const p = metaPath(v);
+        if (!p) return;
+        usedPaths.add(p);
+        let uuid = null;
+        if (p.startsWith(TG_DIR)) {
+          const textValue = texts.get(fileId);
+          const raw = textValue instanceof YText ? readUuid(textValue.toString()) : null;
+          uuid = isValidSyncUuid(raw) ? raw : null;
+          if (uuid) {
+            const owners = uuidOwners.get(uuid) ?? [];
+            owners.push(fileId);
+            uuidOwners.set(uuid, owners);
+          }
+        }
+        files.push({ fileId, path: p, deleted: metaDeleted(v), uuid });
+      });
+      return { files, usedPaths, uuidOwners };
+    }, "scan");
+    const doc2 = await this.pullVault();
+    const sysMap = doc2.getMap("sys");
+    const vaultFiles = doc2.getMap("meta").size;
+    const guard = /* @__PURE__ */ __name((reason) => ({ ok: false, applied: false, error: reason, vaultFiles }), "guard");
+    if (sysMap.get("initialized") !== true) return guard("vault_not_initialized");
+    const schema = sysMap.get("schemaVersion");
+    if (typeof schema !== "number" || schema < 2) return guard("schema_version_below_2");
+    if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return guard("vault_looks_empty");
+    const rows = (await this.env.DB.prepare("SELECT id, content FROM telegram_notes").all()).results;
+    const byHash = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const hash16 = (await sha256Hex(row.id)).slice(0, 16);
+      const list = byHash.get(hash16) ?? [];
+      list.push(row);
+      byHash.set(hash16, list);
+    }
+    const { files, usedPaths, uuidOwners } = scan(doc2);
+    const legacy = files.filter((f) => f.path.startsWith(TG_DIR) && LEGACY_SUFFIX.test(f.path)).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    const hashOwners = /* @__PURE__ */ new Map();
+    for (const f of legacy) {
+      const hash16 = f.path.match(LEGACY_SUFFIX)[1];
+      const owners = hashOwners.get(hash16) ?? [];
+      owners.push(f.fileId);
+      hashOwners.set(hash16, owners);
+    }
+    const candidates = [];
+    const skipped = [];
+    const plannedTargets = /* @__PURE__ */ new Set();
+    for (const f of legacy) {
+      const hash16 = f.path.match(LEGACY_SUFFIX)[1];
+      const to = f.path.replace(LEGACY_SUFFIX, ".md");
+      const skip = /* @__PURE__ */ __name((reason, extra = {}) => skipped.push({ path: f.path, to, deleted: f.deleted, reason, ...extra }), "skip");
+      if (!f.uuid) {
+        skip("frontmatter_id_missing");
+        continue;
+      }
+      if ((uuidOwners.get(f.uuid) ?? []).length > 1) {
+        skip("duplicate_frontmatter_id");
+        continue;
+      }
+      if ((hashOwners.get(hash16) ?? []).length > 1) {
+        skip("duplicate_filename_suffix");
+        continue;
+      }
+      const matches = byHash.get(hash16) ?? [];
+      if (matches.length === 0) {
+        skip("d1_note_not_found");
+        continue;
+      }
+      if (matches.length > 1) {
+        skip("d1_match_ambiguous");
+        continue;
+      }
+      const row = matches[0];
+      const contentUuid = readUuid(row.content);
+      const expectedUuid = isValidSyncUuid(contentUuid) ? contentUuid : await deterministicUuid(row.id);
+      if (f.uuid !== expectedUuid) {
+        skip("frontmatter_id_mismatch", { id: row.id });
+        continue;
+      }
+      if (usedPaths.has(norm(to))) {
+        skip("target_exists", { id: row.id });
+        continue;
+      }
+      if (plannedTargets.has(norm(to))) {
+        skip("target_already_planned", { id: row.id });
+        continue;
+      }
+      plannedTargets.add(norm(to));
+      const textValue = doc2.getMap("idToText").get(f.fileId);
+      candidates.push({ fileId: f.fileId, id: row.id, uuid: f.uuid, from: f.path, to, deleted: f.deleted, content: textValue instanceof YText ? textValue.toString() : null });
+    }
+    const selected = candidates.slice(0, limit);
+    const base = {
+      ok: true,
+      dryRun: !apply,
+      limit,
+      vaultFiles,
+      d1TelegramNotes: rows.length,
+      scanned: legacy.length,
+      candidates: candidates.length,
+      selected: selected.length,
+      renames: selected.map((c) => ({ id: c.id, from: c.from, to: c.to, deleted: c.deleted })),
+      skipped
+    };
+    if (!apply || selected.length === 0) return { ...base, applied: false };
+    const renamed = /* @__PURE__ */ new Map();
+    const rejected = [];
+    await this.pullVault((d) => {
+      const meta = d.getMap("meta");
+      const idToText = d.getMap("idToText");
+      const pathToId = d.getMap("pathToId");
+      const now = scan(d);
+      d.transact(() => {
+        for (const c of selected) {
+          const reject = /* @__PURE__ */ __name((reason) => rejected.push({ from: c.from, reason }), "reject");
+          const entry = meta.get(c.fileId);
+          if (!entry || metaPath(entry) !== norm(c.from) || metaDeleted(entry) !== c.deleted) {
+            reject("changed_since_plan");
+            continue;
+          }
+          const textValue = idToText.get(c.fileId);
+          const currentUuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
+          if (currentUuid !== c.uuid) {
+            reject("identity_changed_since_plan");
+            continue;
+          }
+          if (now.files.some((x) => x.fileId !== c.fileId && norm(x.path) === norm(c.to))) {
+            reject("target_exists_since_plan");
+            continue;
+          }
+          if (pathToId.get(c.from) !== void 0 && pathToId.get(c.from) !== c.fileId) {
+            reject("source_index_mismatch");
+            continue;
+          }
+          if (pathToId.get(c.to) !== void 0 && pathToId.get(c.to) !== c.fileId) {
+            reject("target_index_occupied");
+            continue;
+          }
+          const nowMs = Date.now();
+          if (entry instanceof YMap) {
+            entry.set("path", c.to);
+            entry.set("mtime", nowMs);
+            entry.set("device", WORKER_DEVICE);
+          } else {
+            meta.set(c.fileId, { ...entry, path: c.to, mtime: nowMs, device: WORKER_DEVICE });
+          }
+          if (pathToId.get(c.from) === c.fileId) pathToId.delete(c.from);
+          if (!c.deleted) pathToId.set(c.to, c.fileId);
+          else if (pathToId.get(c.to) === c.fileId) pathToId.delete(c.to);
+          renamed.set(c.fileId, c);
+        }
+      }, "akatuki-apply");
+      return renamed.size;
+    });
+    const verifyDoc = await this.pullVault();
+    const vMeta = verifyDoc.getMap("meta");
+    const vText = verifyDoc.getMap("idToText");
+    const vPathToId = verifyDoc.getMap("pathToId");
+    let verified = 0;
+    const unverified = [];
+    for (const c of selected) {
+      if (!renamed.has(c.fileId)) continue;
+      const entry = vMeta.get(c.fileId);
+      const t = vText.get(c.fileId);
+      const pathOk = entry !== void 0 && metaPath(entry) === norm(c.to);
+      const deletedOk = entry !== void 0 && metaDeleted(entry) === c.deleted;
+      const bodyOk = c.content === null ? !(t instanceof YText) : t instanceof YText && t.toString() === c.content;
+      const indexOk = c.deleted ? vPathToId.get(c.to) !== c.fileId : vPathToId.get(c.to) === c.fileId;
+      if (pathOk && deletedOk && bodyOk && indexOk) verified++;
+      else unverified.push(c.from);
+    }
+    return { ...base, applied: renamed.size > 0, renamedCount: renamed.size, verified, unverified, rejected };
+  }
   // 段階2b: D1のTelegramノートのうち、YAOS上のVaultにまだ無いものを新規作成する(dry-run既定)。
   // 同一性はfrontmatterのid(UUID)が主キーで、Vaultファイルのfrontmatter idが一致すれば、
   // ファイル名が変わっていても既存とみなして作らない。ファイル名末尾のid由来16桁hexは
@@ -11307,6 +11505,18 @@ var YjsClientDO = class extends DurableObject {
         const limitParam = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_APPLY_LIMIT);
         const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(MAX_APPLY_LIMIT, Math.floor(limitParam))) : DEFAULT_APPLY_LIMIT;
         const result = await this.createTelegramNotes(apply, limit);
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, error: this.lastError }, { status: 502 });
+      }
+    }
+    if (action === "telegram-rename") {
+      try {
+        const apply = reqUrl.searchParams.get("apply") === "1";
+        const limitParam = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_APPLY_LIMIT);
+        const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(MAX_APPLY_LIMIT, Math.floor(limitParam))) : DEFAULT_APPLY_LIMIT;
+        const result = await this.renameTelegramFiles(apply, limit);
         return Response.json(result, { status: result.ok ? 200 : 409 });
       } catch (err) {
         this.lastError = String(err);
@@ -12164,11 +12374,11 @@ var wrapper_default = {
         const res = await doFetch(env, url.pathname === "/sync/diff" ? "diff" : "plan");
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
       }
-      if ((url.pathname === "/sync/apply" || url.pathname === "/sync/telegram") && request.method === "POST") {
+      if ((url.pathname === "/sync/apply" || url.pathname === "/sync/telegram" || url.pathname === "/sync/telegram-rename") && request.method === "POST") {
         const params2 = new URLSearchParams();
         if (url.searchParams.get("apply") === "1") params2.set("apply", "1");
         if (url.searchParams.has("limit")) params2.set("limit", url.searchParams.get("limit"));
-        const action = url.pathname === "/sync/telegram" ? "telegram" : "apply";
+        const action = url.pathname === "/sync/telegram" ? "telegram" : url.pathname === "/sync/telegram-rename" ? "telegram-rename" : "apply";
         const res = await env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}?${params2}`));
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
       }
