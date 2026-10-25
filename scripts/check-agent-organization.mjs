@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const geminiClientSource = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
+const aiPermissionSource = await readFile(new URL("../src/ai-permission.mjs", import.meta.url), "utf8");
 for (const contract of [
   "isBulkAiPermissionRequest",
   "isBulkAiPermissionApproval",
@@ -25,7 +26,7 @@ for (const contract of [
   "AND id IN (",
   "env.DB.batch(statements)"
 ]) {
-  assert.ok(source.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
+  assert.ok(aiPermissionSource.includes(contract), "Missing Telegram bulk AI permission safety contract: " + contract);
 }
 
 const previewMigration = await readFile(new URL("../migrations/0012_bot_ai_permission_previews.sql", import.meta.url), "utf8");
@@ -77,7 +78,7 @@ for (const contract of [
   "UPDATE notes SET sensitivity = 'sensitive', review_state = 'ready'",
   "機微情報を含むノート"
 ]) {
-  assert.ok(source.includes(contract), "Missing sensitive-note review gate: " + contract);
+  assert.ok(aiPermissionSource.includes(contract), "Missing sensitive-note review gate: " + contract);
 }
 
 const answerStart = source.indexOf("async function answerTelegramMessage");
