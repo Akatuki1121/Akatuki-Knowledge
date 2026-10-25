@@ -5,8 +5,6 @@ import { readFile } from "node:fs/promises";
 // アプリ側のソースだけを対象にし、ベンダコード (Yjs / lib0) は行単位で除外する。
 const workerSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const outboxSource = await readFile(new URL("../src/sync-outbox.mjs", import.meta.url), "utf8");
-const organizeSource = await readFile(new URL("../src/organize.mjs", import.meta.url), "utf8");
-const geminiClientSource = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
 const replyTextSource = await readFile(new URL("../src/reply-text.mjs", import.meta.url), "utf8");
 const noteSearchTextSource = await readFile(new URL("../src/note-search-text.mjs", import.meta.url), "utf8");
 const botAlertsSource = await readFile(new URL("../src/bot-alerts.mjs", import.meta.url), "utf8");
@@ -22,35 +20,13 @@ assert.ok(
   workerSource.includes('from "./log-sanitize.mjs"'),
   "the Worker entry point must use the shared log sanitizer"
 );
-assert.ok(
-  organizeSource.includes('from "./log-sanitize.mjs"'),
-  "the organize runner must build its failure description on the shared log sanitizer"
-);
-
-// callGemini は上流の自由文字列を例外メッセージへ残さない。
-const geminiStart = geminiClientSource.indexOf("async function callGemini");
-const geminiEnd = geminiClientSource.indexOf("__name(callGemini", geminiStart);
-assert.ok(geminiStart >= 0 && geminiEnd > geminiStart, "callGemini must exist");
-const geminiSource = geminiClientSource.slice(geminiStart, geminiEnd);
-assert.ok(!geminiSource.includes("data?.error?.message"), "callGemini must not retain the upstream free-form error message");
-assert.ok(geminiSource.includes("failure.httpStatus = response.status"), "callGemini must keep the HTTP status on the failure");
-assert.ok(geminiSource.includes("failure.apiStatus"), "callGemini must keep the API status on the failure");
-
-// callGeminiWebResearch も同様に、上流の自由文字列を残さずステータスだけを保持する (Issue #90)。
-const webResearchStart = geminiClientSource.indexOf("async function callGeminiWebResearch");
-const webResearchEnd = geminiClientSource.indexOf("__name(callGeminiWebResearch", webResearchStart);
-assert.ok(webResearchStart >= 0 && webResearchEnd > webResearchStart, "callGeminiWebResearch must exist");
-const webResearchSource = geminiClientSource.slice(webResearchStart, webResearchEnd);
-assert.ok(!webResearchSource.includes("data?.error?.message"), "callGeminiWebResearch must not retain the upstream free-form error message");
-assert.ok(webResearchSource.includes("failure.httpStatus = response.status"), "callGeminiWebResearch must keep the HTTP status on the failure");
-assert.ok(webResearchSource.includes("failure.apiStatus"), "callGeminiWebResearch must keep the API status on the failure");
 
 // アプリ側の console.* は、固定のイベント名だけの出力 (分類 A のタイミングログ等) か、
 // describeSafeFailure 経由の構造化出力を伴うものだけに限る。
 const APP_CONSOLE_LINES = /console\.(?:log|error|warn)\(/u;
 // 分類 D のベンダ行 (Yjs / lib0 の固定文字列) は対象外として列挙する。
 const VENDOR_LOG_MARKERS = ["computeLoggingArgs", "[yjs]", "already integrated as a sub-document", "Yjs was already imported", "console.error(e);"];
-for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource], ["src/gemini-client.mjs", geminiClientSource], ["src/reply-text.mjs", replyTextSource], ["src/note-search-text.mjs", noteSearchTextSource], ["src/bot-alerts.mjs", botAlertsSource], ["src/background-task-policy.mjs", taskPolicySource]]) {
+for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/reply-text.mjs", replyTextSource], ["src/note-search-text.mjs", noteSearchTextSource], ["src/bot-alerts.mjs", botAlertsSource], ["src/background-task-policy.mjs", taskPolicySource]]) {
   source.split("\n").forEach((line, index) => {
     if (!APP_CONSOLE_LINES.test(line)) return;
     if (VENDOR_LOG_MARKERS.some((marker) => line.includes(marker))) return;

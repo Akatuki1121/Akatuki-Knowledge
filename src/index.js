@@ -23,16 +23,11 @@ import {
   buildAgentMemorySuppressionStatements
 } from "./agent-memory.mjs";
 import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent } from "./ai-send-guard.mjs";
-import { classifyOperationalFailure, createOrganizeRunner } from "./organize.mjs";
-import { createGeminiClient } from "./gemini-client.mjs";
 import { createReplyText } from "./reply-text.mjs";
 import { createNoteSearchText } from "./note-search-text.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
 import { classifyAgentTaskError } from "./background-task-policy.mjs";
-import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
-// Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
-// ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
-const { callGemini, callGeminiWebResearch } = createGeminiClient({ inspectWholeContent, inspectAndRedact, hasSensitiveCategory, parseGroundedWebResearch });
+import { classifyOperationalFailure, describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
 const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
 // 検索テキスト処理は src/note-search-text.mjs に分離した (#86)。
@@ -40,9 +35,6 @@ const { capLikeTerm, searchTerms, excerpt } = createNoteSearchText();
 // 運用アラートは src/bot-alerts.mjs に分離した (#86)。
 // Telegram 廃止後は Workers Logs への出力のみで、送信関数の注入は不要になった。
 const { enqueueBotAlert } = createBotAlerts();
-// AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
-// バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
-const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 var MAX_BODY_BYTES = 1024 * 1024;
 var MAX_NOTES_PER_SYNC = 20;
@@ -65,11 +57,9 @@ var worker_default = {
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
         if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) { const response = await correctNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
-        if (request.method === "POST" && url.pathname === "/api/ai-preview") return previewAiRequest(request, env);
         if (request.method === "POST" && url.pathname === "/api/sync") return syncNotes(request, env);
         if (request.method === "GET" && url.pathname === "/api/search") return searchNotes(url, env);
         if (request.method === "POST" && url.pathname === "/api/ask") return askQuestion(request, env);
-        if (request.method === "POST" && url.pathname === "/api/organize") return organizePending(env, 5);
         return json({ error: "Not found" }, 404);
       } catch (error) {
         console.error("request failed", JSON.stringify(describeSafeFailure("request_failed", error)));
@@ -87,16 +77,6 @@ const { enqueueSyncJob, backfillSyncUuidIndex, drainSyncOutbox } = createSyncOut
 async function runScheduledMaintenance(env) {
   await drainSyncOutbox(env, 10);
   await backfillSyncUuidIndex(env, 100);
-  if (!env.GEMINI_API_KEY) {
-    await enqueueBotAlert(env, "configuration");
-  } else {
-    try {
-      await organizePending(env, Number(env.ORGANIZE_PER_RUN || 2));
-    } catch (error) {
-      await enqueueBotAlert(env, classifyOperationalFailure(error));
-      console.error("scheduled organization failed", JSON.stringify(describeSafeFailure("scheduled_organization_failed", error)));
-    }
-  }
 }
 __name(runScheduledMaintenance, "runScheduledMaintenance");
 function json(data, status = 200) {
@@ -464,81 +444,13 @@ async function correctNote(request, url, env) {
   return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(aiAllowed) });
 }
 __name(correctNote, "correctNote");
-async function buildAiPreview(body, env) {
-  const question = typeof body.question === "string" ? body.question.trim().slice(0, 2e3) : "";
-  if (question.length < 2) return { error: "question must contain at least 2 characters", status: 400 };
-  const inspectedQuestion = inspectAndRedact(question, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-  if (!inspectedQuestion.ok) return { error: "\u8CEA\u554F\u306B\u5B9F\u969B\u306E\u8A8D\u8A3C\u60C5\u5831\u3089\u3057\u3044\u5024\u304C\u542B\u307E\u308C\u308B\u305F\u3081\u3001AI\u9001\u4FE1\u3092\u505C\u6B62\u3057\u307E\u3057\u305F\u3002\u8A8D\u8A3C\u60C5\u5831\u3092\u524A\u9664\u3057\u3066\u518D\u8A66\u884C\u3057\u3066\u304F\u3060\u3055\u3044\u3002", status: 422, findings: inspectedQuestion.findings };
-  if (hasSensitiveCategory(inspectedQuestion.findings)) return { error: "機微情報を含む質問はAI送信対象にできません。ノート原文は変更されません。", status: 422, findings: inspectedQuestion.findings };
-  const matches = await findRelevantNotes(question, env, 8);
-  if (!matches.length) return { preview: { sendable: false, reason: "no_sources", message: "\u95A2\u9023\u3059\u308B\u30CE\u30FC\u30C8\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F\u3002", findings: inspectedQuestion.findings, sources: [], payloadPreview: "" } };
-  const sources = [];
-  const findings = [...inspectedQuestion.findings];
-  const blockedNotes = [];
-  for (const note of matches) {
-    const wholeNote = inspectWholeContent(note.content, env);
-    findings.push(...wholeNote.findings);
-    if (wholeNote.credentials) {
-      blockedNotes.push({ id: note.id, title: note.title, reason: "credential_detected" });
-      continue;
-    }
-    // Preserve the original note; sensitive categories are excluded only from the outbound AI payload.
-    if (hasSensitiveCategory(wholeNote.findings)) {
-      blockedNotes.push({ id: note.id, title: note.title, reason: "sensitive_info_requires_confirmation" });
-      continue;
-    }
-    if (note.ai_allowed !== 1) {
-      blockedNotes.push({ id: note.id, title: note.title, reason: "not_approved" });
-      continue;
-    }
-    const rawExcerpt = excerpt(note.content, question, 1200);
-    const inspected = inspectAndRedact(rawExcerpt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    findings.push(...inspected.findings);
-    if (!inspected.ok) {
-      blockedNotes.push({ id: note.id, title: note.title, reason: "credential_detected" });
-      continue;
-    }
-    sources.push({ id: note.id, title: `NOTE_${sources.length + 1}`, safeText: inspected.text });
-    if (sources.length >= 5) break;
-  }
-  if (!sources.length) return { preview: { sendable: false, reason: "no_approved_sources", message: "\u95A2\u9023\u30CE\u30FC\u30C8\u304CAI\u9001\u4FE1\u672A\u8A31\u53EF\u304B\u3001\u8A8D\u8A3C\u60C5\u5831\u304C\u691C\u51FA\u3055\u308C\u305F\u305F\u3081\u9001\u4FE1\u3067\u304D\u307E\u305B\u3093\u3002\u30CE\u30FC\u30C8\u306E\u8A31\u53EF\u72B6\u614B\u3068\u8A8D\u8A3C\u60C5\u5831\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002", findings: [...new Set(findings)], blockedNotes, sources: [], payloadPreview: "" } };
-  const prompt = [
-    "\u3042\u306A\u305F\u306F\u500B\u4EBA\u7528\u30CA\u30EC\u30C3\u30B8\u30D9\u30FC\u30B9\u306E\u691C\u7D22\u30A2\u30B7\u30B9\u30BF\u30F3\u30C8\u3067\u3059\u3002\u4EE5\u4E0B\u306E\u629C\u7C8B\u3060\u3051\u3092\u6839\u62E0\u3068\u3057\u3066\u3001\u65E5\u672C\u8A9E\u3067\u7C21\u6F54\u306B\u56DE\u7B54\u3057\u3066\u304F\u3060\u3055\u3044\u3002",
-    "\u8A18\u8F09\u3055\u308C\u3066\u3044\u306A\u3044\u4E8B\u5B9F\u306F\u63A8\u6E2C\u3067\u88DC\u308F\u305A\u3001\u4E0D\u660E\u3068\u660E\u793A\u3057\u3066\u304F\u3060\u3055\u3044\u3002\u56DE\u7B54\u3067\u306F [1] \u306E\u3088\u3046\u306A\u53C2\u7167\u756A\u53F7\u3092\u4F7F\u3063\u3066\u304F\u3060\u3055\u3044\u3002",
-    `\u8CEA\u554F:
-${inspectedQuestion.text}`,
-    "\u53C2\u7167\u30E1\u30E2:",
-    ...sources.map((source, i) => `[${i + 1}] ${source.title}
-${source.safeText}`)
-  ].join("\n\n");
-  return { preview: { sendable: true, findings: [...new Set(findings)], blockedNotes, sources: sources.map((s) => ({ id: s.id, title: s.title })), payloadPreview: prompt, confirmationToken: await sha256(prompt) }, prompt, sources };
-}
-__name(buildAiPreview, "buildAiPreview");
-async function previewAiRequest(request, env) {
-  const body = await readJson(request);
-  const built = await buildAiPreview(body, env);
-  if (built.error) return json({ error: built.error, findings: built.findings || [] }, built.status);
-  return json(built.preview);
-}
-__name(previewAiRequest, "previewAiRequest");
 async function askQuestion(request, env) {
-  if (!env.GEMINI_API_KEY) return json({ error: "GEMINI_API_KEY is not configured. Search works without an AI key." }, 503);
   const body = await readJson(request);
-  if (body.confirmSend !== true) return json({ error: "\u9001\u4FE1\u524D\u30D7\u30EC\u30D3\u30E5\u30FC\u3092\u78BA\u8A8D\u3057\u3001confirmSend: true \u3092\u660E\u793A\u3057\u3066\u304F\u3060\u3055\u3044\u3002", code: "confirmation_required" }, 428);
-  const built = await buildAiPreview(body, env);
-  if (built.error) return json({ error: built.error, findings: built.findings || [] }, built.status);
-  if (!built.preview.sendable) return json({ error: built.preview.message || "\u5B89\u5168\u78BA\u8A8D\u3092\u901A\u904E\u3057\u307E\u305B\u3093\u3067\u3057\u305F\u3002", preview: built.preview }, 422);
-  if (typeof body.confirmationToken !== "string" || !constantTimeEqual(body.confirmationToken, built.preview.confirmationToken)) {
-    return json({ error: "\u30D7\u30EC\u30D3\u30E5\u30FC\u5F8C\u306B\u9001\u4FE1\u5185\u5BB9\u304C\u5909\u308F\u3063\u305F\u304B\u3001\u78BA\u8A8D\u30C8\u30FC\u30AF\u30F3\u304C\u3042\u308A\u307E\u305B\u3093\u3002\u3082\u3046\u4E00\u5EA6\u30D7\u30EC\u30D3\u30E5\u30FC\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002", code: "preview_mismatch" }, 409);
-  }
-  try {
-    const answer = await callGemini(env, built.prompt, 1400);
-    await writeAudit(env, "ask", built.sources.length, built.preview.findings, built.prompt.length, "success");
-    return json({ answer, sources: built.sources.map((s) => ({ id: s.id, title: s.title })) });
-  } catch (error) {
-    await writeAudit(env, "ask", built.sources.length, built.preview.findings, 0, "failed");
-    throw error;
-  }
+  const question = typeof body.question === "string" ? body.question.trim().slice(0, 2e3) : "";
+  if (question.length < 2) return json({ error: "question must contain at least 2 characters" }, 400);
+  const matches = await findRelevantNotes(question, env, 8);
+  const results = matches.map((note) => ({ ...publicNote(note), excerpt: excerpt(note.content, question), relevance: note.relevance }));
+  return json({ question, results });
 }
 __name(askQuestion, "askQuestion");
 async function writeAudit(env, action, noteCount, findings, sentChars, resultCode) {

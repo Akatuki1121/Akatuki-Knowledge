@@ -28,11 +28,6 @@ binding = "YAOS"
 service = "yaos"
 environment = "production"
 
-[vars]
-GEMINI_LIGHT_MODEL = "gemini-3.1-flash-lite"
-GEMINI_MODEL = "gemini-3.5-flash-lite"
-ORGANIZE_PER_RUN = "2"
-
 [[workflows]]
 name = "akatuki-knowledge-agent-tasks"
 binding = "AGENT_TASK_WORKFLOW"

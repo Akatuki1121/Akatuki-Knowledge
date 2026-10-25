@@ -3,9 +3,8 @@ export const checks = [
   ["check-group-coverage", process.execPath, ["scripts/test-check-groups.mjs"]],
   ["sync-module-syntax", process.execPath, ["--check", "src/sync-outbox.mjs"]],
   ["ai-send-guard-syntax", process.execPath, ["--check", "src/ai-send-guard.mjs"]],
-  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/organize-failure.test.js", "tests/log-sanitize.test.js", "tests/gemini-client.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/bot-alerts.test.js"]],
+  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/log-sanitize.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/bot-alerts.test.js"]],
   ["log-sanitize-syntax", process.execPath, ["--check", "src/log-sanitize.mjs"]],
-  ["gemini-client-syntax", process.execPath, ["--check", "src/gemini-client.mjs"]],
   ["reply-text-syntax", process.execPath, ["--check", "src/reply-text.mjs"]],
   ["note-search-text-syntax", process.execPath, ["--check", "src/note-search-text.mjs"]],
   ["bot-alerts-syntax", process.execPath, ["--check", "src/bot-alerts.mjs"]],
@@ -44,6 +43,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-"))
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "gemini-client-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
 }
