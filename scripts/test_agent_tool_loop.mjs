@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  AGENT_GITHUB_WRITE_PLAN_FEEDBACK,
   AGENT_WEB_RESEARCH_TOOL,
   AGENT_READ_ONLY_TOOLS,
   AGENT_TOOL_LIMITS,
@@ -413,4 +414,93 @@ await assert.rejects(runAgentToolLoop({
   executeTool: async () => { throw new Error("must not execute without a complete prior file read"); },
   saveCheckpoint: async () => true,
 }), (error) => error.message === "github_write_requires_complete_file_read");
-console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, strict schemas, citations, loop/step bounds, and checkpoint resume.");
+
+// A write plan whose shape fails validation is returned to the model as fixed feedback
+// (Issue #90) instead of killing the task: the model can re-propose within the
+// model-call budget, and only the corrected plan is executed and checkpointed.
+const correctedBranchPlan = {
+  repository: "example/project",
+  summary: "Create a branch and add a note file",
+  operations: [
+    { type: "create_branch", branch: "bot/issue-90", base_ref: "main" },
+    { type: "create_file", branch: "bot/issue-90", path: "docs/note.md", content: "# Note\n", message: "docs: add note" },
+  ],
+};
+const malformedBranchPlans = [
+  // base instead of base_ref (the key name is not disclosed by the GitHub API either)
+  { ...correctedBranchPlan, operations: [{ type: "create_branch", branch: "bot/issue-90", base: "main" }, correctedBranchPlan.operations[1]] },
+  // base_ref missing entirely
+  { ...correctedBranchPlan, operations: [{ type: "create_branch", branch: "bot/issue-90" }, correctedBranchPlan.operations[1]] },
+  // an extra key on create_branch
+  { ...correctedBranchPlan, operations: [{ type: "create_branch", branch: "bot/issue-90", base_ref: "main", message: "extra" }, correctedBranchPlan.operations[1]] },
+];
+for (const malformedPlan of malformedBranchPlans) {
+  const prompts = [];
+  const executed = [];
+  const recovered = await runAgentToolLoop({
+    initialPrompt: "Create a branch and a file in example/project",
+    allowGitHubRead: true,
+    allowGitHubWrite: true,
+    callModel: async ({ prompt, modelCall }) => {
+      prompts.push(prompt);
+      if (modelCall === 1) return action("github_propose_write", malformedPlan);
+      if (modelCall === 2) return action("github_propose_write", correctedBranchPlan);
+      return final("A corrected write plan is ready for approval.", []);
+    },
+    executeTool: async (tool, args) => {
+      executed.push({ tool, args });
+      return { pendingGitHubWrite: { status: "pending", taskId: "task-2", plan: args, planHash: "def", expiresAt: "2099-01-01T00:00:00.000Z" } };
+    },
+    saveCheckpoint: async (checkpoint) => {
+      assert.ok(!JSON.stringify(checkpoint).includes(JSON.stringify(malformedPlan.operations[0])),
+        "A rejected plan must never be written into a checkpoint");
+      return true;
+    },
+  });
+  assert.equal(executed.length, 1, "Only the corrected proposal may execute");
+  assert.deepEqual(executed[0].args, correctedBranchPlan);
+  assert.equal(recovered.pendingGitHubWrite.taskId, "task-2");
+  assert.equal(recovered.modelCalls, 3);
+  assert.ok(!prompts[0].includes(AGENT_GITHUB_WRITE_PLAN_FEEDBACK), "Feedback appears only after a rejected proposal");
+  assert.ok(prompts[1].includes(AGENT_GITHUB_WRITE_PLAN_FEEDBACK), "The next prompt must carry the fixed validation feedback");
+  assert.ok(!prompts[1].includes(JSON.stringify(malformedPlan)), "Feedback must not echo the rejected plan back");
+}
+
+// A model that never fixes the plan exhausts the model-call budget and the task fails
+// with the reason-coded error, not the bare invalid_input that hid the failure point.
+let stubbornModelCalls = 0;
+let stubbornExecutions = 0;
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Create a branch in example/project",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async () => {
+    stubbornModelCalls++;
+    return action("github_propose_write", malformedBranchPlans[0]);
+  },
+  executeTool: async () => { stubbornExecutions++; },
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "invalid_input:write_plan_shape");
+assert.equal(stubbornModelCalls, AGENT_TOOL_LIMITS.maxModelCalls, "Plan retries stay within the model-call budget");
+assert.equal(stubbornExecutions, 0, "A rejected plan must never execute");
+
+// Safety rejections are not shape mistakes: a blocked path still fails immediately
+// with its original error and is not converted into retry feedback.
+let blockedModelCalls = 0;
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Create a file in example/project",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async () => {
+    blockedModelCalls++;
+    return action("github_propose_write", {
+      repository: "example/project",
+      summary: "Write a blocked path",
+      operations: [{ type: "create_file", branch: "main", path: ".env", content: "x", message: "bad" }],
+    });
+  },
+  executeTool: async () => { throw new Error("must not execute"); },
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "github_path_blocked");
+assert.equal(blockedModelCalls, 1, "A safety-blocked plan must fail on the first response, without feedback retries");
+console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
