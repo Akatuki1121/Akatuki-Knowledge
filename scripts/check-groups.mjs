@@ -19,6 +19,7 @@ export const checks = [
   ["sync-telegram-rename", process.execPath, ["scripts/test-sync-telegram-rename.mjs"]],
   ["sync-outbox", process.execPath, ["scripts/test-sync-outbox.mjs"]],
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
+  ["sync-strip-frontmatter-ids", process.execPath, ["scripts/test-sync-strip-frontmatter-ids.mjs"]],
   ["background-task-policy-syntax", process.execPath, ["--check", "src/background-task-policy.mjs"]],
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
