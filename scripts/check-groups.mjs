@@ -19,6 +19,7 @@ export const checks = [
   ["sync-conflicts", process.execPath, ["scripts/test-sync-conflicts.mjs"]],
   ["sync-telegram-identity", process.execPath, ["scripts/test-sync-telegram-identity.mjs"]],
   ["sync-telegram-rename", process.execPath, ["scripts/test-sync-telegram-rename.mjs"]],
+  ["sync-telegram-missing-id", process.execPath, ["scripts/test-sync-telegram-missing-id.mjs"]],
   ["sync-outbox", process.execPath, ["scripts/test-sync-outbox.mjs"]],
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
   ["background-task-policy-syntax", process.execPath, ["--check", "src/background-task-policy.mjs"]],

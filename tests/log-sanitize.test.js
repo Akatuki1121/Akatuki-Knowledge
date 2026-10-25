@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "../src/log-sanitize.mjs";
+import { describeSafeFailure, safeErrorCode, summarizeReconcile, summarizeTelegramMissingId } from "../src/log-sanitize.mjs";
 
 test("safe failure keeps classification fields but never the error message", () => {
   const error = new Error("quota exceeded for note body: 個人メモの本文 https://example.com/secret-path");
@@ -70,4 +70,34 @@ test("reconcile summary keeps counts, replaces the ID list with a count, and cod
     errorCode: "upstream_error"
   });
   assert.ok(!JSON.stringify(summary).includes("note-a"), "note IDs must not be logged");
+});
+
+test("telegram missing-id summary keeps counts, replaces path lists with counts, and codes the error", () => {
+  const summary = summarizeTelegramMissingId({
+    ok: true,
+    dryRun: false,
+    applied: true,
+    scanned: 8,
+    candidates: 5,
+    backfilledCount: 5,
+    verified: 5,
+    skipped: [{ path: "Akatuki Knowledge/Telegram/secret-title.md", reason: "content_mismatch" }],
+    unverified: [],
+    rejected: [{ from: "Akatuki Knowledge/Telegram/other.md", reason: "changed_since_plan" }],
+    error: "free-form upstream detail"
+  });
+  assert.deepEqual(summary, {
+    ok: true,
+    dryRun: false,
+    applied: true,
+    scanned: 8,
+    candidates: 5,
+    backfilledCount: 5,
+    verified: 5,
+    skipped: 1,
+    unverified: 0,
+    rejected: 1,
+    errorCode: "upstream_error"
+  });
+  assert.ok(!JSON.stringify(summary).includes("secret-title"), "vault paths must not be logged");
 });

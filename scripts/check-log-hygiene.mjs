@@ -58,7 +58,7 @@ for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.
     if (!APP_CONSOLE_LINES.test(line)) return;
     if (VENDOR_LOG_MARKERS.some((marker) => line.includes(marker))) return;
     assert.ok(
-      line.includes("describeSafeFailure") || line.includes("describeOrganizeFailure") || line.includes("safeErrorCode") || line.includes("summarizeReconcile") || line.includes("telegram_answer_timing") || line.includes("agent_memory_timing") || line.includes("agentTaskRecovery"),
+      line.includes("describeSafeFailure") || line.includes("describeOrganizeFailure") || line.includes("safeErrorCode") || line.includes("summarizeReconcile") || line.includes("summarizeTelegramMissingId") || line.includes("telegram_answer_timing") || line.includes("agent_memory_timing") || line.includes("agentTaskRecovery"),
       `${name}:${index + 1} logs without the shared sanitizer: ${line.trim().slice(0, 120)}`
     );
   });

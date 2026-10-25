@@ -46,7 +46,7 @@ import { createTelegramClient } from "./telegram-client.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
 import { createTelegramIntent } from "./telegram-intent.mjs";
 import { classifyAgentTaskError, describeAgentTaskStopReason } from "./background-task-policy.mjs";
-import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
+import { describeSafeFailure, safeErrorCode, summarizeReconcile, summarizeTelegramMissingId } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
 const { callGemini, callGeminiWebResearch } = createGeminiClient({ inspectWholeContent, inspectAndRedact, hasSensitiveCategory, parseGroundedWebResearch });
@@ -11057,6 +11057,260 @@ var YjsClientDO = class extends DurableObject {
     }
     return { ...base, applied: renamed.size > 0, renamedCount: renamed.size, verified, unverified, rejected };
   }
+  // Issue #107 残件の自動化: Telegramフォルダのファイルのうち、frontmatter に有効な id が
+  // 無いものを検出・分類し、特定できたものだけ id 補充と slug 名への改名を行う。dry-run 既定で、
+  // 適用は Worker 変数 TELEGRAM_MISSING_ID_AUTOFILL === "true" のときだけ許可する(既定OFF)。
+  // 分類の分担: (a) パスが D1 の notes 行と一致するファイルは reconcileExistingNoteIds が担当し、
+  // ここでは扱わない(Telegramノートのパスは D1 に保存されていないため、Telegramファイルは
+  // パスでは照合できない)。(c) 対応の無い新規ファイルの D1 行作成は hourly pull(syncNotes)と
+  // reconcile が notes に対して既に行っているため、ここでは作らない(telegram_notes 行は
+  // Telegram 由来の id が必要で、Vaultファイルからは作れない)。
+  // (b) ファイル名の旧規則 suffix(末尾16桁hex)から telegram_notes 行が一意に定まり、本文が
+  // safe-recovery と同じ照合(id 行を除いた比較)で一致する場合は、その行の期待UUID(ステップ1と
+  // 同じ優先順: D1本文の有効な frontmatter UUID → deterministicUuid(row.id))をファイルの
+  // frontmatter へ補充し(本文の id 行以外は変更しない)、ファイル名を slug 規則へ改名する。
+  // (d) suffix が引けない・複数行に一致・行が削除済み・本文不一致・UUID が他ファイルに存在・
+  // 改名先の占有など曖昧な場合は、一切変更せず理由付きで報告する(fail-closed、連番は付けない)。
+  // D1 への書き込みはしない(ステップ2と同じ)。冪等: 補充済みファイルは次回走査で対象外になる。
+  // 適用は pullVault のトランザクション内で適用直前の再走査と突き合わせ、適用後に読み戻し検証する。
+  async backfillTelegramMissingIds(apply, limit) {
+    const TG_DIR = `${RESERVED_ROOT}/Telegram/`;
+    const LEGACY_SUFFIX = /-([0-9a-f]{16})\.md$/;
+    const flagEnabled = this.env.TELEGRAM_MISSING_ID_AUTOFILL === "true";
+    const effectiveApply = Boolean(apply) && flagEnabled;
+    const metaPath = /* @__PURE__ */ __name((v) => {
+      const p = v instanceof YMap ? v.get("path") : v?.path;
+      return typeof p === "string" ? norm(p) : null;
+    }, "metaPath");
+    const metaDeleted = /* @__PURE__ */ __name((v) => v instanceof YMap ? v.get("deletedAt") !== void 0 || v.get("deleted") === true : v?.deletedAt !== void 0 || v?.deleted === true, "metaDeleted");
+    const comparableText = /* @__PURE__ */ __name((value) => {
+      const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      const match = normalized.match(/^---\n([\s\S]*?)\n---\n*/);
+      if (!match) return normalized;
+      const lines = match[1].split("\n").filter((line) => !/^id:\s*/i.test(line));
+      const prefix = lines.length ? "---\n" + lines.join("\n") + "\n---\n" : "";
+      return prefix + normalized.slice(match[0].length);
+    }, "comparableText");
+    const withUuid = /* @__PURE__ */ __name((content, uuid) => {
+      const text = String(content ?? "");
+      if (/^---\r?\n[\s\S]*?\r?\n---/.test(text)) {
+        return text.replace(/^---\r?\n([\s\S]*?)\r?\n---/, (_all, frontmatter) => {
+          const lines = frontmatter.split(/\r?\n/).filter((line) => !/^id:\s*/i.test(line));
+          return "---\nid: \"" + uuid + "\"\n" + lines.join("\n") + "\n---";
+        });
+      }
+      return "---\nid: \"" + uuid + "\"\n---\n\n" + text;
+    }, "withUuid");
+    const scan = /* @__PURE__ */ __name((doc3) => {
+      const files = [];
+      const usedPaths = /* @__PURE__ */ new Set();
+      const uuidOwners = /* @__PURE__ */ new Map();
+      const texts = doc3.getMap("idToText");
+      doc3.getMap("meta").forEach((v, fileId) => {
+        const p = metaPath(v);
+        if (!p) return;
+        usedPaths.add(p);
+        if (!p.startsWith(TG_DIR)) return;
+        const textValue = texts.get(fileId);
+        const text = textValue instanceof YText ? textValue.toString() : null;
+        const raw = text === null ? null : readUuid(text);
+        const uuid = isValidSyncUuid(raw) ? raw : null;
+        if (uuid) {
+          const owners = uuidOwners.get(uuid) ?? [];
+          owners.push(fileId);
+          uuidOwners.set(uuid, owners);
+        }
+        files.push({ fileId, path: p, deleted: metaDeleted(v), uuid, text });
+      });
+      return { files, usedPaths, uuidOwners };
+    }, "scan");
+    const doc2 = await this.pullVault();
+    const sysMap = doc2.getMap("sys");
+    const vaultFiles = doc2.getMap("meta").size;
+    const guard = /* @__PURE__ */ __name((reason) => ({ ok: false, applied: false, error: reason, vaultFiles }), "guard");
+    if (sysMap.get("initialized") !== true) return guard("vault_not_initialized");
+    const schema = sysMap.get("schemaVersion");
+    if (typeof schema !== "number" || schema < 2) return guard("schema_version_below_2");
+    if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return guard("vault_looks_empty");
+    const rows = (await this.env.DB.prepare("SELECT id, content, deleted_at FROM telegram_notes").all()).results;
+    const byHash = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const hash16 = (await sha256Hex(row.id)).slice(0, 16);
+      const list = byHash.get(hash16) ?? [];
+      list.push(row);
+      byHash.set(hash16, list);
+    }
+    const { files, usedPaths, uuidOwners } = scan(doc2);
+    const tgFiles = files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    const hashOwners = /* @__PURE__ */ new Map();
+    for (const f of tgFiles) {
+      if (f.uuid) continue;
+      const m = f.path.match(LEGACY_SUFFIX);
+      if (!m) continue;
+      const owners = hashOwners.get(m[1]) ?? [];
+      owners.push(f.fileId);
+      hashOwners.set(m[1], owners);
+    }
+    const candidates = [];
+    const skipped = [];
+    const plannedTargets = /* @__PURE__ */ new Set();
+    const plannedUuids = /* @__PURE__ */ new Set();
+    let scanned = 0;
+    let alreadyHasId = 0;
+    for (const f of tgFiles) {
+      if (f.uuid) {
+        alreadyHasId++;
+        continue;
+      }
+      scanned++;
+      const skip = /* @__PURE__ */ __name((reason, extra = {}) => skipped.push({ path: f.path, deleted: f.deleted, reason, ...extra }), "skip");
+      if (f.deleted) {
+        skip("deleted_file");
+        continue;
+      }
+      const m = f.path.match(LEGACY_SUFFIX);
+      if (!m) {
+        skip("unmatched_no_suffix");
+        continue;
+      }
+      const hash16 = m[1];
+      if ((hashOwners.get(hash16) ?? []).length > 1) {
+        skip("duplicate_filename_suffix");
+        continue;
+      }
+      const matches = byHash.get(hash16) ?? [];
+      if (matches.length === 0) {
+        skip("d1_note_not_found");
+        continue;
+      }
+      if (matches.length > 1) {
+        skip("d1_match_ambiguous");
+        continue;
+      }
+      const row = matches[0];
+      if (row.deleted_at) {
+        skip("d1_row_deleted", { id: row.id });
+        continue;
+      }
+      const contentUuid = readUuid(row.content);
+      const expectedUuid = isValidSyncUuid(contentUuid) ? contentUuid : await deterministicUuid(row.id);
+      if ((uuidOwners.get(expectedUuid) ?? []).length > 0) {
+        skip("uuid_already_in_vault", { id: row.id });
+        continue;
+      }
+      if (plannedUuids.has(expectedUuid)) {
+        skip("uuid_already_planned", { id: row.id });
+        continue;
+      }
+      if (typeof f.text !== "string") {
+        skip("content_unreadable", { id: row.id });
+        continue;
+      }
+      if (comparableText(f.text) !== comparableText(row.content)) {
+        skip("content_mismatch", { id: row.id });
+        continue;
+      }
+      const desired = withUuid(f.text, expectedUuid);
+      if (desired.length > MAX_NOTE_CHARS) {
+        skip("content_too_large", { id: row.id });
+        continue;
+      }
+      const to = f.path.replace(LEGACY_SUFFIX, ".md");
+      if (usedPaths.has(norm(to))) {
+        skip("target_exists", { id: row.id });
+        continue;
+      }
+      if (plannedTargets.has(norm(to))) {
+        skip("target_already_planned", { id: row.id });
+        continue;
+      }
+      plannedTargets.add(norm(to));
+      plannedUuids.add(expectedUuid);
+      candidates.push({ fileId: f.fileId, id: row.id, uuid: expectedUuid, from: f.path, to, previous: f.text, desired });
+    }
+    const selected = candidates.slice(0, limit);
+    const base = {
+      ok: true,
+      dryRun: !effectiveApply,
+      flagEnabled,
+      limit,
+      vaultFiles,
+      d1TelegramNotes: rows.length,
+      scanned,
+      alreadyHasId,
+      candidates: candidates.length,
+      selected: selected.length,
+      actions: selected.map((c) => ({ id: c.id, from: c.from, to: c.to, uuid: c.uuid })),
+      skipped
+    };
+    if (!effectiveApply || selected.length === 0) return { ...base, applied: false };
+    const done = /* @__PURE__ */ new Map();
+    const rejected = [];
+    await this.pullVault((d) => {
+      const meta = d.getMap("meta");
+      const idToText = d.getMap("idToText");
+      const pathToId = d.getMap("pathToId");
+      const now = scan(d);
+      d.transact(() => {
+        for (const c of selected) {
+          const reject = /* @__PURE__ */ __name((reason) => rejected.push({ from: c.from, reason }), "reject");
+          const entry = meta.get(c.fileId);
+          if (!entry || metaPath(entry) !== norm(c.from) || metaDeleted(entry)) {
+            reject("changed_since_plan");
+            continue;
+          }
+          const textValue = idToText.get(c.fileId);
+          if (!(textValue instanceof YText) || textValue.toString() !== c.previous) {
+            reject("content_changed_since_plan");
+            continue;
+          }
+          if (now.files.some((x) => x.fileId !== c.fileId && norm(x.path) === norm(c.to))) {
+            reject("target_exists_since_plan");
+            continue;
+          }
+          if (pathToId.get(c.from) !== void 0 && pathToId.get(c.from) !== c.fileId) {
+            reject("source_index_mismatch");
+            continue;
+          }
+          if (pathToId.get(c.to) !== void 0 && pathToId.get(c.to) !== c.fileId) {
+            reject("target_index_occupied");
+            continue;
+          }
+          textValue.delete(0, textValue.length);
+          textValue.insert(0, c.desired);
+          const nowMs = Date.now();
+          if (entry instanceof YMap) {
+            entry.set("path", c.to);
+            entry.set("mtime", nowMs);
+            entry.set("device", WORKER_DEVICE);
+          } else {
+            meta.set(c.fileId, { ...entry, path: c.to, mtime: nowMs, device: WORKER_DEVICE });
+          }
+          if (pathToId.get(c.from) === c.fileId) pathToId.delete(c.from);
+          pathToId.set(c.to, c.fileId);
+          done.set(c.fileId, c);
+        }
+      }, "akatuki-apply");
+      return done.size;
+    });
+    const verifyDoc = await this.pullVault();
+    const vMeta = verifyDoc.getMap("meta");
+    const vText = verifyDoc.getMap("idToText");
+    const vPathToId = verifyDoc.getMap("pathToId");
+    let verified = 0;
+    const unverified = [];
+    for (const c of selected) {
+      if (!done.has(c.fileId)) continue;
+      const entry = vMeta.get(c.fileId);
+      const t = vText.get(c.fileId);
+      const pathOk = entry !== void 0 && metaPath(entry) === norm(c.to) && !metaDeleted(entry);
+      const bodyOk = t instanceof YText && t.toString() === c.desired && readUuid(t.toString()) === c.uuid;
+      const indexOk = vPathToId.get(c.to) === c.fileId;
+      if (pathOk && bodyOk && indexOk) verified++;
+      else unverified.push(c.from);
+    }
+    return { ...base, applied: done.size > 0, backfilledCount: done.size, verified, unverified, rejected };
+  }
   // 段階2b: D1のTelegramノートのうち、YAOS上のVaultにまだ無いものを新規作成する(dry-run既定)。
   // 同一性はfrontmatterのid(UUID)が主キーで、Vaultファイルのfrontmatter idが一致すれば、
   // ファイル名が変わっていても既存とみなして作らない。ファイル名末尾のid由来16桁hexは
@@ -11369,6 +11623,18 @@ var YjsClientDO = class extends DurableObject {
         const limitParam = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_APPLY_LIMIT);
         const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(MAX_APPLY_LIMIT, Math.floor(limitParam))) : DEFAULT_APPLY_LIMIT;
         const result = await this.renameTelegramFiles(apply, limit);
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, error: this.lastError }, { status: 502 });
+      }
+    }
+    if (action === "telegram-missing-id") {
+      try {
+        const apply = reqUrl.searchParams.get("apply") === "1";
+        const limitParam = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_APPLY_LIMIT);
+        const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(MAX_APPLY_LIMIT, Math.floor(limitParam))) : DEFAULT_APPLY_LIMIT;
+        const result = await this.backfillTelegramMissingIds(apply, limit);
         return Response.json(result, { status: result.ok ? 200 : 409 });
       } catch (err) {
         this.lastError = String(err);
@@ -12034,6 +12300,18 @@ async function persistRecoveryDiagnostics(env, result) {
     .bind(JSON.stringify(summary), now).run();
 }
 __name(persistRecoveryDiagnostics, "persistRecoveryDiagnostics");
+async function persistTelegramMissingIdDiagnostics(env, result) {
+  if (!env.DB) return;
+  const fields = ["ok", "dryRun", "flagEnabled", "vaultFiles", "d1TelegramNotes", "scanned", "alreadyHasId", "candidates", "selected", "backfilledCount", "verified", "error"];
+  const summary = { recordedAt: new Date().toISOString() };
+  for (const key of fields) if (result && Object.hasOwn(result, key)) summary[key] = result[key];
+  if (result && Array.isArray(result.skipped)) summary.skipped = result.skipped.length;
+  if (result && Array.isArray(result.unverified)) summary.unverified = result.unverified.length;
+  if (result && Array.isArray(result.rejected)) summary.rejected = result.rejected.length;
+  await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES ('telegram_missing_id_latest', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .bind(JSON.stringify(summary), summary.recordedAt).run();
+}
+__name(persistTelegramMissingIdDiagnostics, "persistTelegramMissingIdDiagnostics");
 function doFetch(env, action) {
   return env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}`));
 }
@@ -12213,11 +12491,11 @@ var wrapper_default = {
         const res = await doFetch(env, url.pathname === "/sync/diff" ? "diff" : "plan");
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
       }
-      if ((url.pathname === "/sync/apply" || url.pathname === "/sync/telegram" || url.pathname === "/sync/telegram-rename") && request.method === "POST") {
+      if ((url.pathname === "/sync/apply" || url.pathname === "/sync/telegram" || url.pathname === "/sync/telegram-rename" || url.pathname === "/sync/telegram-missing-id") && request.method === "POST") {
         const params2 = new URLSearchParams();
         if (url.searchParams.get("apply") === "1") params2.set("apply", "1");
         if (url.searchParams.has("limit")) params2.set("limit", url.searchParams.get("limit"));
-        const action = url.pathname === "/sync/telegram" ? "telegram" : url.pathname === "/sync/telegram-rename" ? "telegram-rename" : "apply";
+        const action = url.pathname === "/sync/telegram" ? "telegram" : url.pathname === "/sync/telegram-rename" ? "telegram-rename" : url.pathname === "/sync/telegram-missing-id" ? "telegram-missing-id" : "apply";
         const res = await env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}?${params2}`));
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
       }
@@ -12251,6 +12529,12 @@ var wrapper_default = {
         await persistRecoveryDiagnostics(env, reconcile);
         if (!reconcileResponse.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
           console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
+        }
+        const missingIdResponse = await doFetch(env, env.TELEGRAM_MISSING_ID_AUTOFILL === "true" ? "telegram-missing-id?apply=1" : "telegram-missing-id");
+        const missingId = await missingIdResponse.json().catch(() => ({ ok: false, error: "invalid_missing_id_response" }));
+        await persistTelegramMissingIdDiagnostics(env, missingId);
+        if (!missingIdResponse.ok || !missingId.ok || missingId.applied || missingId.candidates > 0 || (Array.isArray(missingId.skipped) && missingId.skipped.length > 0)) {
+          console.log(JSON.stringify({ telegramMissingIdAutofill: summarizeTelegramMissingId(missingId) }));
         }
       } catch (error) {
         console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));

@@ -87,3 +87,25 @@ export function summarizeReconcile(result) {
   if (result.error !== void 0) summary.errorCode = safeErrorCode(result.error);
   return summary;
 }
+
+// telegram-missing-id 分類結果の保存ログ向け要約。件数と真偽値だけを残し、
+// skipped のようなパスを含む配列は件数へ置き換え、error は分類コードへ落とす。
+const MISSING_ID_COUNT_FIELDS = new Set([
+  "scanned", "alreadyHasId", "candidates", "selected", "backfilledCount", "verified"
+]);
+
+export function summarizeTelegramMissingId(result) {
+  if (!result || typeof result !== "object") return { ok: false };
+  const summary = {};
+  if (typeof result.ok === "boolean") summary.ok = result.ok;
+  if (typeof result.dryRun === "boolean") summary.dryRun = result.dryRun;
+  if (typeof result.applied === "boolean") summary.applied = result.applied;
+  for (const key of MISSING_ID_COUNT_FIELDS) {
+    if (Number.isFinite(result[key])) summary[key] = result[key];
+  }
+  if (Array.isArray(result.skipped)) summary.skipped = result.skipped.length;
+  if (Array.isArray(result.unverified)) summary.unverified = result.unverified.length;
+  if (Array.isArray(result.rejected)) summary.rejected = result.rejected.length;
+  if (result.error !== void 0) summary.errorCode = safeErrorCode(result.error);
+  return summary;
+}
