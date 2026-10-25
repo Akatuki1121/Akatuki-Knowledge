@@ -118,7 +118,7 @@ assert.ok(folderSource.includes("const safeField = (value)"), "Folder organizati
 assert.ok(folderSource.includes('"[機微情報を含む項目]"'), "Sensitive title, path, or summary fields must be replaced before outbound processing");
 
 const summaryStart = source.indexOf("async function summarizeConversationToKnowledge");
-const summaryEnd = source.indexOf("function isFolderOrganizationRequest", summaryStart);
+const summaryEnd = source.indexOf("async function proposeFolderOrganization", summaryStart);
 const summarySource = source.slice(summaryStart, summaryEnd);
 assert.ok(summarySource.includes("selectAiSafeHistory(results.reverse()"), "Conversation summaries must build an outbound-safe copy of history");
 const guardSource = await readFile(new URL("../src/ai-send-guard.mjs", import.meta.url), "utf8");

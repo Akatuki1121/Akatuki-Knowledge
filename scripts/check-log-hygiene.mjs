@@ -12,6 +12,7 @@ const replyTextSource = await readFile(new URL("../src/reply-text.mjs", import.m
 const noteSearchTextSource = await readFile(new URL("../src/note-search-text.mjs", import.meta.url), "utf8");
 const telegramClientSource = await readFile(new URL("../src/telegram-client.mjs", import.meta.url), "utf8");
 const botAlertsSource = await readFile(new URL("../src/bot-alerts.mjs", import.meta.url), "utf8");
+const telegramIntentSource = await readFile(new URL("../src/telegram-intent.mjs", import.meta.url), "utf8");
 
 for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource]]) {
   assert.ok(!source.includes("String(error).slice(0, 200)"), `${name} must not log raw error strings`);
@@ -42,7 +43,7 @@ assert.ok(geminiSource.includes("failure.apiStatus"), "callGemini must keep the 
 const APP_CONSOLE_LINES = /console\.(?:log|error|warn)\(/u;
 // 分類 D のベンダ行 (Yjs / lib0 の固定文字列) は対象外として列挙する。
 const VENDOR_LOG_MARKERS = ["computeLoggingArgs", "[yjs]", "already integrated as a sub-document", "Yjs was already imported", "console.error(e);"];
-for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource], ["src/gemini-client.mjs", geminiClientSource], ["src/ai-permission.mjs", aiPermissionSource], ["src/reply-text.mjs", replyTextSource], ["src/note-search-text.mjs", noteSearchTextSource], ["src/telegram-client.mjs", telegramClientSource], ["src/bot-alerts.mjs", botAlertsSource]]) {
+for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource], ["src/gemini-client.mjs", geminiClientSource], ["src/ai-permission.mjs", aiPermissionSource], ["src/reply-text.mjs", replyTextSource], ["src/note-search-text.mjs", noteSearchTextSource], ["src/telegram-client.mjs", telegramClientSource], ["src/bot-alerts.mjs", botAlertsSource], ["src/telegram-intent.mjs", telegramIntentSource]]) {
   source.split("\n").forEach((line, index) => {
     if (!APP_CONSOLE_LINES.test(line)) return;
     if (VENDOR_LOG_MARKERS.some((marker) => line.includes(marker))) return;
