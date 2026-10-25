@@ -2,9 +2,9 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 
-// Behavioral tests for the Telegram note identity migration (step 1):
-// frontmatter `id:` is the primary identity key; the legacy filename suffix
-// (-<16 hex chars of the note ID hash>) is only a fallback match, and new
+// Behavioral tests for the Telegram note identity migration (step 3):
+// frontmatter `id:` is the only identity key. The legacy filename suffix
+// (-<16 hex chars of the note ID hash>) no longer matches anything, and new
 // filenames carry no suffix. Extracted from the Worker bundle like
 // test-sync-conflicts.mjs, with the production dependency implementations.
 
@@ -136,7 +136,7 @@ function tgJob(id, title, content, extra = {}) {
   assert.equal(doc.getMap("idToText").get("decoy").toString(), decoy, "A suffix-matching file with foreign frontmatter must stay untouched");
 }
 
-// --- applyKnowledgeSyncJob: legacy suffix fallback locates and renames the file ---
+// --- applyKnowledgeSyncJob: a legacy-suffix file without frontmatter no longer matches (step 3) ---
 {
   const doc = new Doc();
   const instance = makeInstance(doc);
@@ -144,14 +144,15 @@ function tgJob(id, title, content, extra = {}) {
   const job = tgJob(NOTE_ID, "Shopping List", "body text", { syncUuid: NOTE_UUID });
   const result = await instance.applyKnowledgeSyncJob(job);
   assert.equal(result.ok, true);
-  assert.equal(doc.getMap("meta").size, 1, "The legacy file must be reused, not duplicated");
-  assert.equal(doc.getMap("meta").get("legacy").get("path"), TG_DIR + "Shopping-List.md", "The fallback-matched file is renamed to the suffix-free path on update");
-  assert.equal(readUuid(doc.getMap("idToText").get("legacy").toString()), NOTE_UUID, "The update injects the frontmatter id");
-  assert.equal(doc.getMap("pathToId").has(TG_DIR + `Shopping-List-${NOTE_HASH16}.md`), false);
-  assert.equal(doc.getMap("pathToId").get(TG_DIR + "Shopping-List.md"), "legacy");
+  assert.equal(result.path, TG_DIR + "Shopping-List.md");
+  assert.equal(doc.getMap("meta").size, 2, "Without a frontmatter id the legacy file is not matched, so a new file is created");
+  assert.equal(doc.getMap("meta").get("legacy").get("path"), TG_DIR + `Shopping-List-${NOTE_HASH16}.md`, "The unmatched legacy file stays untouched");
+  assert.equal(doc.getMap("idToText").get("legacy").toString(), "body text", "The unmatched legacy file keeps its content");
+  assert.equal(doc.getMap("pathToId").get(TG_DIR + "Shopping-List.md") !== "legacy", true);
+  assert.equal(readUuid(doc.getMap("idToText").get(doc.getMap("pathToId").get(TG_DIR + "Shopping-List.md")).toString()), NOTE_UUID, "The newly created file carries the frontmatter id");
 }
 
-// --- applyKnowledgeSyncJob: tombstones are respected via frontmatter and via suffix ---
+// --- applyKnowledgeSyncJob: tombstones are respected via frontmatter ---
 {
   const doc = new Doc();
   const instance = makeInstance(doc);
@@ -160,13 +161,16 @@ function tgJob(id, title, content, extra = {}) {
   assert.equal(result.error, "vault_content_conflict", "A frontmatter-matched tombstone must not be resurrected");
   assert.equal(value.get("deleted"), true);
 }
+// --- applyKnowledgeSyncJob: a suffix-only tombstone is no longer detected (step 3) ---
 {
   const doc = new Doc();
   const instance = makeInstance(doc);
   const value = addFile(doc, "gone", TG_DIR + `Shopping-List-${NOTE_HASH16}.md`, "old body", true);
   const result = await instance.applyKnowledgeSyncJob(tgJob(NOTE_ID, "Shopping List", "new body", { syncUuid: NOTE_UUID }));
-  assert.equal(result.error, "vault_content_conflict", "A suffix-matched tombstone must not be resurrected");
-  assert.equal(value.get("deleted"), true);
+  assert.equal(result.ok, true, "Without a frontmatter id the tombstone is not located, so the note is created fresh");
+  assert.equal(result.path, TG_DIR + "Shopping-List.md");
+  assert.equal(value.get("deleted"), true, "The undetected tombstone itself is left as-is");
+  assert.equal(doc.getMap("meta").size, 2, "A new active file appears next to the undetected tombstone");
 }
 
 // --- applyKnowledgeSyncJob: slug collision gets a deterministic ordinal, never an overwrite ---
@@ -211,7 +215,7 @@ function seedVault() {
 }
 const rowFor = (id, title, content) => ({ id, title, content });
 
-// --- createTelegramNotes: existing notes are detected by frontmatter and by legacy suffix ---
+// --- createTelegramNotes: existing notes are detected by frontmatter only (step 3) ---
 {
   const doc = seedVault();
   addFile(doc, "by-uuid", TG_DIR + "renamed-by-hand.md", withId(NOTE_UUID, "body"));
@@ -221,11 +225,11 @@ const rowFor = (id, title, content) => ({ id, title, content });
   const rows = [rowFor(NOTE_ID, "Shopping List", "body"), rowFor(secondId, "Legacy Title", "body without frontmatter")];
   const result = await makeInstance(doc, rows).createTelegramNotes(false, 10);
   assert.equal(result.ok, true);
-  assert.equal(result.existing, 2, "Frontmatter and legacy-suffix matches both count as existing");
-  assert.equal(result.candidates, 0);
+  assert.equal(result.existing, 1, "Only the frontmatter match counts as existing");
+  assert.equal(result.candidates, 1, "A legacy-suffix file without frontmatter id is not detected and becomes a candidate");
 }
 
-// --- createTelegramNotes: tombstoned notes are not recreated (frontmatter or suffix) ---
+// --- createTelegramNotes: tombstoned notes are not recreated (frontmatter only, step 3) ---
 {
   const doc = seedVault();
   addFile(doc, "gone-uuid", TG_DIR + "Shopping-List.md", withId(NOTE_UUID, "body"), true);
@@ -234,9 +238,13 @@ const rowFor = (id, title, content) => ({ id, title, content });
   addFile(doc, "gone-suffix", TG_DIR + `Legacy-Title-${secondHash16}.md`, "body", true);
   const rows = [rowFor(NOTE_ID, "Shopping List", "body"), rowFor(secondId, "Legacy Title", "body")];
   const result = await makeInstance(doc, rows).createTelegramNotes(true, 10);
-  assert.equal(result.tombstoned, 2, "Tombstones must be detected by frontmatter and by legacy suffix");
-  assert.equal(result.candidates, 0);
-  assert.equal(result.createdCount ?? 0, 0);
+  assert.equal(result.tombstoned, 1, "Only the frontmatter tombstone is detected");
+  assert.equal(result.candidates, 1, "The suffix-only tombstone is not detected, so its note is a candidate");
+  assert.equal(result.createdCount, 1, "The undetected note is created fresh at the suffix-free path");
+  const createdEntry = [...doc.getMap("meta").values()].find((v) => v.get("path") === TG_DIR + "Legacy-Title.md");
+  assert.ok(createdEntry, "A new active file exists at the suffix-free path");
+  assert.equal(createdEntry.get("deleted"), undefined, "The newly created file is not a tombstone");
+  assert.equal(doc.getMap("meta").get("gone-suffix").get("deleted"), true, "The undetected tombstone itself is left as-is");
 }
 
 // --- createTelegramNotes: new files are suffix-free, carry frontmatter, and collisions get ordinals ---
