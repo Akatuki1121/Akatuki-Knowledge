@@ -94,13 +94,14 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   const { instance, rows, texts, revisions } = setup([{ id: "Notes/example.md", path: "Notes/example.md", title: "Example", content: body, content_hash: "old-hash", sync_uuid: uuid }], [{ path: "Notes/example.md", content: body }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.ok, true);
-  assert.equal(result.changed, 1);
-  assert.equal(result.verified, 1);
-  assert.equal(readUuid(texts.get("file-0").toString()), uuid);
-  assert.equal(rows[0].sync_uuid, uuid);
-  assert.ok(texts.get("file-0").toString().includes("original note"));
-  assert.equal(readUuid(rows[0].content), uuid, "D1 content must be reconciled with the verified Vault frontmatter");
-  assert.equal(revisions.length, 1, "The previous D1 content must be retained as a revision");
+  assert.equal(result.matched, 1);
+  assert.equal(result.missingFrontmatterId, 1, "A Vault file without a frontmatter ID is counted, never backfilled");
+  assert.equal(result.changed, 0);
+  assert.equal(result.verified, 0);
+  assert.equal(readUuid(texts.get("file-0").toString()), null, "Reconciliation must not write a frontmatter ID into the Vault");
+  assert.equal(texts.get("file-0").toString(), body);
+  assert.equal(rows[0].content, body, "D1 content must stay untouched for ID-less Vault files");
+  assert.equal(revisions.length, 0);
 }
 
 {
@@ -139,10 +140,12 @@ const body = "---\ntags: [\"#example\"]\n---\n\noriginal note";
   const { instance, rows, texts, revisions } = setup([{ id: path, path, title: "gitattributes article", content: dotBody, content_hash: "old-hash", sync_uuid: uuid }], [{ path, content: dotBody }]);
   const result = await instance.reconcileExistingNoteIds();
   assert.equal(result.ok, true);
-  assert.equal(result.changed, 1, "Dot-prefixed filenames are valid Markdown notes, not hidden directories");
-  assert.equal(readUuid(texts.get("file-0").toString()), uuid);
-  assert.equal(readUuid(rows[0].content), uuid);
-  assert.equal(revisions.length, 1);
+  assert.equal(result.matched, 1, "Dot-prefixed filenames are valid Markdown notes, not hidden directories");
+  assert.equal(result.missingFrontmatterId, 1);
+  assert.equal(result.changed, 0);
+  assert.equal(texts.get("file-0").toString(), dotBody);
+  assert.equal(rows[0].content, dotBody);
+  assert.equal(revisions.length, 0);
 }
 
 

@@ -10222,6 +10222,8 @@ var MAX_LIST = 300;
 var MAX_SMALL_LIST = 30;
 var MAX_PULL_NOTES = 10;
 var MAX_PULL_BYTES = 4e5;
+var DEFAULT_STRIP_LIMIT = 100;
+var MAX_STRIP_LIMIT = 1000;
 var RESERVED_ROOT = "Akatuki Knowledge";
 async function sha256Hex(text2) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2));
@@ -10594,19 +10596,9 @@ var YjsClientDO = class extends DurableObject {
       const prefix = lines.length ? "---\n" + lines.join("\n") + "\n---\n" : "";
       return prefix + normalized.slice(match[0].length);
     };
-    const withUuid = (content, uuid) => {
-      const text = String(content ?? "");
-      if (/^---\r?\n[\s\S]*?\r?\n---/.test(text)) {
-        return text.replace(/^---\r?\n([\s\S]*?)\r?\n---/, (_all, frontmatter) => {
-          const lines = frontmatter.split(/\r?\n/).filter((line) => !/^id:\s*/i.test(line));
-          return "---\nid: \"" + uuid + "\"\n" + lines.join("\n") + "\n---";
-        });
-      }
-      return "---\nid: \"" + uuid + "\"\n---\n\n" + text;
-    };
     const candidates = [];
     const edits = [];
-    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0, tombstonedInVault = 0, uuidPathMismatch = 0, unsafeMissingPaths = 0;
+    let matched = 0, alreadyAligned = 0, d1FrontmatterMissing = 0, missingFrontmatterId = 0, missingInVault = 0, duplicatePaths = 0, contentConflicts = 0, uuidConflicts = 0, tombstonedInVault = 0, uuidPathMismatch = 0, unsafeMissingPaths = 0;
     const missingNoteIds = [];
     for (const row of rows) {
       const entries = paths.get(norm(row.path)) || [];
@@ -10636,8 +10628,14 @@ var YjsClientDO = class extends DurableObject {
       if (isValidSyncUuid(vaultUuid)) {
         alreadyAligned++;
         if (readUuid(row.content) !== vaultUuid) d1FrontmatterMissing++;
+      } else {
+        // frontmatter id の補充は所有者決定により恒久的に停止した。id が無いファイルは
+        // 診断として数えるだけで、Vault にも D1 にも書き込まない。既存 id の除去は
+        // stripFrontmatterIds (POST /sync/strip-frontmatter-ids) が担う。
+        missingFrontmatterId++;
+        continue;
       }
-      const desired = isValidSyncUuid(vaultUuid) ? current : withUuid(current, uuid);
+      const desired = current;
       if (desired.length > MAX_NOTE_CHARS) { contentConflicts++; continue; }
       const candidate = { id: row.id, path: entry.path, fileId: entry.fileId, previous: current, desired, uuid, row };
       candidates.push(candidate);
@@ -10697,7 +10695,105 @@ var YjsClientDO = class extends DurableObject {
       const batch = statements.slice(i, i + 60);
       if (batch.length) await this.env.DB.batch(batch);
     }
-    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingInVault, missingNoteIds, tombstonedInVault, uuidPathMismatch, unsafeMissingPaths, duplicatePaths, contentConflicts, uuidConflicts };
+    return { ok: applied === edits.length && verifiedCandidates.length === candidates.length, scanned: rows.length, vaultFiles, matched, changed: edits.length, verified: applied, d1Updated, alreadyAligned, d1FrontmatterMissing, missingFrontmatterId, missingInVault, missingNoteIds, tombstonedInVault, uuidPathMismatch, unsafeMissingPaths, duplicatePaths, contentConflicts, uuidConflicts };
+  }
+
+  // frontmatter の id 行を Vault の全 .md ファイルから取り除く (所有者決定による縮小の一環)。
+  // dry-run 既定。適用時も reconcileExistingNoteIds と同じ土台で、pull した Vault 文書を
+  // 「現在の本文が走査時と一致する場合だけ」トランザクション内で書き換え、再 pull で検証する。
+  // D1 の notes.content に残る id 行も同時に落とし、outbox の upsert が id を書き戻さないようにする。
+  async stripFrontmatterIds(apply, limit) {
+    const stripIdLine = (content) => {
+      const text = String(content ?? "");
+      const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!match) return { text, kind: null };
+      const lines = match[1].split(/\r?\n/);
+      if (!lines.some((line) => /^id:/.test(line))) return { text, kind: null };
+      const kept = lines.filter((line) => !/^id:/.test(line));
+      const rest = text.slice(match[0].length);
+      if (kept.every((line) => line.trim() === "")) return { text: rest.replace(/^(\r?\n)+/, ""), kind: "block" };
+      return { text: "---\n" + kept.join("\n") + "\n---" + rest, kind: "line" };
+    };
+    const initial = await this.pullVault();
+    const meta = initial.getMap("meta");
+    const idToText = initial.getMap("idToText");
+    if (initial.getMap("sys").get("initialized") !== true) return { ok: true, skipped: "vault_not_initialized" };
+    let vaultFiles = 0, skippedDeleted = 0, skippedHidden = 0, noText = 0, lineRemoved = 0, blockRemoved = 0, reservedTargets = 0;
+    const candidates = [];
+    meta.forEach((value, fileId) => {
+      const path = value instanceof YMap ? value.get("path") : value?.path;
+      if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
+      const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+      if (deleted) { skippedDeleted++; return; }
+      if (path.split("/").slice(0, -1).some((part) => part.startsWith("."))) { skippedHidden++; return; }
+      vaultFiles++;
+      const textValue = idToText.get(fileId);
+      if (!(textValue instanceof YText)) { noText++; return; }
+      const current = textValue.toString();
+      const stripped = stripIdLine(current);
+      if (stripped.kind === null) return;
+      if (stripped.kind === "block") blockRemoved++; else lineRemoved++;
+      if (path.startsWith(RESERVED_ROOT + "/")) reservedTargets++;
+      candidates.push({ fileId, path, previous: current, desired: stripped.text });
+    });
+    if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return { ok: true, skipped: "vault_looks_empty", vaultFiles };
+    const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash FROM notes WHERE deleted_at IS NULL ORDER BY id").all()).results || [];
+    const d1Edits = [];
+    for (const row of rows) {
+      const stripped = stripIdLine(row.content);
+      if (stripped.kind !== null) d1Edits.push({ row, desired: stripped.text });
+    }
+    const selected = candidates.slice(0, limit);
+    const base = { ok: true, dryRun: !apply, vaultFiles, targets: candidates.length, selected: selected.length, lineRemoved, blockRemoved, reservedTargets, skippedDeleted, skippedHidden, noText, d1Scanned: rows.length, d1Targets: d1Edits.length };
+    if (!apply) return { ...base, applied: 0, verified: 0, unverified: [], d1Updated: 0 };
+    let changed = 0;
+    if (selected.length) {
+      await this.pullVault((doc) => {
+        const nextMeta = doc.getMap("meta"), nextTexts = doc.getMap("idToText");
+        let count = 0;
+        doc.transact(() => {
+          for (const edit of selected) {
+            const entry = nextMeta.get(edit.fileId);
+            const path = entry instanceof YMap ? entry.get("path") : entry?.path;
+            const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+            const textValue = nextTexts.get(edit.fileId);
+            if (deleted || typeof path !== "string" || norm(path) !== norm(edit.path) || !(textValue instanceof YText) || textValue.toString() !== edit.previous) continue;
+            textValue.delete(0, textValue.length);
+            textValue.insert(0, edit.desired);
+            if (entry instanceof YMap) { entry.set("mtime", Date.now()); entry.set("device", WORKER_DEVICE); }
+            count++;
+          }
+        }, "akatuki-remove-frontmatter-id");
+        changed = count;
+        return changed;
+      });
+    }
+    const verifiedDoc = selected.length ? await this.pullVault() : initial;
+    const verifiedMeta = verifiedDoc.getMap("meta"), verifiedTexts = verifiedDoc.getMap("idToText");
+    let verified = 0;
+    const unverified = [];
+    for (const edit of selected) {
+      const entry = verifiedMeta.get(edit.fileId);
+      const path = entry instanceof YMap ? entry.get("path") : entry?.path;
+      const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+      const textValue = verifiedTexts.get(edit.fileId);
+      if (!deleted && typeof path === "string" && norm(path) === norm(edit.path) && textValue instanceof YText && textValue.toString() === edit.desired && readUuid(textValue.toString()) === null) verified++;
+      else if (unverified.length < MAX_SMALL_LIST) unverified.push(edit.path);
+    }
+    let d1Updated = 0;
+    const now = new Date().toISOString();
+    const statements = [];
+    for (const { row, desired } of d1Edits) {
+      const hash = await sha256Hex(desired);
+      statements.push(this.env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(row.id, row.path, row.title, row.content, row.content_hash, now));
+      statements.push(this.env.DB.prepare("UPDATE notes SET content = ?, content_hash = ?, updated_at = ? WHERE id = ?").bind(desired, hash, now, row.id));
+      d1Updated++;
+    }
+    for (let i = 0; i < statements.length; i += 60) {
+      const batch = statements.slice(i, i + 60);
+      if (batch.length) await this.env.DB.batch(batch);
+    }
+    return { ...base, ok: verified === selected.length, applied: changed, verified, unverified, d1Updated };
   }
 
   // 段階2a: D1のフォルダ構成に合わせたノート移動をY.Docへ反映する。dry-run既定。
@@ -11313,6 +11409,18 @@ var YjsClientDO = class extends DurableObject {
       } catch (err) {
         this.lastError = String(err);
         return Response.json({ ok: false, error: this.lastError.slice(0, 300) }, { status: 502 });
+      }
+    }
+    if (action === "strip-frontmatter-ids") {
+      try {
+        const apply = reqUrl.searchParams.get("apply") === "1";
+        const limitParam = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_STRIP_LIMIT);
+        const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(MAX_STRIP_LIMIT, Math.floor(limitParam))) : DEFAULT_STRIP_LIMIT;
+        const result = await this.stripFrontmatterIds(apply, limit);
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, error: this.lastError }, { status: 502 });
       }
     }
     if (action === "telegram") {
@@ -12177,11 +12285,11 @@ var wrapper_default = {
         const res = await doFetch(env, url.pathname === "/sync/diff" ? "diff" : "plan");
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
       }
-      if ((url.pathname === "/sync/apply" || url.pathname === "/sync/telegram" || url.pathname === "/sync/telegram-rename") && request.method === "POST") {
+      if ((url.pathname === "/sync/apply" || url.pathname === "/sync/telegram" || url.pathname === "/sync/telegram-rename" || url.pathname === "/sync/strip-frontmatter-ids") && request.method === "POST") {
         const params2 = new URLSearchParams();
         if (url.searchParams.get("apply") === "1") params2.set("apply", "1");
         if (url.searchParams.has("limit")) params2.set("limit", url.searchParams.get("limit"));
-        const action = url.pathname === "/sync/telegram" ? "telegram" : url.pathname === "/sync/telegram-rename" ? "telegram-rename" : "apply";
+        const action = url.pathname === "/sync/telegram" ? "telegram" : url.pathname === "/sync/telegram-rename" ? "telegram-rename" : url.pathname === "/sync/strip-frontmatter-ids" ? "strip-frontmatter-ids" : "apply";
         const res = await env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}?${params2}`));
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
       }

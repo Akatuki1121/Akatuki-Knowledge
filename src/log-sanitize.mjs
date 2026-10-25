@@ -69,7 +69,7 @@ export function safeErrorCode(value) {
 // missingNoteIds のような ID 配列は件数へ置き換え、error は分類コードへ落とす。
 const RECONCILE_COUNT_FIELDS = new Set([
   "scanned", "vaultFiles", "matched", "changed", "verified", "d1Updated", "alreadyAligned",
-  "d1FrontmatterMissing", "missingInVault", "tombstonedInVault", "uuidPathMismatch",
+  "d1FrontmatterMissing", "missingFrontmatterId", "missingInVault", "tombstonedInVault", "uuidPathMismatch",
   "unsafeMissingPaths", "duplicatePaths", "contentConflicts", "uuidConflicts",
   "queuedForRestore", "restoreQueueErrors", "skippedExistingJobs", "restoreSent", "restoreFailed"
 ]);
