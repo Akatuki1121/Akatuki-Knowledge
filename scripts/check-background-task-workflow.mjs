@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const geminiClient = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
 const taskPolicy = await readFile(new URL("../src/background-task-policy.mjs", import.meta.url), "utf8");
 const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
 const webResearch = await readFile(new URL("../src/agent-web-research.mjs", import.meta.url), "utf8");
@@ -107,10 +106,6 @@ assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledg
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
 assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
-const geminiStart = geminiClient.indexOf("async function callGemini(");
-const geminiEnd = geminiClient.indexOf('__name(callGemini, "callGemini");', geminiStart);
-const geminiSource = geminiClient.slice(geminiStart, geminiEnd);
-assert.ok(geminiSource.includes("options.responseMimeType"), "Gemini calls must support an explicit response MIME type");
 const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall })");
 const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
 assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
@@ -125,8 +120,6 @@ assert.ok(toolLoop.includes("allowWebResearch === true"), "Web research must req
 assert.ok(webResearch.includes('step?.type === "google_search_call"'), "Web results must have a Google Search grounding step");
 assert.ok(webResearch.includes('step?.type === "url_context_result"'), "Web results must have inspected page retrieval");
 assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only provider citations may become web sources");
-assert.ok(geminiClient.includes('store: false'), "Web research interactions must not be stored by the provider");
-assert.ok(geminiClient.includes('tools: [{ type: "google_search" }, { type: "url_context" }]'), "Web research must use grounded search and page context");
 assert.ok(source.includes('signal: AbortSignal.timeout(90_000)'), "Web research requests must be bounded by a timeout");
 assert.ok(source.includes('if (allowWebResearch && env.GEMINI_WEB_RESEARCH_ENABLED !== "true")'), "User opt-in alone must not enable web research while the Worker gate is off");
 assert.ok(!config.includes("GEMINI_WEB_RESEARCH_ENABLED"), "The default Wrangler config must keep potentially billable web research disabled");

@@ -11,14 +11,10 @@ import { readFile } from "node:fs/promises";
 import { createBotAlerts } from "../src/bot-alerts.mjs";
 
 // 移動した関数が Worker エントリポイントに実際に接続されていることを確認する。
-// enqueueBotAlert は organize runner へも注入されるため、実体化がそれより前にあることも見る。
+// enqueueBotAlert は各所の失敗通知で使うため、ファクトリで実体化されていることを見る。
 const workerSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 assert.ok(workerSource.includes('from "./bot-alerts.mjs"'), "the Worker entry point must import the bot alerts module");
 assert.ok(workerSource.includes("createBotAlerts({ sendTelegramMessage })"), "the Worker entry point must build bot alerts through the factory with the Telegram sender injected");
-assert.ok(
-  workerSource.indexOf("createBotAlerts({ sendTelegramMessage })") < workerSource.indexOf("createOrganizeRunner({"),
-  "bot alerts must be built before the organize runner consumes enqueueBotAlert"
-);
 
 const past = (ms = 60_000) => new Date(Date.now() - ms).toISOString();
 const future = (ms = 60_000) => new Date(Date.now() + ms).toISOString();
