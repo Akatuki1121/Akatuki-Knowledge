@@ -76,7 +76,8 @@ export async function completeAgentMemoryJob(db, jobId, nowMs = Date.now()) {
   const result = await db.prepare(`
     UPDATE agent_memory_jobs
     SET status = 'completed', message_text = '', lease_expires_at = NULL,
-        last_error_class = NULL, completed_at = ?, updated_at = ?
+        last_error_class = NULL, last_error_stage = NULL, last_error_detail = NULL,
+        completed_at = ?, updated_at = ?
     WHERE job_id = ? AND status = 'processing'
   `).bind(now, now, jobId).run();
   return Number(result?.meta?.changes || 0) === 1;
@@ -98,16 +99,27 @@ export async function failAgentMemoryJob(db, jobId, input = {}) {
   const errorClass = typeof input.errorClass === "string"
     ? input.errorClass.replace(/[^a-zA-Z0-9_-]/gu, "").slice(0, 64) || "unknown"
     : "unknown";
+  // Stage is a code generated only from internal constants by the caller; sanitize it
+  // with the same rule as errorClass and keep it NULL when absent.
+  const errorStage = typeof input.errorStage === "string"
+    ? input.errorStage.replace(/[^a-zA-Z0-9_-]/gu, "").slice(0, 64) || null
+    : null;
+  // Detail must already be sanitized by the caller (describeAgentTaskError); only cap it,
+  // mirroring safeErrorDetail in background-task-store.mjs.
+  const errorDetail = typeof input.errorDetail === "string" && input.errorDetail
+    ? input.errorDetail.slice(0, 200)
+    : null;
 
   const result = await db.prepare(`
     UPDATE agent_memory_jobs
     SET status = ?, next_attempt_at = ?, lease_expires_at = NULL,
         message_text = CASE WHEN ? = 'failed' THEN '' ELSE message_text END,
-        last_error_class = ?, completed_at = CASE WHEN ? = 'failed' THEN ? ELSE NULL END,
+        last_error_class = ?, last_error_stage = ?, last_error_detail = ?,
+        completed_at = CASE WHEN ? = 'failed' THEN ? ELSE NULL END,
         updated_at = ?
     WHERE job_id = ? AND status = 'processing'
   `).bind(retryable ? "queued" : "failed", nextAttemptAt,
-    retryable ? "queued" : "failed", errorClass,
+    retryable ? "queued" : "failed", errorClass, errorStage, errorDetail,
     retryable ? "queued" : "failed", now, now, jobId).run();
   return Number(result?.meta?.changes || 0) === 1;
 }

@@ -6,6 +6,7 @@ import {
   completeAgentMemoryJob,
   failAgentMemoryJob
 } from "../src/agent-memory-queue.mjs";
+import { inspectAndRedact, hasSensitiveCategory } from "../src/ai-send-guard.mjs";
 
 class Statement {
   constructor(db, sql) { this.db = db; this.sql = sql; this.params = []; }
@@ -85,6 +86,58 @@ await failAgentMemoryJob(db, 7, { retryable: true, errorClass: "bad status!", no
 assert.equal(db.calls[1].params[0], "failed");
 assert.equal(db.calls[1].params[2], "failed");
 assert.equal(db.calls[1].params[3], "badstatus");
+// Stage / detail default to NULL when the caller does not provide them (Issue #63).
+assert.equal(db.calls[1].params[4], null);
+assert.equal(db.calls[1].params[5], null);
+
+// Failure stage / detail (Issue #63): persisted alongside the error class so the
+// latest attempt can be diagnosed from agent_memory_jobs alone.
+db.calls.length = 0;
+db.firstResult = { attempts: 1, max_attempts: 4 };
+await failAgentMemoryJob(db, 7, {
+  retryable: false, errorClass: "memory_processing_failed",
+  errorStage: "save", errorDetail: "Error: SQLITE_CONSTRAINT_FOREIGNKEY constraint failed", nowMs
+});
+assert.match(db.calls[1].sql, /last_error_stage = \?/u);
+assert.match(db.calls[1].sql, /last_error_detail = \?/u);
+assert.equal(db.calls[1].params[0], "failed");
+assert.equal(db.calls[1].params[3], "memory_processing_failed");
+assert.equal(db.calls[1].params[4], "save");
+assert.equal(db.calls[1].params[5], "Error: SQLITE_CONSTRAINT_FOREIGNKEY constraint failed");
+
+// A retryable failure requeues and overwrites stage / detail with the latest attempt.
+db.calls.length = 0;
+db.firstResult = { attempts: 2, max_attempts: 4 };
+await failAgentMemoryJob(db, 7, {
+  retryable: true, errorClass: "gemini_server_error",
+  errorStage: "extraction", errorDetail: "Error: Gemini returned 503", nowMs
+});
+assert.equal(db.calls[1].params[0], "queued");
+assert.equal(db.calls[1].params[4], "extraction");
+assert.equal(db.calls[1].params[5], "Error: Gemini returned 503");
+
+// Stage is sanitized like the error class (code characters only, capped at 64) and
+// the detail is capped at 200 characters before it is stored.
+db.calls.length = 0;
+db.firstResult = { attempts: 1, max_attempts: 4 };
+await failAgentMemoryJob(db, 7, {
+  retryable: false, errorClass: "memory_processing_failed",
+  errorStage: "bad stage!; DROP", errorDetail: "x".repeat(250), nowMs
+});
+assert.equal(db.calls[1].params[4], "badstageDROP");
+assert.equal(db.calls[1].params[5].length, 200);
+await failAgentMemoryJob(db, 7, {
+  retryable: false, errorClass: "memory_processing_failed",
+  errorStage: "s".repeat(80), errorDetail: "", nowMs
+});
+assert.equal(db.calls[3].params[4], "s".repeat(64));
+assert.equal(db.calls[3].params[5], null);
+
+// Completion clears the recorded failure stage / detail along with the class.
+db.calls.length = 0;
+assert.equal(await completeAgentMemoryJob(db, 7, nowMs), true);
+assert.match(db.calls[0].sql, /last_error_stage = NULL/u);
+assert.match(db.calls[0].sql, /last_error_detail = NULL/u);
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 assert.match(source, /enqueueAgentMemoryJob\(env\.DB/u);
@@ -125,5 +178,56 @@ assert.doesNotMatch(enqueueGuard[2], /\btext2\b/u);
 assert.equal((hook.match(/enqueueAgentMemoryJob\(/gu) || []).length, 1);
 // Every conversation-history prompt block goes through the same AI-send boundary helper.
 assert.equal((source.match(/selectAiSafeHistory\(/gu) || []).length, 2);
+
+// Failure stage / detail wiring (Issue #63): processAgentMemoryJob tracks the stage and
+// annotates it onto a thrown error; drainAgentMemoryQueue persists stage + sanitized
+// detail next to the unchanged retryable / errorClass decision, and adds the stage to
+// the failure log line (stage is already an allowed extra field in log-sanitize).
+assert.match(source, /errorStage: error\?\.memoryStage/u);
+assert.match(source, /errorDetail: describeAgentTaskError\(error, env\)/u);
+assert.match(source, /describeSafeFailure\("agent_memory_job_failed", error, \{ stage: error\?\.memoryStage \}\)/u);
+for (const stageName of ["prepare", "search", "extraction", "save"]) {
+  assert.match(source, new RegExp(`stage = "${stageName}"`, "u"));
+}
+assert.match(source, /error\.memoryStage = stage/u);
+
+// The persisted detail is generated only by describeAgentTaskError. Evaluate the real
+// function text from src/index.js with the real AI-send guard primitives and verify the
+// hygiene contract: a normal failure keeps a short summary, while exception messages
+// carrying credential-like values or personal data never reach the stored detail.
+const detailStart = source.indexOf("function describeAgentTaskError(error, env) {");
+assert.ok(detailStart > 0, "describeAgentTaskError not found");
+const detailEnd = source.indexOf("\n}", detailStart);
+assert.ok(detailEnd > detailStart, "describeAgentTaskError end not found");
+const describeAgentTaskError = new Function(
+  "inspectAndRedact", "hasSensitiveCategory",
+  `${source.slice(detailStart, detailEnd + 2)}\nreturn describeAgentTaskError;`
+)(inspectAndRedact, hasSensitiveCategory);
+
+const plainDetail = describeAgentTaskError(new Error("Gemini returned no text"), {});
+assert.equal(plainDetail, "Error: Gemini returned no text");
+assert.ok(plainDetail.length <= 200);
+
+const credentialDetail = describeAgentTaskError(
+  new Error("upstream failed password=hunter2secret sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"), {}
+);
+assert.equal(credentialDetail, "Error");
+assert.ok(!credentialDetail.includes("hunter2secret"));
+assert.ok(!credentialDetail.includes("sk-proj"));
+
+const bearerDetail = describeAgentTaskError(
+  new Error("request rejected Bearer abcdefghijklmnopqrstuvwxyz0123456789"), {}
+);
+assert.equal(bearerDetail, "Error");
+
+const fragmentDetail = describeAgentTaskError(
+  new Error("save failed for note fragment; contact taro.example+test@gmail.com instead"), {}
+);
+assert.ok(!fragmentDetail.includes("taro.example+test@gmail.com"));
+assert.ok(fragmentDetail.includes("[EMAIL]"));
+assert.ok(fragmentDetail.length <= 200);
+
+const longDetail = describeAgentTaskError(new Error("boom " + "y".repeat(500)), {});
+assert.ok(longDetail.length <= 200);
 
 console.log("Agent memory queue contracts passed.");

@@ -17,6 +17,16 @@ required = {
 }
 assert required <= columns, f"Missing queue columns: {required - columns}"
 
+# Pending migration 0016 (Issue #63) applies on top of 0014 and adds the failure
+# stage / detail columns. It must be applied before the queue SQL below is compiled,
+# because failAgentMemoryJob now writes to these columns.
+PENDING = ROOT / "migrations" / "pending" / "0016_agent_memory_job_error_detail.sql"
+connection.executescript(PENDING.read_text(encoding="utf-8"))
+columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_memory_jobs)")}
+assert {"last_error_stage", "last_error_detail"} <= columns, (
+    f"Missing failure detail columns: {{'last_error_stage', 'last_error_detail'}} - {columns}"
+)
+
 indexes = {
     row[0] for row in connection.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agent_memory_jobs'"
