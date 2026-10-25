@@ -357,6 +357,8 @@ await evaluate("daily-limit-and-sensitive-skip", async () => {
 });
 
 // --- 追加: 履歴は selectAiSafeHistory の範囲内だけが分類入力に入る ---
+// 2026-10-25 の方針変更後、境界で除外するのは認証情報を含む行だけ。
+// 機微語 (診断など) の行は伏字済みで分類入力に入る。
 await evaluate("history-only-through-ai-safe-boundary", async () => {
   let seenPrompt = "";
   const outcome = await runIntentClassifierShadow({
@@ -367,6 +369,7 @@ await evaluate("history-only-through-ai-safe-boundary", async () => {
     historyRows: [
       { role: "user", content: "Cloudflare Workers の料金を調べていた" },
       { role: "user", content: "診断を受けた話は履歴にだけある" },
+      { role: "user", content: "password=hunter2hunter2" },
     ],
     selectHistory: selectAiSafeHistory,
     historyOptions: { blocklist: "", maxChars: 1200 },
@@ -377,7 +380,8 @@ await evaluate("history-only-through-ai-safe-boundary", async () => {
   });
   assert.equal(outcome.outcome, "candidate");
   assert.ok(seenPrompt.includes("Cloudflare Workers の料金を調べていた"), "safe history line reaches the prompt");
-  assert.ok(!seenPrompt.includes("診断を受けた話"), "sensitive history line never reaches the classifier");
+  assert.ok(seenPrompt.includes("診断を受けた話"), "sensitive-word history lines are no longer excluded (policy change 2026-10-25)");
+  assert.ok(!seenPrompt.includes("hunter2"), "credential history lines never reach the classifier");
 });
 
 console.log(`Intent classifier shadow tests passed (${results.length} cases): ${results.join(", ")}.`);

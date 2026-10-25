@@ -124,7 +124,7 @@ assert.ok(summarySource.includes("selectAiSafeHistory(results.reverse()"), "Conv
 const guardSource = await readFile(new URL("../src/ai-send-guard.mjs", import.meta.url), "utf8");
 const safeHistoryStart = guardSource.indexOf("export function selectAiSafeHistory");
 const safeHistorySource = guardSource.slice(safeHistoryStart);
-assert.ok(safeHistoryStart > 0 && safeHistorySource.includes("hasSensitiveCategory(inspected.findings)"), "Sensitive history messages must be excluded from AI summaries without altering stored history");
+assert.ok(safeHistoryStart > 0 && safeHistorySource.includes("if (!inspected.ok) return [];"), "History exclusion at the AI boundary must be keyed on credential inspection only (policy change 2026-10-25: word-list categories no longer exclude)");
 
 assert.ok(answerSource.includes('hasSensitiveCategory(safeMessage.findings)'), "Sensitive current messages must not be sent to Gemini");
 assert.ok(answerSource.includes("selectAiSafeHistory(history.results.reverse()"), "Chat prompts must filter sensitive stored history at send time");

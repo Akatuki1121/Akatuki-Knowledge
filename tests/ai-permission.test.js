@@ -3,14 +3,15 @@
 // モジュールの振る舞いで検証する (tests/gemini-client.test.js と同じ方針)。
 // inspectWholeContent / hasSensitiveCategory は ai-send-guard の意味論を模したスタブを注入する
 // (ガード自体の検証は tests/ai-send-guard.test.js が担当)。
+// 2026-10-25 の方針変更で、実ガードは機微語 (診断など) を findings に出さなくなった。
+// そのため既定スタブもカテゴリを返さない。hold 経路はモジュール契約として残るため、
+// カテゴリを返すスタブで別途検証する (下部の contract test)。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createBulkAiPermission } from "../src/ai-permission.mjs";
 
 const inspectWholeContent = (content) => {
-  const findings = [];
-  if (String(content).includes("診断")) findings.push("health");
-  return { ok: true, findings, credentials: String(content).includes("SECRET-CREDENTIAL") };
+  return { ok: true, findings: [], credentials: String(content).includes("SECRET-CREDENTIAL") };
 };
 const hasSensitiveCategory = (findings) => (findings || []).some((f) => ["health", "financial", "location"].includes(f));
 
@@ -108,14 +109,15 @@ test("propose stores a pending preview and reports the scan counts", async () =>
   const reply = await bulk.proposeBulkAiPermission({ DB: db }, 123);
   assert.ok(reply.startsWith("AI送信許可の一括反映待ちです。"));
   assert.ok(reply.includes("対象ノート: 4件"));
-  assert.ok(reply.includes("新たに許可できるノート: 1件"));
+  // 機微語 (診断) だけを含むノート3 は、方針変更後は許可候補になる。
+  assert.ok(reply.includes("新たに許可できるノート: 2件"));
   assert.ok(reply.includes("認証情報を検出: 1件"));
-  assert.ok(reply.includes("機微情報のため確認待ち: 1件"));
+  assert.ok(reply.includes("機微情報のため確認待ち: 0件"));
   assert.ok(reply.includes("既に許可済み（安全確認済み）: 1件"));
   const preview = db.previews.get(123);
   assert.ok(preview, "preview must be stored");
   const candidates = JSON.parse(preview.candidates_json);
-  assert.deepEqual(candidates.map((c) => [c.id, c.action]), [["1", "allow"], ["2", "revoke"], ["3", "hold"]]);
+  assert.deepEqual(candidates.map((c) => [c.id, c.action]), [["1", "allow"], ["3", "allow"], ["2", "revoke"]]);
   assert.ok(candidates.every((c) => /^[a-f0-9]{64}$/.test(c.hash)), "candidate hashes must be SHA-256 hex of the content");
 });
 
@@ -126,17 +128,42 @@ test("apply flips only the previewed notes whose content still matches", async (
   db.assistantMessages.set(123, { content: proposal, created_at: new Date(Date.now() + 1000).toISOString() });
   const reply = await bulk.applyBulkAiPermission(env, 123);
   assert.ok(reply.startsWith("AI送信許可の一括反映が完了しました。"));
-  assert.ok(reply.includes("新たに許可: 1件"));
+  assert.ok(reply.includes("新たに許可: 2件"));
   assert.ok(reply.includes("認証情報検出により許可解除: 1件"));
-  assert.ok(reply.includes("機微情報ノートの安全処理へ移行: 1件"));
+  assert.ok(reply.includes("機微情報ノートの安全処理へ移行: 0件"));
   const byId = Object.fromEntries(db.notes.map((n) => [n.id, n]));
   assert.equal(byId[1].ai_allowed, 1);
   assert.equal(byId[1].sensitivity, "user-approved");
   assert.equal(byId[2].ai_allowed, 0);
   assert.equal(byId[2].sensitivity, "credentials");
-  assert.equal(byId[3].sensitivity, "sensitive");
+  // 機微語だけのノート3 も通常ノートと同じく許可される (方針変更)。
+  assert.equal(byId[3].ai_allowed, 1);
+  assert.equal(byId[3].sensitivity, "user-approved");
   assert.equal(byId[4].ai_allowed, 1);
   assert.equal(db.previews.has(123), false, "preview must be consumed");
+});
+
+// モジュール契約: 注入されたガードが機微カテゴリを返す場合に限り、hold 経路
+// (許可せず sensitivity='sensitive' にする安全処理) が働く。現行ポリシーでは
+// 実ガードがカテゴリを返さないため本番では発火しないが、ai-permission の
+// 依存契約としては維持し、ここで担保する。
+test("hold path still applies when the injected guard reports a sensitive category (module contract)", async () => {
+  const sensitiveGuard = (content) => {
+    const findings = [];
+    if (String(content).includes("診断")) findings.push("health");
+    return { ok: true, findings, credentials: String(content).includes("SECRET-CREDENTIAL") };
+  };
+  const bulkWithSensitiveGuard = createBulkAiPermission({ inspectWholeContent: sensitiveGuard, hasSensitiveCategory });
+  const db = seedDb();
+  const env = { DB: db };
+  const proposal = await bulkWithSensitiveGuard.proposeBulkAiPermission(env, 123);
+  assert.ok(proposal.includes("機微情報のため確認待ち: 1件"));
+  db.assistantMessages.set(123, { content: proposal, created_at: new Date(Date.now() + 1000).toISOString() });
+  const reply = await bulkWithSensitiveGuard.applyBulkAiPermission(env, 123);
+  assert.ok(reply.includes("機微情報ノートの安全処理へ移行: 1件"));
+  const byId = Object.fromEntries(db.notes.map((n) => [n.id, n]));
+  assert.equal(byId[3].ai_allowed, 0, "held notes must not be allowed");
+  assert.equal(byId[3].sensitivity, "sensitive");
 });
 
 test("apply skips notes whose content changed after the preview", async () => {
