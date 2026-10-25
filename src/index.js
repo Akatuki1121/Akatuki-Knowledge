@@ -38,6 +38,7 @@ import {
 import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent, planTelegramHistory, selectAiSafeHistory, selectSafeParagraphs } from "./ai-send-guard.mjs";
 import { classifyOperationalFailure, createOrganizeRunner } from "./organize.mjs";
 import { createGeminiClient } from "./gemini-client.mjs";
+import { INTENT_CLASSIFIER_LIMITS, isIntentClassifierShadowEnabled, recordIntentTier0Branch, runIntentClassifierShadow } from "./intent-classifier.mjs";
 import { createBulkAiPermission } from "./ai-permission.mjs";
 import { createReplyText } from "./reply-text.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
@@ -186,6 +187,9 @@ async function telegramWebhook(request, env, ctx) {
     await env.DB.prepare("DELETE FROM telegram_messages WHERE chat_id = ? AND message_id NOT IN (SELECT message_id FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 40)").bind(chatId, chatId).run();
     let reply;
     let processingMessageId = null;
+    // Issue #75 slice 1 (shadow): set only in the fallback branch below, after the
+    // whole Tier 0 chain has missed. Tier 0 handling itself is unchanged.
+    let intentShadowFallback = false;
     if (text2 === "/start" || text2 === "/help") {
       reply = "普通に話しかけてね。会話から残しておくと役立つ知識は自然に記録するよ。「今のなし」で直前の記録を戻せる。改善の提案は候補にして、あなたが反映を決めるまで動作は変えないよ。認証情報らしい値はAIへ送らない。フォルダ整理は「フォルダ整理して」で案を出し、「フォルダ整理案を反映して」と言うまで移動しない。改善候補は「改善候補を見せて」で確認できる。ナレッジ検索・要約は /task 内容、GitHub作業は自然文または /github 依頼内容（変更は承認後）、Web調査は /research 内容、未完了一覧は /tasks、状態確認は /task_status ID、実行中タスクの停止は /cancel または /cancel タスクID。GitHubの変更計画は /github approve TASK_ID で承認、/github reject TASK_ID で拒否できるよ。マージとデプロイは別の明示的な判断が必要だよ。ノート変更は通常の会話で依頼してね。AI送信許可の一括確認は「AI送信許可を一括確認して」、確認後に反映する場合は「AI送信許可を一括反映して」と送ってね。";
     } else if (/^\/cancel(?:@\w+)?(?:\s|$)/u.test(text2)) {
@@ -240,6 +244,7 @@ async function telegramWebhook(request, env, ctx) {
     } else if (text2.startsWith("/")) {
       reply = "\u30B3\u30DE\u30F3\u30C9\u3092\u899A\u3048\u306A\u304F\u3066\u3082\u5927\u4E08\u592B\u3002\u666E\u901A\u306B\u8A71\u3057\u304B\u3051\u3066\u306D\u3002";
     } else {
+      intentShadowFallback = true;
       try { processingMessageId = await sendTelegramMessage(env, chatId, "検索・回答を準備中…"); } catch {}
       reply = await answerTelegramMessage(env, chatId, text2, { messageId: message.message_id, now });
     }
@@ -258,6 +263,12 @@ async function telegramWebhook(request, env, ctx) {
       ctx.waitUntil(drainAgentMemoryQueue(env, 1));
       ctx.waitUntil(drainSyncOutbox(env, 3));
     }
+    // Issue #75 slice 1 (shadow): after the reply has been sent, classify in
+    // waitUntil only. Flag off (default) adds no work at all, and the shadow run
+    // never changes the reply, routing, or any task state; it only counts.
+    if (isIntentClassifierShadowEnabled(env) && ctx?.waitUntil) {
+      ctx.waitUntil(runIntentShadowAfterReply(env, chatId, text2, { fallback: intentShadowFallback, inspected: inspectedHistory }));
+    }
     return json({ ok: true });
   } catch (error) {
     await env.DB.prepare("UPDATE telegram_updates SET result_code = 'retry' WHERE update_id = ?").bind(update.update_id).run();
@@ -266,6 +277,43 @@ async function telegramWebhook(request, env, ctx) {
   }
 }
 __name(telegramWebhook, "telegramWebhook");
+
+// Issue #75 slice 1 (shadow): runs only after the reply has been sent, inside
+// ctx.waitUntil. Tier 0 messages are counted as the B3 denominator and never
+// reach the classifier; fallback messages are classified from the already
+// inspected text plus AI-safe history only. Every failure is swallowed here so
+// the shadow path can never affect the reply that was already delivered.
+async function runIntentShadowAfterReply(env, chatId, text2, { fallback = false, inspected = null } = {}) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    if (!fallback) {
+      await recordIntentTier0Branch({ db: env.DB, day });
+      return;
+    }
+    let historyRows = [];
+    try {
+      const history = await env.DB.prepare("SELECT role, content FROM telegram_messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT 12").bind(chatId).all();
+      historyRows = (history.results || []).reverse();
+    } catch {
+      historyRows = [];
+    }
+    await runIntentClassifierShadow({
+      env,
+      db: env.DB,
+      callModel: (prompt) => callGemini(env, prompt, INTENT_CLASSIFIER_LIMITS.maxOutputTokens, { responseMimeType: "application/json" }),
+      text: inspected?.ok ? inspected.text : "",
+      historyRows,
+      selectHistory: selectAiSafeHistory,
+      historyOptions: { blocklist: env.PRIVACY_BLOCKLIST || "", maxChars: 1200 },
+      sensitive: hasSensitiveCategory(inspected?.findings || []),
+      blocked: !inspected?.ok,
+      day
+    });
+  } catch {
+    // Shadow measurement is best-effort only; the reply is already sent.
+  }
+}
+__name(runIntentShadowAfterReply, "runIntentShadowAfterReply");
 
 function isGitHubNaturalLanguageRequest(text) {
   if (typeof text !== "string" || text.startsWith("/")) return false;
