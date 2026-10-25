@@ -45,7 +45,7 @@ for (const kept of [
   'url.pathname === "/api/sync"',
   'url.pathname === "/api/search"',
   'url.pathname === "/api/ask"',
-  'url.pathname === "/api/organize"',
+  // "/api/organize" は Gemini 切り離し (S3) で廃止されたため、残す面には含めない。
   'url.pathname === "/sync/status"',
   "pullFromVault",
   "drainSyncOutbox(env, 10)",
