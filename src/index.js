@@ -46,6 +46,7 @@ import { createTelegramClient } from "./telegram-client.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
 import { createTelegramIntent } from "./telegram-intent.mjs";
 import { createTelegramBackgroundTasks } from "./telegram-background-tasks.mjs";
+import { classifyAgentTaskError, describeAgentTaskStopReason } from "./background-task-policy.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
@@ -65,7 +66,7 @@ const { enqueueBotAlert, flushBotAlerts } = createBotAlerts({ sendTelegramMessag
 // Telegram 意図判定の述語群は src/telegram-intent.mjs に分離した (#86)。
 const { isConversationSummaryRequest, extractReorganizationQuery, isUndoRequest, isPolicyUndoRequest, isImprovementApproval, isImprovementRejection, isImprovementStatusRequest, isFolderOrganizationRequest, isFolderOrganizationApproval, isFolderOrganizationRejection, validateOrganizationPath, isMemoryProcessingCandidate } = createTelegramIntent();
 // 背景タスクの Telegram ハンドラ (状態確認・取消・一覧) は src/telegram-background-tasks.mjs に分離した (#86)。
-// 停止理由の説明は background-task-policy.mjs への移設 (順位2) が未マージのため、index 側の定義を注入する。
+// 停止理由の説明は background-task-policy.mjs から import したものを注入する。
 const { getTelegramBackgroundTaskStatus, cancelTelegramBackgroundTask, listTelegramBackgroundTasks } = createTelegramBackgroundTasks({ describeAgentTaskStopReason });
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
@@ -501,33 +502,6 @@ async function startTelegramBackgroundTask(env, chatId, messageId, commandText, 
   return "背景タスクを受け付けました。\nID: " + task.task_id + "\n状態は /task_status " + task.task_id + " で確認できます。";
 }
 __name(startTelegramBackgroundTask, "startTelegramBackgroundTask");
-
-function describeAgentTaskStopReason(reason) {
-  const normalized = typeof reason === "string" && reason.startsWith("non_retryable_")
-    ? reason.slice("non_retryable_".length)
-    : reason;
-  const guidance = {
-    task_deadline_exceeded: ["処理時間の上限に到達", "依頼を小さく分け、新しい /task として依頼してください。"],
-    retry_would_exceed_task_deadline: ["処理時間の上限に到達するため再試行できない", "依頼を小さく分け、新しい /task として依頼してください。"],
-    attempt_budget_exhausted: ["再試行回数の上限に到達", "依頼内容を絞り、新しい /task として依頼してください。"],
-    ai_call_budget_exhausted: ["AI 呼び出し上限に到達", "質問を一つに絞り、新しい /task として依頼してください。"],
-    ai_token_budget_exhausted: ["AI 利用量の上限に到達", "依頼文を短くし、対象範囲を絞って新しい /task として依頼してください。"],
-    daily_workflow_budget_exhausted: ["本日の背景タスク上限に到達", "翌日以降に、必要な内容を絞って再依頼してください。"],
-    credentials_detected: ["認証情報を検出", "認証情報を依頼文から削除してから再依頼してください。"],
-    pii_masking_failed: ["個人情報を安全にマスキングできない", "個人を特定できる情報を除いてから再依頼してください。"],
-    web_research_not_enabled: ["Web 調査は現在無効", "Web 調査の有効化を待つ間は、ナレッジ検索を /task で依頼してください。"],
-    web_research_sources_missing: ["調査結果の出典を確認できない", "出典を確認できる依頼内容に絞って、新しい /research として依頼してください。"],
-    web_research_unverified: ["調査結果を検証できない", "検証対象を絞って、新しい /research として依頼してください。"],
-    non_retryable_or_unknown_error: ["安全に再試行できると確認できないエラー", "依頼内容を確認し、対象を絞って新しい /task として依頼してください。"]
-  };
-  const entry = guidance[reason] || guidance[normalized];
-  if (entry) return { label: entry[0], nextAction: entry[1] };
-  return {
-    label: typeof reason === "string" && reason ? reason : "停止理由は未記録",
-    nextAction: "依頼内容を確認し、対象を絞って新しい /task として依頼してください。"
-  };
-}
-__name(describeAgentTaskStopReason, "describeAgentTaskStopReason");
 
 function isRestrictedImprovement(text2) {
   return /認証|credential|password|パスワード|secret|秘密鍵|token|トークン|API[_ -]?key|privacy|プライバシー|セキュリティ|安全|権限|許可|ブロック|送信制限/iu.test(text2);
@@ -11520,19 +11494,6 @@ function describeAgentTaskError(error, env) {
   return checked.ok && !hasSensitiveCategory(checked.findings) ? (name + ": " + checked.text).slice(0, 200) : name;
 }
 __name(describeAgentTaskError, "describeAgentTaskError");
-
-function classifyAgentTaskError(error) {
-  const message = typeof error?.message === "string" ? error.message : "";
-  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "model_call_budget_exhausted", "tool_output_too_large", "ai_token_budget_exhausted"]) {
-    if (message.includes(fixed)) return fixed;
-  }
-  if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
-  if (/Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
-  if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
-  if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
-  return "unknown";
-}
-__name(classifyAgentTaskError, "classifyAgentTaskError");
 
 async function searchAgentTaskNotes(query, env) {
   const matches = await findRelevantNotes(query, env, 8);

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const telegramBackgroundTasks = await readFile(new URL("../src/telegram-background-tasks.mjs", import.meta.url), "utf8");
 const geminiClient = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
+const taskPolicy = await readFile(new URL("../src/background-task-policy.mjs", import.meta.url), "utf8");
 const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
 const webResearch = await readFile(new URL("../src/agent-web-research.mjs", import.meta.url), "utf8");
 const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
@@ -170,10 +171,10 @@ for (const label of [
   assert.ok(taskListSource.includes(label), "Telegram task list must localize notification state: " + label);
 }
 
-const stopGuidanceStart = source.indexOf("function describeAgentTaskStopReason");
-const stopGuidanceEnd = source.indexOf('__name(describeAgentTaskStopReason', stopGuidanceStart);
+const stopGuidanceStart = taskPolicy.indexOf("function describeAgentTaskStopReason");
+const stopGuidanceEnd = taskPolicy.indexOf('__name(describeAgentTaskStopReason', stopGuidanceStart);
 assert.ok(stopGuidanceStart >= 0 && stopGuidanceEnd > stopGuidanceStart, "Task stop-reason guidance must exist");
-const stopGuidance = source.slice(stopGuidanceStart, stopGuidanceEnd);
+const stopGuidance = taskPolicy.slice(stopGuidanceStart, stopGuidanceEnd);
 for (const required of [
   'task_deadline_exceeded: ["処理時間の上限に到達"',
   'attempt_budget_exhausted: ["再試行回数の上限に到達"',
