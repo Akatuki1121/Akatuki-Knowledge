@@ -21,6 +21,8 @@ export const checks = [
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
   ["agent-github-tools", process.execPath, ["scripts/test_agent_github_tools.mjs"]],
   ["agent-evaluation-set", process.execPath, ["scripts/test_agent_evaluation_set.mjs"]],
+  ["agent-intent-classifier-syntax", process.execPath, ["--check", "src/intent-classifier.mjs"]],
+  ["agent-intent-classifier", process.execPath, ["scripts/test_agent_intent_classifier.mjs"]],
   ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
   ["agent-memory", process.execPath, ["scripts/test_agent_memory.mjs"]],
   ["agent-memory-queue", process.execPath, ["scripts/test_agent_memory_queue.mjs"]],
