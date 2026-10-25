@@ -39,6 +39,7 @@ import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent, planTelegr
 import { classifyOperationalFailure, createOrganizeRunner } from "./organize.mjs";
 import { createGeminiClient } from "./gemini-client.mjs";
 import { createBulkAiPermission } from "./ai-permission.mjs";
+import { createReplyText } from "./reply-text.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
@@ -46,6 +47,8 @@ const { callGemini, callGeminiWebResearch } = createGeminiClient({ inspectWholeC
 // AI 送信許可の一括確認・反映は src/ai-permission.mjs に分離した (#86)。
 // ai-send-guard への依存はここから注入する (gemini-client.mjs と同じ方式)。
 const { isBulkAiPermissionRequest, isBulkAiPermissionApproval, isBulkAiPermissionRejection, proposeBulkAiPermission, applyBulkAiPermission, rejectBulkAiPermission } = createBulkAiPermission({ inspectWholeContent, hasSensitiveCategory });
+// AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
+const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
 const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
@@ -1784,95 +1787,6 @@ async function writeAudit(env, action, noteCount, findings, sentChars, resultCod
   }
 }
 __name(writeAudit, "writeAudit");
-function extractReplyFromJsonish(raw) {
-  let text2 = String(raw || "").trim();
-  const ticks = String.fromCharCode(96).repeat(3);
-  if (text2.startsWith(ticks + "json")) text2 = text2.slice(7).trim();
-  else if (text2.startsWith(ticks)) text2 = text2.slice(3).trim();
-  if (text2.endsWith(ticks)) text2 = text2.slice(0, -3).trim();
-  try {
-    const parsed = parseJsonObject(text2);
-    if (typeof parsed.reply === "string") return parsed.reply.trim();
-  } catch {}
-  const key = text2.indexOf('"reply"');
-  if (key >= 0) {
-    const colon = text2.indexOf(":", key + 7);
-    const quote = text2.indexOf('"', colon + 1);
-    if (colon >= 0 && quote >= 0) {
-      let escaped = false;
-      for (let i = quote + 1; i < text2.length; i++) {
-        const code = text2.charCodeAt(i);
-        if (escaped) escaped = false;
-        else if (code === 92) escaped = true;
-        else if (code === 34) {
-          try { return JSON.parse(text2.slice(quote, i + 1)); } catch {}
-          break;
-        }
-      }
-    }
-  }
-  return text2;
-}
-__name(extractReplyFromJsonish, "extractReplyFromJsonish");
-function formatTelegramPlainText(value) {
-  const ticks = String.fromCharCode(96);
-  let text2 = String(value ?? "").replaceAll(ticks.repeat(3), "").replaceAll(ticks, "");
-  for (const marker of ["**", "__", "~~", "=="]) text2 = text2.replaceAll(marker, "");
-  text2 = text2.replaceAll("*", "");
-  let lines = text2.split(String.fromCharCode(10)).map((line) => {
-    let result = line.trimStart();
-    while (result.startsWith("#")) result = result.slice(1);
-    if (result.startsWith(" ")) result = result.slice(1);
-    if (result.startsWith(">")) result = result.slice(1).trimStart();
-    return result;
-  });
-  text2 = lines.join(String.fromCharCode(10));
-  let start = 0;
-  while ((start = text2.indexOf("[[", start)) >= 0) {
-    const end = text2.indexOf("]]", start + 2);
-    if (end < 0) break;
-    const target = text2.slice(start + 2, end);
-    const pipe = target.indexOf("|");
-    let label = pipe >= 0 ? target.slice(pipe + 1) : target;
-    if (pipe < 0) label = label.split("/").pop();
-    if (label.toLowerCase().endsWith(".md")) label = label.slice(0, -3);
-    text2 = text2.slice(0, start) + label + text2.slice(end + 2);
-    start += label.length;
-  }
-  start = 0;
-  while ((start = text2.indexOf("[", start)) >= 0) {
-    const close = text2.indexOf("]", start + 1);
-    if (close < 0) break;
-    if (text2[close + 1] !== "(") { start = close + 1; continue; }
-    const end = text2.indexOf(")", close + 2);
-    if (end < 0) break;
-    const url = text2.slice(close + 2, end);
-    if (!url.startsWith("http://") && !url.startsWith("https://")) { start = end + 1; continue; }
-    const label = text2.slice(start + 1, close);
-    const replacement = label + " (" + url + ")";
-    text2 = text2.slice(0, start) + replacement + text2.slice(end + 1);
-    start += replacement.length;
-  }
-  lines = text2.split(String.fromCharCode(10));
-  const clean = [];
-  let previousBlank = false;
-  for (const line of lines) {
-    const blank = !line.trim();
-    if (blank && previousBlank) continue;
-    clean.push(line.trimEnd());
-    previousBlank = blank;
-  }
-  return clean.join(String.fromCharCode(10)).trim();
-}
-__name(formatTelegramPlainText, "formatTelegramPlainText");
-function parseJsonObject(raw) {
-  const text2 = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = text2.indexOf("{");
-  const end = text2.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("AI response did not contain JSON");
-  return JSON.parse(text2.slice(start, end + 1));
-}
-__name(parseJsonObject, "parseJsonObject");
 var create = /* @__PURE__ */ __name(() => /* @__PURE__ */ new Map(), "create");
 var copy = /* @__PURE__ */ __name((m) => {
   const r = create();
