@@ -45,6 +45,7 @@ import { createNoteSearchText } from "./note-search-text.mjs";
 import { createTelegramClient } from "./telegram-client.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
 import { createTelegramIntent } from "./telegram-intent.mjs";
+import { createTelegramBackgroundTasks } from "./telegram-background-tasks.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
@@ -63,6 +64,9 @@ const { sendTelegramMessage, editTelegramMessage } = createTelegramClient();
 const { enqueueBotAlert, flushBotAlerts } = createBotAlerts({ sendTelegramMessage });
 // Telegram 意図判定の述語群は src/telegram-intent.mjs に分離した (#86)。
 const { isConversationSummaryRequest, extractReorganizationQuery, isUndoRequest, isPolicyUndoRequest, isImprovementApproval, isImprovementRejection, isImprovementStatusRequest, isFolderOrganizationRequest, isFolderOrganizationApproval, isFolderOrganizationRejection, validateOrganizationPath, isMemoryProcessingCandidate } = createTelegramIntent();
+// 背景タスクの Telegram ハンドラ (状態確認・取消・一覧) は src/telegram-background-tasks.mjs に分離した (#86)。
+// 停止理由の説明は background-task-policy.mjs への移設 (順位2) が未マージのため、index 側の定義を注入する。
+const { getTelegramBackgroundTaskStatus, cancelTelegramBackgroundTask, listTelegramBackgroundTasks } = createTelegramBackgroundTasks({ describeAgentTaskStopReason });
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
 const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
@@ -524,126 +528,6 @@ function describeAgentTaskStopReason(reason) {
   };
 }
 __name(describeAgentTaskStopReason, "describeAgentTaskStopReason");
-
-async function getTelegramBackgroundTaskStatus(env, taskId) {
-  if (!taskId) return "使い方: /task_status タスクID";
-  let task;
-  try {
-    task = await getAgentTask(env.DB, taskId);
-  } catch {
-    return "タスク状態を取得できませんでした。";
-  }
-  if (!task) return "そのタスクIDは見つかりませんでした。";
-
-  const labels = {
-    queued: "受付済み",
-    running: "実行中",
-    waiting: "再試行待ち",
-    succeeded: "完了",
-    failed: "停止",
-    cancelled: "キャンセル済み"
-  };
-  const stageLabels = {
-    context_ready: "関連ノートの取得完了",
-    prompt_ready: "要約プロンプトの準備完了",
-    completed: "結果の保存完了"
-  };
-  const stage = task.checkpoint?.stage;
-  let reply = "背景タスク: " + (labels[task.status] || task.status)
-    + "\nID: " + task.task_id
-    + "\n試行回数: " + task.attempts + "/" + task.max_attempts;
-  if (stage) reply += "\n段階: " + (stageLabels[stage] || stage);
-  if (task.updated_at) reply += "\n最終更新: " + task.updated_at + " UTC";
-  const notificationLabels = { none: "対象外", pending: "通知待ち", sending: "通知中", sent: "通知済み", failed: "通知停止" };
-  if (task.notify_chat_id) reply += "\n通知: " + (notificationLabels[task.notification_status] || task.notification_status);
-  if (task.notification_status === "failed") reply += "\n通知停止理由: " + (task.notification_last_error_class || "delivery_failed");
-  if (task.status === "failed") {
-    const guidance = describeAgentTaskStopReason(task.stop_reason);
-    reply += "\n停止理由: " + guidance.label
-      + "\n次の操作: " + guidance.nextAction;
-  }
-  if (task.status === "succeeded" && typeof task.checkpoint?.result === "string") {
-    reply += "\n\n" + task.checkpoint.result.slice(0, 3000);
-  }
-  return reply;
-}
-__name(getTelegramBackgroundTaskStatus, "getTelegramBackgroundTaskStatus");
-
-async function cancelTelegramBackgroundTask(env, chatId, requestedTaskId) {
-  let taskId = requestedTaskId;
-  if (!taskId) {
-    let active;
-    try {
-      active = await listAgentTasks(env.DB, { status: "active", notifyChatId: chatId, limit: 1 });
-    } catch {
-      return "実行中タスクを確認できませんでした。";
-    }
-    if (!active.length) return "キャンセルできる未完了タスクはありません。";
-    taskId = active[0].task_id;
-  }
-
-  let result;
-  try {
-    result = await cancelAgentTask(env.DB, { taskId, chatId, nowMs: Date.now() });
-  } catch {
-    return "キャンセル要求を保存できませんでした。少し待って /task_status " + taskId + " で確認してください。";
-  }
-  if (result.cancelled) {
-    // Persist cancellation first so even a failed Workflow termination cannot
-    // save a result or reclaim the task. Then stop the durable execution itself.
-    try {
-      if (env.AGENT_TASK_WORKFLOW) {
-        const instance = await env.AGENT_TASK_WORKFLOW.get(taskId);
-        await instance.terminate();
-      }
-    } catch {
-      // The D1 terminal state remains authoritative if the instance already ended.
-    }
-    return "キャンセルしました。\\nID: " + result.taskId
-      + "\\n結果の保存・完了通知は行われません。すでに送信された外部API処理は相手側で完了する場合があります。";
-  }
-  if (result.reason === "already_cancelled") return "このタスクはすでにキャンセル済みです。\nID: " + taskId;
-  if (result.reason === "already_terminal") return "このタスクはすでに終了しています（状態: " + result.status + "）。\nID: " + taskId;
-  return "タスクが見つからないか、このチャットからキャンセルできません。\nID: " + taskId;
-}
-__name(cancelTelegramBackgroundTask, "cancelTelegramBackgroundTask");
-
-async function listTelegramBackgroundTasks(env, chatId) {
-  let tasks;
-  try {
-    tasks = await listAgentTasks(env.DB, { status: "active", notifyChatId: chatId, limit: 10 });
-  } catch {
-    return "背景タスク一覧を取得できませんでした。";
-  }
-  if (!tasks.length) return "未完了の背景タスクはありません。";
-
-  const statusLabels = { queued: "受付済み", running: "実行中", waiting: "再試行待ち" };
-  const stageLabels = {
-    context_ready: "関連ノートの取得完了",
-    prompt_ready: "要約プロンプトの準備完了",
-    completed: "結果保存済み"
-  };
-  const notificationLabels = {
-    none: "対象外",
-    pending: "通知待ち",
-    sending: "通知中",
-    sent: "通知済み",
-    failed: "通知停止"
-  };
-  const lines = tasks.map((task) => {
-    const stage = task.checkpoint?.stage;
-    return task.task_id
-      + "\n状態: " + (statusLabels[task.status] || task.status)
-      + " / 試行 " + task.attempts + "/" + task.max_attempts
-      + (stage ? "\n段階: " + (stageLabels[stage] || stage) : "")
-      + (task.notification_status && task.notification_status !== "none"
-        ? "\n通知: " + (notificationLabels[task.notification_status] || task.notification_status) : "");
-  });
-  return "未完了の背景タスク（" + tasks.length + "件）:\n\n"
-    + lines.join("\n\n")
-    + "\n\n個別の状態・結果: /task_status タスクID";
-}
-__name(listTelegramBackgroundTasks, "listTelegramBackgroundTasks");
 
 function isRestrictedImprovement(text2) {
   return /認証|credential|password|パスワード|secret|秘密鍵|token|トークン|API[_ -]?key|privacy|プライバシー|セキュリティ|安全|権限|許可|ブロック|送信制限/iu.test(text2);
