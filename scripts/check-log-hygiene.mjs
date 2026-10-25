@@ -8,6 +8,7 @@ const outboxSource = await readFile(new URL("../src/sync-outbox.mjs", import.met
 const organizeSource = await readFile(new URL("../src/organize.mjs", import.meta.url), "utf8");
 const geminiClientSource = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
 const aiPermissionSource = await readFile(new URL("../src/ai-permission.mjs", import.meta.url), "utf8");
+const replyTextSource = await readFile(new URL("../src/reply-text.mjs", import.meta.url), "utf8");
 
 for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource]]) {
   assert.ok(!source.includes("String(error).slice(0, 200)"), `${name} must not log raw error strings`);
@@ -38,7 +39,7 @@ assert.ok(geminiSource.includes("failure.apiStatus"), "callGemini must keep the 
 const APP_CONSOLE_LINES = /console\.(?:log|error|warn)\(/u;
 // 分類 D のベンダ行 (Yjs / lib0 の固定文字列) は対象外として列挙する。
 const VENDOR_LOG_MARKERS = ["computeLoggingArgs", "[yjs]", "already integrated as a sub-document", "Yjs was already imported", "console.error(e);"];
-for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource], ["src/gemini-client.mjs", geminiClientSource], ["src/ai-permission.mjs", aiPermissionSource]]) {
+for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource], ["src/gemini-client.mjs", geminiClientSource], ["src/ai-permission.mjs", aiPermissionSource], ["src/reply-text.mjs", replyTextSource]]) {
   source.split("\n").forEach((line, index) => {
     if (!APP_CONSOLE_LINES.test(line)) return;
     if (VENDOR_LOG_MARKERS.some((marker) => line.includes(marker))) return;
