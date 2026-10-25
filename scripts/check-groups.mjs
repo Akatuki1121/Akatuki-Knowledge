@@ -27,6 +27,7 @@ export const checks = [
   ["agent-evaluation-set", process.execPath, ["scripts/test_agent_evaluation_set.mjs"]],
   ["agent-intent-classifier-syntax", process.execPath, ["--check", "src/intent-classifier.mjs"]],
   ["agent-intent-classifier", process.execPath, ["scripts/test_agent_intent_classifier.mjs"]],
+  ["agent-intent-classifier-counters-migration", "python3", ["scripts/test_intent_classifier_counters_migration.py"]],
   ["agent-web-research", process.execPath, ["scripts/test_agent_web_research.mjs"]],
   ["agent-memory", process.execPath, ["scripts/test_agent_memory.mjs"]],
   ["agent-memory-queue", process.execPath, ["scripts/test_agent_memory_queue.mjs"]],
