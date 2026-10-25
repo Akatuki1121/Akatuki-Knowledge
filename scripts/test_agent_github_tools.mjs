@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, GITHUB_READ_TOOLS } from "../src/agent-github-tools.mjs";
+import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, GITHUB_READ_TOOLS, GITHUB_WRITE_PROPOSAL_TOOL } from "../src/agent-github-tools.mjs";
 
 const calls = [];
 const response = (status, body, headers = {}) => new Response(JSON.stringify(body), {
@@ -140,4 +140,35 @@ assert.throws(() => validateGitHubWritePlan({
   })),
 }), /invalid_input/);
 
-console.log("GitHub tools tests passed: read allowlist, bounded writes, approval-plan validation, hashing, path blocking, and API failures.");
+// The tool definition shown to the model must disclose exactly the keys the validator
+// requires (Issue #90): for every operation type, a plan built from exactly the
+// disclosed keys validates, while dropping or adding any key fails validation.
+assert.deepEqual(GITHUB_WRITE_PROPOSAL_TOOL.arguments, ["repository", "summary", "operations"]);
+const sampleOperations = {
+  create_branch: { type: "create_branch", branch: "bot/task", base_ref: "main" },
+  create_file: { type: "create_file", branch: "bot/task", path: "docs/note.md", content: "# Note\n", message: "docs: add note" },
+  update_file: { type: "update_file", branch: "bot/task", path: "docs/note.md", content: "# Note\n", message: "docs: update note", sha: "a".repeat(40) },
+  create_issue: { type: "create_issue", title: "Issue title", body: "Issue body" },
+  add_issue_comment: { type: "add_issue_comment", number: 1, body: "Comment body" },
+  create_pull_request: { type: "create_pull_request", head: "bot/task", base: "main", title: "PR title", body: "PR body", draft: true },
+};
+assert.deepEqual(Object.keys(GITHUB_WRITE_PROPOSAL_TOOL.operationArguments).sort(), Object.keys(sampleOperations).sort(),
+  "The definition must disclose every operation type the validator accepts, and no others");
+for (const [type, keys] of Object.entries(GITHUB_WRITE_PROPOSAL_TOOL.operationArguments)) {
+  const sample = sampleOperations[type];
+  assert.deepEqual(Object.keys(sample).sort(), [...keys].sort(), `sample for ${type} must use exactly the disclosed keys`);
+  const wrap = (operation) => ({ repository: "example/project", summary: "Disclosure consistency check", operations: [operation] });
+  assert.doesNotThrow(() => validateGitHubWritePlan(wrap(sample)), `${type} with exactly the disclosed keys must validate`);
+  for (const key of keys) {
+    const missing = { ...sample };
+    delete missing[key];
+    assert.throws(() => validateGitHubWritePlan(wrap(missing)), /invalid_input/, `${type} without ${key} must fail validation`);
+  }
+  assert.throws(() => validateGitHubWritePlan(wrap({ ...sample, unexpected_key: true })), /invalid_input/,
+    `${type} with an extra key must fail validation`);
+}
+assert.throws(() => validateGitHubWritePlan({
+  repository: "example/project", summary: "undisclosed operation", operations: [{ type: "delete_file", path: "docs/note.md" }],
+}), /unknown_tool/, "Operation types absent from the disclosure must stay unsupported");
+
+console.log("GitHub tools tests passed: read allowlist, bounded writes, approval-plan validation, hashing, path blocking, API failures, and write-plan schema disclosure consistency.");

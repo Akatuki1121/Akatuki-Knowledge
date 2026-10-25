@@ -88,10 +88,29 @@ async function githubGet(path, { token, fetchImpl = fetch, signal } = {}) {
 }
 
 
+// The description and operationArguments are shown to the model verbatim, so they must
+// mirror validateGitHubWritePlan exactly: undisclosed required keys make the model's
+// first proposal fail strict validation (Issue #90). scripts/test_agent_github_tools.mjs
+// pins this disclosure against the validator.
 export const GITHUB_WRITE_PROPOSAL_TOOL = Object.freeze({
-  description: "Prepare a bounded GitHub write plan for explicit user approval. This tool NEVER performs writes.",
+  description: "Prepare a bounded GitHub write plan for explicit user approval. This tool NEVER performs writes. "
+    + "The arguments object must contain exactly the keys repository, summary, operations (no extra keys). "
+    + "repository is in \"owner/repo\" form. summary is a non-empty string of at most 500 characters. "
+    + "operations is an array of 1 to 5 operations. Each operation must contain exactly the keys listed for its type in operationArguments (no missing or extra keys). "
+    + "branch, base_ref, head, and base are branch names. In create_file/update_file, path is a relative file path (sensitive paths such as .env are blocked), content is a string of at most 20000 characters, and message is a non-empty string of at most 200 characters. "
+    + "update_file also requires sha, the current 40-character hex blob sha of the file. In create_issue/create_pull_request, title is a non-empty string of at most 200 characters and body is a string of at most 10000 characters. "
+    + "add_issue_comment requires number (an integer from 1 to 1000000) and body (a non-empty string of at most 10000 characters). "
+    + "create_pull_request requires draft as a boolean. The whole plan must fit within 9000 characters of JSON.",
   sideEffect: "approval_required",
   arguments: Object.freeze(["repository", "summary", "operations"]),
+  operationArguments: Object.freeze({
+    create_branch: Object.freeze(["type", "branch", "base_ref"]),
+    create_file: Object.freeze(["type", "branch", "path", "content", "message"]),
+    update_file: Object.freeze(["type", "branch", "path", "content", "message", "sha"]),
+    create_issue: Object.freeze(["type", "title", "body"]),
+    add_issue_comment: Object.freeze(["type", "number", "body"]),
+    create_pull_request: Object.freeze(["type", "head", "base", "title", "body", "draft"]),
+  }),
 });
 
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/u;
