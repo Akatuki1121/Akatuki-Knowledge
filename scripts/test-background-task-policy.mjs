@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { decideTaskRetry, TASK_BUDGET_CEILINGS } from "../src/background-task-policy.mjs";
+import { classifyAgentTaskError, decideTaskRetry, describeAgentTaskStopReason, TASK_BUDGET_CEILINGS } from "../src/background-task-policy.mjs";
 
 const base = {
   nowMs: 10_000,
@@ -101,4 +101,108 @@ assert.equal(deadlineClamped.stopReason, "retry_would_exceed_task_deadline");
 
 assert.equal(TASK_BUDGET_CEILINGS.maxAttempts, 4);
 assert.equal(TASK_BUDGET_CEILINGS.maxTaskAgeMs, 3_600_000);
+
+// --- classifyAgentTaskError (moved from src/index.js in #86) ---
+// Every fixed class is matched from the message, in list order.
+for (const fixed of [
+  "credentials_detected",
+  "pii_masking_failed",
+  "invalid_input",
+  "policy_violation",
+  "unauthorized",
+  "forbidden",
+  "unknown_tool",
+  "tool_loop_detected",
+  "tool_budget_exhausted",
+  "web_research_not_enabled",
+  "web_research_budget_exhausted",
+  "web_research_unverified",
+  "web_research_sources_missing",
+  "web_research_invalid_response",
+  "web_research_provider_error",
+  "model_call_budget_exhausted",
+  "tool_output_too_large",
+  "ai_token_budget_exhausted",
+]) {
+  assert.equal(classifyAgentTaskError(new Error("failed: " + fixed)), fixed, fixed);
+}
+// Fixed classes win over the regex classes, and the fixed list order (not the
+// position inside the message) decides between multiple fixed classes.
+assert.equal(classifyAgentTaskError(new Error("credentials_detected (HTTP 429)")), "credentials_detected");
+assert.equal(
+  classifyAgentTaskError(new Error("ai_token_budget_exhausted then credentials_detected")),
+  "credentials_detected",
+);
+// Regex classes, in evaluation order.
+assert.equal(classifyAgentTaskError(new Error("HTTP 429 Too Many Requests")), "rate_limited");
+assert.equal(classifyAgentTaskError(new Error("Rate limit exceeded")), "rate_limited");
+assert.equal(classifyAgentTaskError(new Error("quota exhausted for this project")), "rate_limited");
+assert.equal(classifyAgentTaskError(new TypeError("429 from upstream")), "rate_limited");
+assert.equal(classifyAgentTaskError(new Error("Gemini API returned 500")), "upstream_5xx");
+assert.equal(classifyAgentTaskError(new Error("Gemini API returned 503 Service Unavailable")), "upstream_5xx");
+const timeoutByName = new Error("boom");
+timeoutByName.name = "TimeoutError";
+assert.equal(classifyAgentTaskError(timeoutByName), "timeout");
+const abortByName = new Error("boom");
+abortByName.name = "AbortError";
+assert.equal(classifyAgentTaskError(abortByName), "timeout");
+assert.equal(classifyAgentTaskError(new Error("request timeout after 30s")), "timeout");
+assert.equal(classifyAgentTaskError(new TypeError("timeout while fetching")), "timeout");
+assert.equal(classifyAgentTaskError(new TypeError("fetch failed")), "network_error");
+assert.equal(classifyAgentTaskError(new TypeError("some type problem")), "network_error");
+assert.equal(classifyAgentTaskError(new Error("network unreachable")), "network_error");
+assert.equal(classifyAgentTaskError(new Error("connection reset by peer")), "network_error");
+// Anything else, including a missing message, fails closed to "unknown".
+assert.equal(classifyAgentTaskError(new Error("something completely different")), "unknown");
+assert.equal(classifyAgentTaskError(new Error()), "unknown");
+assert.equal(classifyAgentTaskError({}), "unknown");
+assert.equal(classifyAgentTaskError(null), "unknown");
+assert.equal(classifyAgentTaskError(undefined), "unknown");
+
+// --- describeAgentTaskStopReason (moved from src/index.js in #86) ---
+const GUIDANCE = {
+  task_deadline_exceeded: ["処理時間の上限に到達", "依頼を小さく分け、新しい /task として依頼してください。"],
+  retry_would_exceed_task_deadline: ["処理時間の上限に到達するため再試行できない", "依頼を小さく分け、新しい /task として依頼してください。"],
+  attempt_budget_exhausted: ["再試行回数の上限に到達", "依頼内容を絞り、新しい /task として依頼してください。"],
+  ai_call_budget_exhausted: ["AI 呼び出し上限に到達", "質問を一つに絞り、新しい /task として依頼してください。"],
+  ai_token_budget_exhausted: ["AI 利用量の上限に到達", "依頼文を短くし、対象範囲を絞って新しい /task として依頼してください。"],
+  daily_workflow_budget_exhausted: ["本日の背景タスク上限に到達", "翌日以降に、必要な内容を絞って再依頼してください。"],
+  credentials_detected: ["認証情報を検出", "認証情報を依頼文から削除してから再依頼してください。"],
+  pii_masking_failed: ["個人情報を安全にマスキングできない", "個人を特定できる情報を除いてから再依頼してください。"],
+  web_research_not_enabled: ["Web 調査は現在無効", "Web 調査の有効化を待つ間は、ナレッジ検索を /task で依頼してください。"],
+  web_research_sources_missing: ["調査結果の出典を確認できない", "出典を確認できる依頼内容に絞って、新しい /research として依頼してください。"],
+  web_research_unverified: ["調査結果を検証できない", "検証対象を絞って、新しい /research として依頼してください。"],
+  non_retryable_or_unknown_error: ["安全に再試行できると確認できないエラー", "依頼内容を確認し、対象を絞って新しい /task として依頼してください。"],
+};
+for (const [reason, [label, nextAction]] of Object.entries(GUIDANCE)) {
+  assert.deepEqual(describeAgentTaskStopReason(reason), { label, nextAction }, reason);
+}
+// The non_retryable_ prefix is normalized before the table lookup.
+assert.deepEqual(
+  describeAgentTaskStopReason("non_retryable_credentials_detected"),
+  { label: "認証情報を検出", nextAction: "認証情報を依頼文から削除してから再依頼してください。" },
+);
+assert.deepEqual(
+  describeAgentTaskStopReason("non_retryable_task_deadline_exceeded"),
+  { label: "処理時間の上限に到達", nextAction: "依頼を小さく分け、新しい /task として依頼してください。" },
+);
+// Unknown reasons fall back to the raw reason plus the default next action;
+// empty or non-string reasons report that no stop reason was recorded.
+const DEFAULT_NEXT_ACTION = "依頼内容を確認し、対象を絞って新しい /task として依頼してください。";
+assert.deepEqual(
+  describeAgentTaskStopReason("some_unlisted_reason"),
+  { label: "some_unlisted_reason", nextAction: DEFAULT_NEXT_ACTION },
+);
+assert.deepEqual(
+  describeAgentTaskStopReason("non_retryable_mystery"),
+  { label: "non_retryable_mystery", nextAction: DEFAULT_NEXT_ACTION },
+);
+for (const empty of ["", null, undefined, 0]) {
+  assert.deepEqual(
+    describeAgentTaskStopReason(empty),
+    { label: "停止理由は未記録", nextAction: DEFAULT_NEXT_ACTION },
+    String(empty),
+  );
+}
+
 console.log("Background task retry policy tests passed.");
