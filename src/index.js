@@ -41,6 +41,7 @@ import { createGeminiClient } from "./gemini-client.mjs";
 import { INTENT_CLASSIFIER_LIMITS, isIntentClassifierShadowEnabled, recordIntentTier0Branch, runIntentClassifierShadow } from "./intent-classifier.mjs";
 import { createBulkAiPermission } from "./ai-permission.mjs";
 import { createReplyText } from "./reply-text.mjs";
+import { createTelegramClient } from "./telegram-client.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
@@ -50,6 +51,8 @@ const { callGemini, callGeminiWebResearch } = createGeminiClient({ inspectWholeC
 const { isBulkAiPermissionRequest, isBulkAiPermissionApproval, isBulkAiPermissionRejection, proposeBulkAiPermission, applyBulkAiPermission, rejectBulkAiPermission } = createBulkAiPermission({ inspectWholeContent, hasSensitiveCategory });
 // AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
 const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
+// Telegram 送信・編集は src/telegram-client.mjs に分離した (#86)。
+const { sendTelegramMessage, editTelegramMessage } = createTelegramClient();
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
 const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
@@ -1318,27 +1321,6 @@ async function storeTelegramNote(env, chatId, messageId, content, now) {
   return "\u30CE\u30FC\u30C8\u3092\u4FDD\u5B58\u3057\u305F\u3088\u3002AI\u6574\u7406\u306E\u72B6\u614B\u3092\u6B21\u56DE\u306E\u5B9A\u671F\u78BA\u8A8D\u3067\u8ABF\u3079\u308B\u306D\u3002";
 }
 __name(storeTelegramNote, "storeTelegramNote");
-async function sendTelegramMessage(env, chatId, text2) {
-  if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
-  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: text2 })
-  });
-  const data = await response.json().catch(() => null);
-  if (!response.ok || data?.ok === false) throw new Error(`Telegram sendMessage returned ${response.status}`);
-  return data?.result?.message_id ?? null;
-}
-async function editTelegramMessage(env, chatId, messageId, text2) {
-  if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
-  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text2.slice(0, 3500) })
-  });
-  const data = await response.json().catch(() => null);
-  if (!response.ok || data?.ok === false) throw new Error(`Telegram editMessageText returned ${response.status}`);
-}
 async function readJson(request) {
   const declared = Number(request.headers.get("content-length") || 0);
   if (declared > MAX_BODY_BYTES) throw new Error("Payload too large");
