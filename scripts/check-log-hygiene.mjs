@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 const workerSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const outboxSource = await readFile(new URL("../src/sync-outbox.mjs", import.meta.url), "utf8");
 const organizeSource = await readFile(new URL("../src/organize.mjs", import.meta.url), "utf8");
+const geminiClientSource = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
 
 for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource]]) {
   assert.ok(!source.includes("String(error).slice(0, 200)"), `${name} must not log raw error strings`);
@@ -23,10 +24,10 @@ assert.ok(
 );
 
 // callGemini は上流の自由文字列を例外メッセージへ残さない。
-const geminiStart = workerSource.indexOf("async function callGemini");
-const geminiEnd = workerSource.indexOf("__name(callGemini", geminiStart);
+const geminiStart = geminiClientSource.indexOf("async function callGemini");
+const geminiEnd = geminiClientSource.indexOf("__name(callGemini", geminiStart);
 assert.ok(geminiStart >= 0 && geminiEnd > geminiStart, "callGemini must exist");
-const geminiSource = workerSource.slice(geminiStart, geminiEnd);
+const geminiSource = geminiClientSource.slice(geminiStart, geminiEnd);
 assert.ok(!geminiSource.includes("data?.error?.message"), "callGemini must not retain the upstream free-form error message");
 assert.ok(geminiSource.includes("failure.httpStatus = response.status"), "callGemini must keep the HTTP status on the failure");
 assert.ok(geminiSource.includes("failure.apiStatus"), "callGemini must keep the API status on the failure");
@@ -36,7 +37,7 @@ assert.ok(geminiSource.includes("failure.apiStatus"), "callGemini must keep the 
 const APP_CONSOLE_LINES = /console\.(?:log|error|warn)\(/u;
 // 分類 D のベンダ行 (Yjs / lib0 の固定文字列) は対象外として列挙する。
 const VENDOR_LOG_MARKERS = ["computeLoggingArgs", "[yjs]", "already integrated as a sub-document", "Yjs was already imported", "console.error(e);"];
-for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource]]) {
+for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.mjs", outboxSource], ["src/organize.mjs", organizeSource], ["src/gemini-client.mjs", geminiClientSource]]) {
   source.split("\n").forEach((line, index) => {
     if (!APP_CONSOLE_LINES.test(line)) return;
     if (VENDOR_LOG_MARKERS.some((marker) => line.includes(marker))) return;
