@@ -41,6 +41,7 @@ import { createGeminiClient } from "./gemini-client.mjs";
 import { INTENT_CLASSIFIER_LIMITS, isIntentClassifierShadowEnabled, recordIntentTier0Branch, runIntentClassifierShadow } from "./intent-classifier.mjs";
 import { createBulkAiPermission } from "./ai-permission.mjs";
 import { createReplyText } from "./reply-text.mjs";
+import { createNoteSearchText } from "./note-search-text.mjs";
 import { describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // Gemini クライアントは src/gemini-client.mjs に分離した (#86)。
 // ai-send-guard / agent-web-research への依存はここから注入する (organize.mjs と同じ方式)。
@@ -50,6 +51,8 @@ const { callGemini, callGeminiWebResearch } = createGeminiClient({ inspectWholeC
 const { isBulkAiPermissionRequest, isBulkAiPermissionApproval, isBulkAiPermissionRejection, proposeBulkAiPermission, applyBulkAiPermission, rejectBulkAiPermission } = createBulkAiPermission({ inspectWholeContent, hasSensitiveCategory });
 // AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
 const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
+// 検索テキスト処理は src/note-search-text.mjs に分離した (#86)。
+const { capLikeTerm, searchTerms, excerpt } = createNoteSearchText();
 // AI 自動整理の実行経路は src/organize.mjs に分離した (#86)。
 // バンドル内ヘルパーはここから注入し、organize.mjs 側は Worker エントリポイントに依存させない。
 const organizePending = createOrganizeRunner({ json, callGemini, parseJsonObject, writeAudit, enqueueBotAlert });
@@ -1522,51 +1525,6 @@ async function listTelegramHistory(url, env) {
   return json({ messages: results.reverse() });
 }
 __name(listTelegramHistory, "listTelegramHistory");
-// D1 rejects LIKE patterns longer than 50 bytes ("LIKE or GLOB pattern too complex"). The pattern is %term%, so cap each term at 48 UTF-8 bytes.
-function capLikeTerm(term) {
-  const encoder = new TextEncoder();
-  let out = "";
-  let bytes = 0;
-  for (const ch of term) {
-    const size = encoder.encode(ch).length;
-    if (bytes + size > 48) break;
-    out += ch;
-    bytes += size;
-  }
-  return out;
-}
-__name(capLikeTerm, "capLikeTerm");
-
-function searchTerms(q) {
-  return [...new Set(searchTermsUncapped(q).map(capLikeTerm).filter((term) => [...term].length >= 2))];
-}
-__name(searchTerms, "searchTerms");
-
-function searchTermsUncapped(q) {
-  const trimmed = q.trim().slice(0, 200);
-  const terms = /* @__PURE__ */ new Set();
-  const spaced = trimmed.split(/[\s,，、。.!?！？:：;；()（）\[\]{}「」『』]+/u).filter((x) => x.length >= 2);
-  const compact = trimmed.replace(/[\s,，、。.!?！？:：;；()（）\[\]{}「」『』]/gu, "");
-  const chars = [...compact];
-  const latinTerms = trimmed.match(/[A-Za-z][A-Za-z0-9._+-]{1,49}/g) || [];
-  const stopWords = new Set(["探して", "探す", "検索", "メモ", "ノート", "に関する", "について", "教えて", "関連する", "ある", "ください"]);
-  for (const term of latinTerms) terms.add(term);
-  if (spaced.length > 1) {
-    for (const term of spaced) if (!stopWords.has(term)) terms.add(term.slice(0, 50));
-    return [...terms].slice(0, 8);
-  }
-  if (latinTerms.length) return [...terms].slice(0, 8);
-  if (chars.length <= 12) return chars.length >= 2 ? [compact] : [];
-  const width = 3;
-  const maxNgrams = 8;
-  const maxStart = chars.length - width;
-  const step = Math.max(1, Math.floor(maxStart / (maxNgrams - 1)));
-  for (let i = 0; i <= maxStart && terms.size < maxNgrams; i += step) {
-    terms.add(chars.slice(i, i + width).join(""));
-  }
-  return [...terms].slice(0, maxNgrams);
-}
-__name(searchTermsUncapped, "searchTermsUncapped");
 async function findRelevantNotes(q, env, limit = MAX_SEARCH_RESULTS) {
   const terms = searchTerms(q);
   if (!terms.length) return [];
@@ -1619,19 +1577,6 @@ async function searchNotes(url, env) {
   return json({ query: q, results: results.map((n) => ({ ...publicNote(n), excerpt: excerpt(n.content, q), relevance: n.relevance })) });
 }
 __name(searchNotes, "searchNotes");
-function excerpt(content, q, max2 = 600) {
-  const clean = content.replace(/```[\s\S]*?```/g, "[code block]").replace(/\s+/g, " ").trim();
-  const terms = searchTerms(q).sort((a, b) => b.length - a.length);
-  const lower = clean.toLocaleLowerCase();
-  let at = -1;
-  for (const term of terms) {
-    at = lower.indexOf(term.toLocaleLowerCase());
-    if (at >= 0) break;
-  }
-  const start = Math.max(0, (at < 0 ? 0 : at) - 180);
-  return (start > 0 ? "\u2026" : "") + clean.slice(start, start + max2) + (start + max2 < clean.length ? "\u2026" : "");
-}
-__name(excerpt, "excerpt");
 async function setAiPermission(request, url, env) {
   const match2 = url.pathname.match(/^\/api\/notes\/(.+)\/ai-permission$/);
   if (!match2) return json({ error: "Invalid note route" }, 400);
