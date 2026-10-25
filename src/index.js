@@ -11280,9 +11280,15 @@ var YjsClientDO = class extends DurableObject {
     return { ...base, applied: moved.length > 0, movedCount: moved.length, verified, unverified, rejected, d1Updated: d1Updated.length, d1Failed };
   }
   // 段階2b: D1のTelegramノートのうち、YAOS上のVaultにまだ無いものを新規作成する(dry-run既定)。
-  // パスは scripts/sync-bidirectional.mjs の telegramPath() と同一規則(末尾のid由来16桁hexが同一性の鍵)。
-  // PC側のスクリプトがタイトル変更前のslugで出力済みでも、16桁hexが一致すれば既存とみなして作らない。
+  // 同一性はfrontmatterのid(UUID)が主キーで、Vaultファイルのfrontmatter idが一致すれば、
+  // ファイル名が変わっていても既存とみなして作らない。ファイル名末尾のid由来16桁hexは
+  // 移行前の命名規則であり、移行期間中のみフォールバックとして照合する(段階移行ステップ1)。
+  // 新規ファイル名はタイトルslugのみ(末尾hexなし)。slugが既存ファイルや他の候補と衝突する
+  // 場合は上書きせず、決定的に連番(-2, -3, ...)を付ける(連番自体は同一性キーではない)。
+  // 作成するファイルには、イベント経路と同じ規則でfrontmatter idを必ず入れる。
   // 墓石(Vaultで削除済み)があるノートは作り直さない。既存ノートの更新・削除はしない。
+  // 注意: PC側スクリプト scripts/sync-bidirectional.mjs の telegramPath() は旧規則(末尾hex)の
+  // ままなので、その出力ファイルはフォールバック照合でのみ既存判定される(ステップ2で合わせて更新する)。
   async createTelegramNotes(apply, limit) {
     const TG_DIR = `${RESERVED_ROOT}/Telegram/`;
     const metaPath = /* @__PURE__ */ __name((v) => {
@@ -11293,12 +11299,23 @@ var YjsClientDO = class extends DurableObject {
     const scan = /* @__PURE__ */ __name((doc3) => {
       const active2 = /* @__PURE__ */ new Set();
       const tombstoned2 = /* @__PURE__ */ new Set();
-      doc3.getMap("meta").forEach((v) => {
+      const activeUuids = /* @__PURE__ */ new Set();
+      const tombstonedUuids = /* @__PURE__ */ new Set();
+      const usedPaths = /* @__PURE__ */ new Set();
+      const texts = doc3.getMap("idToText");
+      doc3.getMap("meta").forEach((v, fileId) => {
         const p = metaPath(v);
-        const m = p?.startsWith(TG_DIR) ? p.match(/-([0-9a-f]{16})\.md$/) : null;
-        if (m) (metaDeleted(v) ? tombstoned2 : active2).add(m[1]);
+        if (!p) return;
+        usedPaths.add(p);
+        if (!p.startsWith(TG_DIR)) return;
+        const deleted2 = metaDeleted(v);
+        const m = p.match(/-([0-9a-f]{16})\.md$/);
+        if (m) (deleted2 ? tombstoned2 : active2).add(m[1]);
+        const textValue = texts.get(fileId);
+        const fileUuid = textValue instanceof YText ? readUuid(textValue.toString()) : null;
+        if (isValidSyncUuid(fileUuid)) (deleted2 ? tombstonedUuids : activeUuids).add(fileUuid);
       });
-      return { active: active2, tombstoned: tombstoned2 };
+      return { active: active2, tombstoned: tombstoned2, activeUuids, tombstonedUuids, usedPaths };
     }, "scan");
     const doc2 = await this.pullVault();
     const sysMap = doc2.getMap("sys");
@@ -11309,18 +11326,20 @@ var YjsClientDO = class extends DurableObject {
     if (typeof schema !== "number" || schema < 2) return guard("schema_version_below_2");
     if (vaultFiles < MIN_VAULT_FILES_FOR_WRITE) return guard("vault_looks_empty");
     const rows = (await this.env.DB.prepare("SELECT id, title, content FROM telegram_notes WHERE deleted_at IS NULL").all()).results;
-    const { active, tombstoned } = scan(doc2);
+    const { active, tombstoned, activeUuids, tombstonedUuids, usedPaths } = scan(doc2);
     const candidates = [];
     let existing = 0;
     let tombstonedCount = 0;
     let oversized = 0;
     for (const row of rows) {
       const hash16 = (await sha256Hex(row.id)).slice(0, 16);
-      if (active.has(hash16)) {
+      const contentUuid = readUuid(row.content);
+      const uuid = isValidSyncUuid(contentUuid) ? contentUuid : await deterministicUuid(row.id);
+      if (activeUuids.has(uuid) || active.has(hash16)) {
         existing++;
         continue;
       }
-      if (tombstoned.has(hash16)) {
+      if (tombstonedUuids.has(uuid) || tombstoned.has(hash16)) {
         tombstonedCount++;
         continue;
       }
@@ -11329,7 +11348,18 @@ var YjsClientDO = class extends DurableObject {
         continue;
       }
       const slug = (row.title ?? "Telegram note").normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[-. ]+|[-. ]+$/g, "").slice(0, 64) || "Telegram-note";
-      candidates.push({ id: row.id, title: row.title, path: `${TG_DIR}${slug}-${hash16}.md`, content: row.content });
+      let path = `${TG_DIR}${slug}.md`;
+      for (let n = 2; usedPaths.has(norm(path)); n++) path = `${TG_DIR}${slug}-${n}.md`;
+      usedPaths.add(norm(path));
+      let content = row.content;
+      const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      const hasUuid = fm && /^id:\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}["']?\s*$/im.test(fm[1]);
+      if (!hasUuid) {
+        if (fm && /^id:\s*.*$/m.test(fm[1])) content = content.replace(/^id:\s*.*$/m, 'id: "' + uuid + '"');
+        else if (fm) content = content.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
+        else content = '---\nid: "' + uuid + '"\n---\n\n' + content;
+      }
+      candidates.push({ id: row.id, title: row.title, path, content, uuid, hash16 });
     }
     const selected = candidates.slice(0, limit);
     const base = {
@@ -11359,11 +11389,15 @@ var YjsClientDO = class extends DurableObject {
       const now = scan(d);
       d.transact(() => {
         for (const c of selected) {
-          const hash16 = c.path.match(/-([0-9a-f]{16})\.md$/)[1];
-          if (now.active.has(hash16) || now.tombstoned.has(hash16)) {
+          if (now.activeUuids.has(c.uuid) || now.active.has(c.hash16) || now.tombstonedUuids.has(c.uuid) || now.tombstoned.has(c.hash16)) {
             rejected.push({ path: c.path, reason: "appeared_since_plan" });
             continue;
           }
+          if (now.usedPaths.has(norm(c.path))) {
+            rejected.push({ path: c.path, reason: "path_taken_since_plan" });
+            continue;
+          }
+          now.usedPaths.add(norm(c.path));
           const fileId = newFileId();
           const text2 = new YText();
           text2.insert(0, c.content);
@@ -11400,7 +11434,7 @@ var YjsClientDO = class extends DurableObject {
     const telegram = job.entityType === "telegram_notes";
     const hash16 = telegram ? (await sha256Hex(payload.id)).slice(0, 16) : null;
     const slug = (payload.title || "Telegram note").normalize("NFC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[-. ]+|[-. ]+$/g, "").slice(0, 64) || "Telegram-note";
-    const desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + "-" + hash16 + ".md" : norm(payload.path || "");
+    let desiredPath = telegram ? RESERVED_ROOT + "/Telegram/" + slug + ".md" : norm(payload.path || "");
     if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").slice(0, -1).some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
     let desiredContent = payload.content;
     const contentUuid = readUuid(desiredContent);
@@ -11423,16 +11457,23 @@ var YjsClientDO = class extends DurableObject {
     };
     const locate = (doc) => {
       const found = [];
+      const legacyFound = [];
       const idToText = doc.getMap("idToText");
       doc.getMap("meta").forEach((value, fileId) => {
         const path = value instanceof YMap ? value.get("path") : value?.path;
         if (typeof path !== "string") return;
         const deleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
         const textValue = idToText.get(fileId);
-        const sameUuid = !telegram && desiredUuid && textValue instanceof YText && readUuid(textValue.toString()) === desiredUuid;
-        const matches = telegram ? path.startsWith(RESERVED_ROOT + "/Telegram/") && path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16 : sameUuid || norm(path) === desiredPath;
-        if (matches) found.push({ fileId, value, path, deleted });
+        const sameUuid = desiredUuid && textValue instanceof YText && readUuid(textValue.toString()) === desiredUuid;
+        if (telegram) {
+          if (!path.startsWith(RESERVED_ROOT + "/Telegram/")) return;
+          // 同一性はfrontmatter idが主キー。ファイル名末尾の16桁hexは移行期間中の
+          // フォールバックとして、frontmatterで見つからない場合にだけ使う(段階移行ステップ1)。
+          if (sameUuid) found.push({ fileId, value, path, deleted });
+          else if (path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16) legacyFound.push({ fileId, value, path, deleted });
+        } else if (sameUuid || norm(path) === desiredPath) found.push({ fileId, value, path, deleted });
       });
+      if (telegram && found.length === 0) found.push(...legacyFound);
       if (found.length > 1) throw new Error("ambiguous_sync_identity");
       return found[0] || null;
     };
@@ -11463,6 +11504,18 @@ var YjsClientDO = class extends DurableObject {
         if (pathToId.get(current.path) === current.fileId) pathToId.delete(current.path);
         changedCount = 1;
         return 1;
+      }
+      if (telegram) {
+        // 目的パスを別のノートのファイル(有効・墓石を問わない)が占有していたら、
+        // 上書きせず決定的に連番(-2, -3, ...)を付ける。連番は同一性キーではなく、
+        // 次回以降このノートはfrontmatter idで特定される。
+        const taken = new Set();
+        meta.forEach((v, fid) => {
+          if (fid === current?.fileId) return;
+          const p = v instanceof YMap ? v.get("path") : v?.path;
+          if (typeof p === "string") taken.add(norm(p));
+        });
+        for (let n = 2; taken.has(norm(desiredPath)); n++) desiredPath = RESERVED_ROOT + "/Telegram/" + slug + "-" + n + ".md";
       }
       let fileId = current?.fileId, textValue = fileId ? idToText.get(fileId) : null;
       if (!fileId) {
