@@ -22,6 +22,7 @@ export const checks = [
   ["sync-telegram-rename", process.execPath, ["scripts/test-sync-telegram-rename.mjs"]],
   ["sync-outbox", process.execPath, ["scripts/test-sync-outbox.mjs"]],
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
+  ["background-task-policy-syntax", process.execPath, ["--check", "src/background-task-policy.mjs"]],
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
   ["agent-github-tools", process.execPath, ["scripts/test_agent_github_tools.mjs"]],
@@ -50,6 +51,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name === "sync-telegram-agent-notifications")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "gemini-client-syntax", "ai-permission-syntax", "reply-text-syntax", "note-search-text-syntax", "telegram-client-syntax", "bot-alerts-syntax", "telegram-intent-syntax", "agent-memory-drain-syntax", "log-hygiene", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "gemini-client-syntax", "ai-permission-syntax", "reply-text-syntax", "note-search-text-syntax", "telegram-client-syntax", "bot-alerts-syntax", "telegram-intent-syntax", "background-task-policy-syntax", "agent-memory-drain-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
 }
