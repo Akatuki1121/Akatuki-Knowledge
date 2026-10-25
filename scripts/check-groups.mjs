@@ -11,6 +11,7 @@ export const checks = [
   ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
   ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
   ["sync-conflicts", process.execPath, ["scripts/test-sync-conflicts.mjs"]],
+  ["sync-telegram-identity", process.execPath, ["scripts/test-sync-telegram-identity.mjs"]],
   ["sync-outbox", process.execPath, ["scripts/test-sync-outbox.mjs"]],
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
