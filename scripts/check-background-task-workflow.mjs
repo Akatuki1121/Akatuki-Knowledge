@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const telegramBackgroundTasks = await readFile(new URL("../src/telegram-background-tasks.mjs", import.meta.url), "utf8");
 const geminiClient = await readFile(new URL("../src/gemini-client.mjs", import.meta.url), "utf8");
 const taskPolicy = await readFile(new URL("../src/background-task-policy.mjs", import.meta.url), "utf8");
 const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
@@ -44,21 +45,16 @@ for (const required of [
   "cancelAgentTask",
   "/cancel タスクID",
   "assertAgentTaskRunning",
-  "instance.terminate()",
   "task_cancelled",
   "listTelegramBackgroundTasks",
   "listAgentTasks",
+  "const stageLabels = {",
   "allowWebResearch",
   "GEMINI_WEB_RESEARCH_ENABLED",
   "callGeminiWebResearch",
   "parseGroundedWebResearch",
   '/tasks(?:@\\w+)?',
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
-  "const stageLabels = {",
-  'context_ready: "関連ノートの取得完了"',
-  'prompt_ready: "要約プロンプトの準備完了"',
-  'completed: "結果の保存完了"',
-  '"\\n段階: " + (stageLabels[stage] || stage)',
   "/task_status",
   'url.pathname === "/api/agent-tasks"',
   'request.method === "POST"',
@@ -86,6 +82,17 @@ for (const required of [
   'export {\n  AgentTaskWorkflow,'
 ]) {
   assert.ok(source.includes(required), "Missing background workflow contract: " + required);
+}
+// Issue #86: 状態確認・取消・一覧の Telegram ハンドラは src/telegram-background-tasks.mjs へ
+// 分離したため、ハンドラ本体にしか現れない文字列はモジュール側で検証する。
+for (const required of [
+  "instance.terminate()",
+  'context_ready: "関連ノートの取得完了"',
+  'prompt_ready: "要約プロンプトの準備完了"',
+  'completed: "結果の保存完了"',
+  '"\\n段階: " + (stageLabels[stage] || stage)'
+]) {
+  assert.ok(telegramBackgroundTasks.includes(required), "Missing Telegram background task handler contract: " + required);
 }
 assert.ok(
   source.split('task.budget_reserved === 1 && (task.status === "queued"').length - 1 >= 2,
@@ -150,10 +157,10 @@ const composeStart = retrieveEnd;
 const composeEnd = workflowSource.indexOf("runAgentToolLoop({", composeStart);
 const composeSource = workflowSource.slice(composeStart, composeEnd);
 assert.ok(composeSource.includes("if (prepared.resumePrompt)"), "Saved prompts must bypass prompt recomposition after recovery");
-const taskListStart = source.indexOf("async function listTelegramBackgroundTasks");
-const taskListEnd = source.indexOf('__name(listTelegramBackgroundTasks', taskListStart);
+const taskListStart = telegramBackgroundTasks.indexOf("async function listTelegramBackgroundTasks");
+const taskListEnd = telegramBackgroundTasks.indexOf('__name(listTelegramBackgroundTasks', taskListStart);
 assert.ok(taskListStart >= 0 && taskListEnd > taskListStart, "Telegram task-list formatter must exist");
-const taskListSource = source.slice(taskListStart, taskListEnd);
+const taskListSource = telegramBackgroundTasks.slice(taskListStart, taskListEnd);
 for (const label of [
   'pending: "通知待ち"',
   'sending: "通知中"',
@@ -177,9 +184,9 @@ for (const required of [
 ]) {
   assert.ok(stopGuidance.includes(required), "Missing actionable stop-reason guidance: " + required);
 }
-const taskStatusStart = source.indexOf("async function getTelegramBackgroundTaskStatus");
-const taskStatusEnd = source.indexOf('__name(getTelegramBackgroundTaskStatus', taskStatusStart);
-const taskStatusSource = source.slice(taskStatusStart, taskStatusEnd);
+const taskStatusStart = telegramBackgroundTasks.indexOf("async function getTelegramBackgroundTaskStatus");
+const taskStatusEnd = telegramBackgroundTasks.indexOf('__name(getTelegramBackgroundTaskStatus', taskStatusStart);
+const taskStatusSource = telegramBackgroundTasks.slice(taskStatusStart, taskStatusEnd);
 assert.ok(taskStatusSource.includes('describeAgentTaskStopReason(task.stop_reason)'), "Task status must explain failures");
 assert.ok(taskStatusSource.includes('"\\n次の操作: " + guidance.nextAction'), "Task status must include a next action");
 const notificationDispatchStart = source.indexOf("async function flushAgentTaskNotifications");
