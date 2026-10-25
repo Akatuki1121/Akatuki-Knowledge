@@ -2,7 +2,7 @@
 // 関数本文は移動前と同一。3 関数はいずれも外部依存のない純粋関数で
 // (extractReplyFromJsonish は同モジュールの parseJsonObject だけを使う)、
 // このモジュールは Worker エントリポイントに依存しない。
-// ファクトリ形式は src/gemini-client.mjs / src/ai-permission.mjs に揃えたが、
+// ファクトリ形式は src/gemini-client.mjs に揃えたが、
 // 注入する依存はない。AI 送信可否の判定 (ai-send-guard) には触れない。
 
 // src/index.js のバンドル由来のヘルパー。移動した関数の __name 注釈が使うため同じ定義を置く。

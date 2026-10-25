@@ -4,7 +4,7 @@ AI エージェント向けの作業ルールです。人間向けの概要は [
 
 ## プロジェクト
 
-Cloudflare Workers + D1 上の個人用ナレッジサービスです。Obsidian ノートの同期、Telegram ボット、AI による整理を扱います。
+Cloudflare Workers + D1 上の個人用ナレッジサービスです。Obsidian ノートの同期と AI による整理を扱います。Telegram ボットは廃止しました。
 
 ## コマンド
 

@@ -177,11 +177,10 @@ assert.match(suppressionStatements[0].sql, /FROM agent_memory_metadata/u);
 assert.match(suppressionStatements[1].sql, /SET status = 'forgotten'/u);
 
 const workerSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-assert.match(workerSource, /createAgentMemoryMetadata/u);
+assert.match(workerSource, /buildAgentMemorySuppressionStatements/u);
 assert.match(workerSource, /NOT EXISTS\s*\(\s*SELECT 1 FROM agent_memory_suppressions/u);
 assert.match(workerSource, /memory_status/u);
 assert.match(workerSource, /status = 'superseded'/u);
 assert.match(workerSource, /user_confirmed/u);
-assert.match(workerSource, /shouldOmitStoredMemory/u);
 
 console.log("Agent memory metadata, trust, expiry, conflict, and suppression checks passed.");

@@ -1,5 +1,7 @@
 # Agent memory policy
 
+> 2026-10-26 の縮小で、Telegram 会話からの記憶抽出 (キューへの投入と処理) は廃止した。既存ノートに付いたメタデータと、削除時の抑制・検索時の抑制フィルタは残る。本文書のうち抽出パイプラインに言及する部分は廃止時点の設計記録として残す。
+
 Agent memory is metadata over the existing Obsidian and Telegram notes. The note remains the sole copy of its text; metadata stores hashes for the normalized memory key and value, provenance, confidence, lifecycle state, and optional expiry. Retrieval continues to use the existing D1 text search. No Vectorize, R2, or external memory service is required.
 
 ## Classification and trust

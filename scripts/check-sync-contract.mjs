@@ -57,11 +57,8 @@ for (const contract of [
   'pathToId.delete(current.path)',
   'current.deleted || pathChanged || indexChanged ? 1 : 0',
   'var PULL_CRON = "0 * * * *";',
-  'await enqueueSyncJob(env, "telegram_notes", id2, "upsert")',
   'await enqueueSyncJob(env, table, id2, "delete")',
   'await enqueueSyncJob(env, table, id2, "upsert")',
-  'await enqueueSyncJob(env, table, action.note_id, action.action_type === "create" ? "delete" : "upsert")',
-  'await enqueueSyncJob(env, table, old.id, "upsert")'
 ]) {
   assert.ok(source.includes(contract), "Missing source contract: " + contract);
 }
