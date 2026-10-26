@@ -27,6 +27,13 @@ Obsidian のノートを検索し、AI で整理するための個人用ナレ�
 
 `src/index.js` は、稼働中の Worker から復元した 1 ファイルのバンドルです。元のソースマップが無いため、推測でモジュール分割はしていません。詳細は [`src/README.md`](src/README.md) を参照してください。
 
+## 外部サービスとの役割分担
+
+- **Obsidian / YAOS**: ノート本文の正本と端末間同期を担います。
+- **Notion「ファイル共有」**: 一次資料の画像・PDFを保管する場所です。ノート本文は置きません。ファイルはデータベースの `ファイル` プロパティに添付し、タイトルの `ファイル名` を実ファイル名と拡張子に一致させます。
+- Notion 側では内容の判定・分類・改名を自動で行いません。登録する AI が内容を確認できる場合だけ説明的な名前に変更し、確認できない場合は元の名前を維持します。
+- **Notion との自動連携・PC/iPhone 向け専用受付ページは未実装**です。この README の記述は運用上の役割分担であり、Akatuki-Knowledge が Notion へファイルを登録できることを示すものではありません。
+
 ## 開発
 
 必要なもの: Node.js 22、Python 3(一部の検査に使います)。
@@ -42,7 +49,7 @@ npm run check:sync   # 同期・バックグラウンドタスク関連のみ
 ## デプロイとマイグレーション
 
 - `main` へのマージは本番デプロイの経路を動かしうるため、変更は Pull Request 経由で行います。
-- `migrations/pending/` に SQL がある間、GitHub Actions の本番デプロイは自動で止まります。`0013_agent_memory_metadata.sql` は 2026-10-22 に本番 D1 へ適用し、台帳へ記録したうえで `migrations/` へ移動済みです。
+- `migrations/pending/` に SQL がある間、GitHub Actions の本番デプロイは自動で止まります。 `0013_agent_memory_metadata.sql` は 2026-10-22 に本番 D1 へ適用し、台帳へ記録したうえで `migrations/` へ移動済みです。
 - `migrations/0008`〜`0013` は、本番 D1 の台帳に記録済みであり、リポジトリ側のマイグレーション履歴にも反映済みです。`0008` は再構築版であり、歴史的な原本ではありません。
 - 既存の本番 D1 に対して、`bootstrap/` の SQL や `schema-snapshots/` を実行してはいけません。
 - 本番の観測記録と復旧上の制約は [`docs/PRODUCTION_STATUS.md`](docs/PRODUCTION_STATUS.md) を参照してください。
