@@ -6,12 +6,13 @@ from pathlib import Path
 
 SOURCES = [Path("src/index.js"), Path("src/agent-memory.mjs")]
 SCHEMA = Path("schema-snapshots/live-d1-schema-2026-10-19.sql")
-PENDING_MIGRATIONS = [
+MIGRATIONS = [
     Path("migrations/0009_yaos_sync_jobs.sql"),
     Path("migrations/0010_bot_organization_candidates.sql"),
     Path("migrations/0011_agent_tasks.sql"),
     Path("migrations/0012_bot_ai_permission_previews.sql"),
     Path("migrations/0013_agent_memory_metadata.sql"),
+    Path("migrations/0015_yaos_file_identity_map.sql"),
 ]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
@@ -57,7 +58,7 @@ def variants(query: str):
 db = sqlite3.connect(":memory:")
 db.executescript(SCHEMA.read_text(encoding="utf-8"))
 # Validate Worker SQL against the captured live schema plus applied migrations.
-for migration in PENDING_MIGRATIONS:
+for migration in MIGRATIONS:
     db.executescript(migration.read_text(encoding="utf-8"))
 sources = [path.read_text(encoding="utf-8") for path in SOURCES]
 checked = 0

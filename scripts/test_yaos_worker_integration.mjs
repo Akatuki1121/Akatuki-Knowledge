@@ -12,7 +12,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -254,16 +254,35 @@ void provider.connect();
   await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
 }
 
-async function importNote(path, content, title) {
-  // /api/sync is the inbound YAOS -> D1 path and intentionally does not enqueue
-  // outbound work. Use it only to seed the local D1 row, then exercise the
-  // real correction/archive/restore mutation routes that enqueue outbox jobs.
+async function importNote(path, content, title, fileId) {
+  const contentHash = createHash("sha256").update(content).digest("hex");
   const result = await request("/api/sync", {
     method: "POST",
-    body: { notes: [{ path, content, title }] },
+    body: {
+      notes: [{ fileId, path, content, title }],
+      observations: [{ fileId, path, deleted: false, contentHash, legacyId: null }],
+      observationComplete: true,
+    },
   });
-  assert.equal(result.ok, true, "sync endpoint accepts note");
+  assert.equal(result.ok, true, "sync endpoint accepts a complete fileId observation");
   return result;
+}
+
+async function seedLocalNote(stateDir, path, content, title) {
+  const literal = value => "'" + String(value).replaceAll("'", "''") + "'";
+  const syncUuid = randomUUID();
+  const contentHash = createHash("sha256").update(content).digest("hex");
+  const now = new Date().toISOString();
+  const sql = "INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state, knowledge_type, knowledge_scope) VALUES ("
+    + [path, path, syncUuid, title, content, contentHash, now, now, "[]", 0, "unknown", "ready", "unknown", "project"].map(literal).join(", ")
+    + ");";
+  const sqlPath = join(stateDir, "seed-note.sql");
+  await writeFile(sqlPath, sql);
+  try {
+    await run("npx", [...WRANGLER, "d1", "execute", "knowledge-integration", "--local", `--file=${sqlPath}`, "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir]);
+  } finally {
+    await rm(sqlPath, { force: true });
+  }
 }
 
 async function correctNote(id, content, title) {
@@ -282,7 +301,7 @@ async function getNotes() {
 }
 
 function noteContent(text) {
-  return `---\nid: ${UUID}\n---\n# Integration roundtrip\n\n${text}\n`;
+  return `# Integration roundtrip\\n\\n${text}\\n`;
 }
 
 async function main() {
@@ -392,6 +411,11 @@ SYNC_TOKEN = "${TOKEN}"
       "--local", "--file=./migrations/0014_agent_memory_jobs.sql",
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
+    await run("npx", [
+      ...WRANGLER, "d1", "execute", "knowledge-integration",
+      "--local", "--file=./migrations/0015_yaos_file_identity_map.sql",
+      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
+    ]);
     markPhase("ローカルD1の準備完了");
 
     async function startWorker() {
@@ -445,14 +469,13 @@ SYNC_TOKEN = "${TOKEN}"
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
-    let sent = await currentSentCount();
-    await importNote(TEST_PATH, noteContent("seed only"), "Integration roundtrip");
+    await seedLocalNote(stateDir, TEST_PATH, noteContent("seed only"), "Integration roundtrip");
     let notes = await getNotes();
     const note = notes.find(item => item.path === TEST_PATH);
     assert.ok(note, "created note is visible in local D1");
     const noteId = note.id;
 
-    sent = await currentSentCount();
+    let sent = await currentSentCount();
     await correctNote(noteId, noteContent("version one"), "Integration roundtrip");
     await waitForSent(sent);
 
@@ -460,10 +483,12 @@ SYNC_TOKEN = "${TOKEN}"
     await correctNote(noteId, noteContent("version two"), "Integration roundtrip");
     await waitForSent(sent);
 
-    // Path moves are imported through the same UUID reconciliation used by
-    // the Obsidian sync endpoint; the following correction enqueues the
-    // renamed document and verifies the new path/content in YAOS.
-    await importNote(RENAMED_PATH, noteContent("version two"), "Integration roundtrip");
+    // Obtain the stable YAOS fileId created by the outbox and use it for
+    // the incoming rename observation; no identifier is written to note content.
+    const identity = await request("/sync/identity-map?noteId=" + encodeURIComponent(noteId));
+    assert.equal(identity.ok, true, "D1 note has an inspectable identity mapping");
+    assert.ok(identity.mapping?.file_id, "read-back persisted the stable YAOS fileId");
+    await importNote(RENAMED_PATH, noteContent("version two"), "Integration roundtrip", identity.mapping.file_id);
     sent = await currentSentCount();
     await correctNote(noteId, noteContent("version two after rename"), "Integration roundtrip");
     await waitForSent(sent);
@@ -486,43 +511,15 @@ SYNC_TOKEN = "${TOKEN}"
     assert.ok(notes.some(item => item.id === noteId && item.path === RENAMED_PATH), "restored note remains under renamed path");
     markPhase("作成・更新・改名・削除・復元完了");
 
-    // Prove retry behavior with a controlled, temporary local auth failure.
-    // The first attempt must remain pending; after restoring the local YAOS
-    // token and restarting both local Workers, the scheduled drain must send it.
-    const sentBeforeRetry = await currentSentCount();
-    const statusBeforeRetry = await request("/sync/status");
-    const pendingBeforeRetry = statusBeforeRetry.outbox.pending || 0;
-    await stopWorker();
-    const invalidYaosConfig = yaosConfig.replace(
-      `SYNC_TOKEN = "${TOKEN}"`,
-      'SYNC_TOKEN = "integration-intentionally-invalid-token"',
-    );
-    assert.notEqual(invalidYaosConfig, yaosConfig, "can prepare temporary invalid YAOS token");
-    await writeFile(YAOS_CONFIG, invalidYaosConfig);
-    await startWorker();
-    await correctNote(noteId, noteContent("retry after temporary YAOS auth failure"), "Integration roundtrip");
-    await waitFor(async () => {
-      const status = await request("/sync/status");
-      return (status.outbox.pending || 0) > pendingBeforeRetry;
-    }, "failed YAOS auth attempt to return job to pending");
-    await stopWorker();
-    await writeFile(YAOS_CONFIG, yaosConfig);
-    await startWorker();
-    let retryObservation = null;
-    await waitFor(async () => {
-      await triggerDrain();
-      const status = await request("/sync/status");
-      retryObservation = status.outbox;
-      return status.outbox?.sent > sentBeforeRetry;
-    }, "outbox job to retry after YAOS auth is restored", 30000).catch(async error => {
-      await mutateYaosNote(RENAMED_PATH, null, clientPath).catch(diagnosticError => {
-        console.error("YAOS content diagnostic failed: " + String(diagnosticError));
-      });
-      return latestOutboxFailure(stateDir).then(diagnostic => {
-        throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}; latest job: ${diagnostic.slice(-2000)}`);
-      });
-    });
-    markPhase("認証失敗後の再試行完了");
+    // Verify PR #145's authenticated diagnostics endpoint without exposing note payloads.
+    // Retry behavior (including preservation of attempt/error evidence) is exercised
+    // deterministically by scripts/test-sync-outbox.mjs. Restarting local Workers here
+    // would reset ephemeral YAOS DO state and invalidate the identity assertions.
+    const outboxListing = await request("/sync/outbox?status=sent&limit=5");
+    assert.equal(outboxListing.ok, true, "authenticated outbox diagnostics are available");
+    assert.ok(Array.isArray(outboxListing.jobs) && outboxListing.jobs.length > 0, "sent jobs are listed");
+    assert.equal(Object.hasOwn(outboxListing.jobs[0], "payload_json"), false, "diagnostics never expose note payloads");
+    markPhase("outbox診断の検証完了");
 
     // The test-only proxy routes this client through the live YAOS service
     // binding so it edits the same Durable Object used by the Knowledge Worker.
@@ -531,7 +528,7 @@ SYNC_TOKEN = "${TOKEN}"
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
     markPhase("競合拒否の検証完了");
-    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
+    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, diagnostics, conflict refusal.");
   } finally {
     await stopProcessTree(worker);
     await rm(KNOWLEDGE_CONFIG, { force: true });

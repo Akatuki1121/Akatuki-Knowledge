@@ -13,8 +13,17 @@ async function enqueueSyncJob(env, entityType, entityId, operation, options = {}
     let syncUuid = null;
     if (entityType === "notes") {
       const contentUuid = readUuid(row.content);
-      syncUuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(row.sync_uuid) ? row.sync_uuid : await deterministicUuid("notes:" + row.id));
-      if (row.sync_uuid !== syncUuid) await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ?").bind(syncUuid, row.id).run();
+      if (isValidSyncUuid(row.sync_uuid)) {
+        syncUuid = row.sync_uuid;
+        if (isValidSyncUuid(contentUuid) && contentUuid !== syncUuid) throw new Error("sync_identity_conflict");
+      } else if (isValidSyncUuid(contentUuid)) {
+        const owners = (await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ?").bind(contentUuid).all()).results || [];
+        if (owners.some((owner) => owner.id !== row.id)) throw new Error("sync_identity_conflict");
+        syncUuid = contentUuid;
+      } else {
+        syncUuid = crypto.randomUUID();
+      }
+      if (row.sync_uuid !== syncUuid) await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = ?)").bind(syncUuid, row.id, row.sync_uuid ?? "").run();
     } else {
       syncUuid = await deterministicUuid(row.id);
     }
@@ -38,14 +47,21 @@ async function backfillSyncUuidIndex(env, limit = 100) {
   } catch {
     return { ok: false, skipped: "sync_uuid_migration_missing" };
   }
-  let updated = 0;
+  let updated = 0, conflicts = 0;
   for (const row of rows) {
     const contentUuid = readUuid(row.content || "");
-    const syncUuid = isValidSyncUuid(contentUuid) ? contentUuid : await deterministicUuid("notes:" + row.id);
+    let syncUuid = isValidSyncUuid(contentUuid) ? contentUuid : crypto.randomUUID();
+    if (isValidSyncUuid(contentUuid)) {
+      const owners = (await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ?").bind(contentUuid).all()).results || [];
+      if (owners.some((owner) => owner.id !== row.id)) {
+        conflicts++;
+        continue;
+      }
+    }
     const result = await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND sync_uuid IS NULL").bind(syncUuid, row.id).run();
     if (result.meta?.changes) updated++;
   }
-  return { ok: true, scanned: rows.length, updated };
+  return { ok: conflicts === 0, scanned: rows.length, updated, conflicts };
 }
 async function drainSyncOutbox(env, limit = 5) {
   if (!env.DB || !env.YJS_CLIENT) return { ok: false, skipped: "missing_binding" };
@@ -68,12 +84,32 @@ async function drainSyncOutbox(env, limit = 5) {
       }));
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.ok !== true || result.verified !== true) throw new Error(result.error || ("yaos_sync_status_" + response.status));
+      const payload = JSON.parse(job.payload_json);
+      if (job.entity_type === "notes") {
+        if (!isValidSyncUuid(payload.syncUuid)) throw new Error("invalid_sync_uuid");
+        // Deleting a note that was never present in YAOS is idempotent. There is
+        // no stable fileId to map in that case; all successful upserts/restores
+        // and deletes of known files still require a verified mapping.
+        if (typeof result.fileId !== "string" || !result.fileId) {
+          if (job.operation !== "delete") throw new Error("sync_identity_mapping_missing");
+        } else {
+          const existing = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ? OR note_id = ? OR sync_uuid = ?")
+            .bind(result.fileId, job.entity_id, payload.syncUuid).all()).results || [];
+          if (existing.some((mapping) => mapping.file_id !== result.fileId || mapping.note_id !== job.entity_id || mapping.sync_uuid !== payload.syncUuid)) {
+            throw new Error("sync_identity_mapping_conflict");
+          }
+          await env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid")
+            .bind(result.fileId, payload.syncUuid, job.entity_id, payload.path || "", new Date().toISOString(), new Date().toISOString()).run();
+          const verifiedMap = await env.DB.prepare("SELECT file_id, sync_uuid, note_id FROM yaos_file_identity_map WHERE file_id = ?").bind(result.fileId).first();
+          if (!verifiedMap || verifiedMap.note_id !== job.entity_id || verifiedMap.sync_uuid !== payload.syncUuid) throw new Error("sync_identity_mapping_conflict");
+        }
+      }
       const finishedAt = new Date().toISOString();
       await env.DB.prepare("UPDATE yaos_sync_jobs SET status = 'sent', sent_at = ?, updated_at = ?, lease_expires_at = NULL, last_error = NULL WHERE job_id = ? AND status = 'processing'").bind(finishedAt, finishedAt, job.job_id).run();
       sent++;
     } catch (error) {
       const attempts = Number(job.attempts || 0) + 1;
-      const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload"].some((code) => String(error).includes(code));
+      const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload", "sync_identity_conflict", "sync_identity_mapping_conflict", "sync_identity_mapping_missing", "invalid_sync_uuid"].some((code) => String(error).includes(code));
       const dead = attempts >= 8 || permanent;
       const next = new Date(Date.now() + Math.min(3600000, 1000 * (2 ** Math.min(attempts, 12)))).toISOString();
       const finishedAt = new Date().toISOString();

@@ -43,6 +43,19 @@ function setup(content, path = "notes/example.md", deleted = false) {
   paths.set(path, "file-id");
   const instance = new TestDO();
   instance.doc = doc;
+  instance.env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("FROM yaos_file_identity_map")) return { results: [] };
+            throw new Error("Unexpected test DB query: " + sql);
+          }
+        };
+      }
+    }
+  };
   instance.pullVault = async (callback) => {
     if (callback) callback(doc);
     return doc;

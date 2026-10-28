@@ -50,18 +50,18 @@ During initial reconciliation, first establish mappings for existing D1 notes us
 
 The authenticated `GET /sync/status` endpoint reports pending, processing, sent, and dead-letter outbox counts. `GET /sync/outbox?status=dead&limit=50` lists individual jobs (job ID, entity/note ID, operation, state, attempts, timestamps, and last error) without returning `payload_json`, which can contain note content. Pagination uses the `before` job ID cursor. `POST /sync/outbox/{jobId}/retry` requeues only a `dead` job; it preserves the attempt count and last error for diagnosis and starts a bounded background drain. All three endpoints require the existing Bearer API token. If the outbox migration is absent in an environment, listing reports that condition instead of failing the whole status request.
 
-## Identifier separation migration status
+## Identifier separation implementation status
 
-Identifier separation is a follow-up to the outbox diagnostics/retry change; it is not implemented by PR #145. The existing code and this migration plan must be treated separately: do not infer that the identity mapping or frontmatter removal is already complete.
+The identity-separation implementation is on this dedicated follow-up PR and is separate from PR #145. Its additive D1 schema was applied to production D1 on 2026-10-28 after owner authorization. The production `d1_migrations` ledger entry is being verified separately; keep this PR unmerged until that verification is complete and the record PR is merged.
 
-The follow-up is Akatuki-Knowledge-only and must be delivered in this order:
+1. `notes.sync_uuid` is authoritative for Akatuki-owned notes. The additive `yaos_file_identity_map` table uniquely binds YAOS's stable `fileId`, D1 `sync_uuid`, and D1 note ID. Mapping conflicts fail closed; mapping writes are checked by reading them back.
+2. Outbound sync uses D1 `notes.sync_uuid` first. A conflicting legacy frontmatter ID is rejected rather than silently adopted. Telegram identity behavior is unchanged and out of scope.
+3. Incoming YAOS observations establish mappings for known D1 notes before classifying unmatched files. Creation requires a complete observation and no mapping/path/tombstone/pending-job/UUID conflict. Incomplete observations are `deferred`; complete but ambiguous observations are `needs_review`. Similar content does not merge notes.
+4. Existing revision creation, per-note outbox ordering, tombstone/restore operations, expected-content conflict refusal, and YAOS read-back verification remain in place. The isolated integration test covers create, edit, rename, delete, restore, authenticated outbox diagnostics, and conflict refusal. `scripts/test-sync-outbox.mjs` covers dead-job retry, bounded listing without payload exposure, and preservation of attempt/error evidence.
 
-1. Persist a durable, collision-checked mapping between YAOS's stable `fileId` and D1 `notes.sync_uuid`. Keep D1 authoritative; do not promote YAOS metadata to the source of truth. Preserve existing valid `notes.sync_uuid` values rather than rotating them.
-2. Resolve `syncUuid` from `notes.sync_uuid` before considering any legacy frontmatter `id`. Remove dependence on frontmatter for ongoing identity, and do not add IDs to note bodies/frontmatter.
-3. Implement and test the incoming-file classification above, including confirmed-new conditions, deferred observations, `needs_review`, duplicate-ID refusal, rename/move, copy, delete, and restore cases. Similarity/hash may help diagnostics but must not automatically merge notes.
-4. Preserve existing revision history, expected-revision conflict checks, tombstone/restore behavior, and per-note outbox ordering. A later event must not bypass an earlier pending or processing event; delivery remains successful only after read-back verification.
+Authenticated `GET /sync/identity-map?noteId=...` exposes one note's mapping for diagnostics. `GET /sync/identity-review?classification=deferred|needs_review&limit=...` lists bounded review cases without returning note bodies.
 
-No YAOS source/protocol changes, production deployment, or direct production D1 writes are part of this work. The existing-note migration is a separate future operation and, when authorized, must run `restore-all → verify → organize` in that order. It is not to be run as part of this PR.
+The separate existing-note migration is not included. When explicitly authorized in the future, it must run `restore-all → verify → organize` in that order. This PR does not modify YAOS source/protocol or write to production D1. Production deployment remains on hold until the ledger verification and migration-record PR are complete.
 
 ## Migration and recovery safety
 
