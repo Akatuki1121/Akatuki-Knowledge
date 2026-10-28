@@ -475,7 +475,7 @@ SYNC_TOKEN = "${TOKEN}"
     assert.ok(note, "created note is visible in local D1");
     const noteId = note.id;
 
-    sent = await currentSentCount();
+    let sent = await currentSentCount();
     await correctNote(noteId, noteContent("version one"), "Integration roundtrip");
     await waitForSent(sent);
 
