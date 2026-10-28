@@ -10332,17 +10332,29 @@ var YjsClientDO = class extends DurableObject {
     if (!desiredPath || desiredPath.startsWith("/") || desiredPath.split("/").includes("..") || desiredPath.split("/").slice(0, -1).some((part) => part.startsWith(".")) || (!telegram && desiredPath.startsWith(RESERVED_ROOT + "/"))) return { ok: false, verified: false, error: "unsafe_path" };
     let desiredContent = payload.content;
     const contentUuid = readUuid(desiredContent);
-    const uuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : await deterministicUuid(telegram ? payload.id : "notes:" + payload.id));
-    const fm = desiredContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-    const hasUuid = fm && /^id:\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}["']?\s*$/im.test(fm[1]);
-    if (!hasUuid) {
-      if (fm && /^id:\s*.*$/m.test(fm[1])) desiredContent = desiredContent.replace(/^id:\s*.*$/m, 'id: "' + uuid + '"');
-      else if (fm) desiredContent = desiredContent.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
-      else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
+    let uuid;
+    if (telegram) {
+      uuid = isValidSyncUuid(contentUuid) ? contentUuid : (isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : await deterministicUuid(payload.id));
+      const fm = desiredContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      const hasUuid = fm && /^id:\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}["']?\s*$/im.test(fm[1]);
+      if (!hasUuid) {
+        if (fm && /^id:\s*.*$/m.test(fm[1])) desiredContent = desiredContent.replace(/^id:\s*.*$/m, 'id: "' + uuid + '"');
+        else if (fm) desiredContent = desiredContent.replace(/^---\r?\n/, '---\nid: "' + uuid + '"\n');
+        else desiredContent = '---\nid: "' + uuid + '"\n---\n\n' + desiredContent;
+      }
+    } else {
+      uuid = isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : null;
+      if (!uuid) return { ok: false, verified: false, error: "invalid_sync_uuid" };
+      if (isValidSyncUuid(contentUuid) && contentUuid !== uuid) return { ok: false, verified: false, error: "sync_identity_conflict" };
     }
-    const desiredUuid = readUuid(desiredContent);
+    const desiredUuid = telegram ? readUuid(desiredContent) : uuid;
+    const identityMapping = !telegram
+      ? await this.env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(payload.id, uuid).first()
+      : null;
+    const mappedFileId = identityMapping?.file_id || null;
     const comparableContent = (value) => {
       const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      if (!telegram) return normalized;
       const match = normalized.match(/^---\n([\s\S]*?)\n---\n*/);
       if (!match) return normalized;
       const lines = match[1].split("\n").filter((line) => !/^id:\s*/i.test(line));
@@ -10352,6 +10364,7 @@ var YjsClientDO = class extends DurableObject {
     const locate = (doc) => {
       const found = [];
       const legacyFound = [];
+      const pathFound = [];
       const idToText = doc.getMap("idToText");
       doc.getMap("meta").forEach((value, fileId) => {
         const path = value instanceof YMap ? value.get("path") : value?.path;
@@ -10361,13 +10374,17 @@ var YjsClientDO = class extends DurableObject {
         const sameUuid = desiredUuid && textValue instanceof YText && readUuid(textValue.toString()) === desiredUuid;
         if (telegram) {
           if (!path.startsWith(RESERVED_ROOT + "/Telegram/")) return;
-          // 同一性はfrontmatter idが主キー。ファイル名末尾の16桁hexは移行期間中の
-          // フォールバックとして、frontmatterで見つからない場合にだけ使う(段階移行ステップ1)。
           if (sameUuid) found.push({ fileId, value, path, deleted });
           else if (path.match(/-([0-9a-f]{16})\.md$/)?.[1] === hash16) legacyFound.push({ fileId, value, path, deleted });
-        } else if (sameUuid || norm(path) === desiredPath) found.push({ fileId, value, path, deleted });
+        } else {
+          if (mappedFileId && fileId === mappedFileId) found.push({ fileId, value, path, deleted });
+          if (norm(path) === desiredPath) pathFound.push({ fileId, value, path, deleted });
+          if (!mappedFileId && norm(path) === desiredPath) found.push({ fileId, value, path, deleted });
+        }
       });
       if (telegram && found.length === 0) found.push(...legacyFound);
+      if (!telegram && mappedFileId && pathFound.some((item) => item.fileId !== mappedFileId)) throw new Error("sync_identity_mapping_conflict");
+      if (!telegram && mappedFileId && found.length === 0) throw new Error("sync_identity_mapping_conflict");
       if (found.length > 1) throw new Error("ambiguous_sync_identity");
       return found[0] || null;
     };
@@ -10440,11 +10457,11 @@ var YjsClientDO = class extends DurableObject {
     const verifiedDoc = await this.pullVault(), verifiedItem = locate(verifiedDoc);
     if (job.operation === "delete" || payload.deletedAt) {
       const verified = !verifiedItem || verifiedItem.deleted;
-      return { ok: verified, verified, applied: changedCount > 0, id: payload.id, path: desiredPath };
+      return { ok: verified, verified, applied: changedCount > 0, id: payload.id, path: desiredPath, fileId: verifiedItem?.fileId ?? mappedFileId ?? undefined };
     }
     const verifiedText = verifiedItem ? verifiedDoc.getMap("idToText").get(verifiedItem.fileId) : null;
     const verified = Boolean(verifiedItem && !verifiedItem.deleted && norm(verifiedItem.path) === norm(desiredPath) && verifiedText instanceof YText && verifiedText.toString() === desiredContent);
-    return { ok: verified, verified, applied: changedCount > 0, id: payload.id, path: desiredPath, error: verified ? undefined : "verification_failed" };
+    return { ok: verified, verified, applied: changedCount > 0, id: payload.id, path: desiredPath, fileId: verifiedItem?.fileId ?? undefined, error: verified ? undefined : "verification_failed" };
   }
   async fetch(request) {
     const reqUrl = new URL(request.url);
