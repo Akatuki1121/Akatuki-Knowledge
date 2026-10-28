@@ -1,91 +1,111 @@
-import { readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const start = source.indexOf("async function syncNotes(request, env)");
+const start = source.indexOf("async function syncNotes(request, env) {");
 const marker = '__name(syncNotes, "syncNotes");';
 const end = source.indexOf(marker, start);
 assert.ok(start >= 0 && end > start, "Could not extract syncNotes from the Worker bundle");
-const syncNotesSource = source.slice(start, end).trim()
-  .replaceAll(String.fromCharCode(92, 96), String.fromCharCode(96))
-  .replaceAll(String.fromCharCode(92, 36, 123), String.fromCharCode(36, 123));
+const syncNotesSource = source.slice(start, end);
 
 function readUuid(content) {
-  const fm = content.slice(0, 4000).match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!fm) return null;
-  return fm[1].match(/^id:\s*["']?([0-9A-Za-z-]+)["']?\s*$/m)?.[1] ?? null;
+  const fm = String(content || "").slice(0, 4000).match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  return fm?.[1].match(/^id:\s*["']?([0-9A-Za-z-]+)["']?\s*$/m)?.[1] ?? null;
 }
 function isValidSyncUuid(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
-async function deterministicUuid(seed) {
-  const digest = createHash("sha256").update(seed).digest("hex").slice(0, 32).split("");
-  digest[12] = "5";
-  digest[16] = "89ab"[parseInt(digest[16], 16) & 3];
-  return digest.slice(0, 8).join("") + "-" + digest.slice(8, 12).join("") + "-" + digest.slice(12, 16).join("") + "-" + digest.slice(16, 20).join("") + "-" + digest.slice(20, 32).join("");
-}
-function makeDb(initialNotes = []) {
+function makeDb(initialNotes = [], initialMappings = []) {
   const notes = structuredClone(initialNotes);
+  const mappings = structuredClone(initialMappings);
+  const reviews = [];
   const revisions = [];
-  const relations = [];
-  const archiveEvents = [];
-  const telegramActions = [];
+  const jobs = [];
   const db = {
-    notes, revisions, relations, archiveEvents, telegramActions,
+    notes, mappings, reviews, revisions, jobs,
     async batch(statements) {
       const results = [];
       for (const statement of statements) results.push(await statement.run());
       return results;
     },
     prepare(sql) {
+      let values = [];
       const statement = {
-        values: [],
-        bind(...values) { this.values = values; return this; },
+        bind(...args) { values = args; return this; },
         async first() {
-          if (sql.includes("FROM notes WHERE path = ?")) {
-            const [path] = this.values;
-            return notes.find((n) => n.path === path) ?? null;
+          if (sql.includes("FROM yaos_file_identity_map")) {
+            const rows = await this.all();
+            return rows.results[0] ?? null;
           }
+          if (sql.includes("FROM notes WHERE path = ?")) return notes.find((n) => n.path === values[0]) ?? null;
+          if (sql.includes("FROM notes WHERE id = ?")) return notes.find((n) => n.id === values[0]) ?? null;
+          if (sql.includes("FROM yaos_sync_jobs") && sql.includes("entity_id = ?")) return jobs.find((j) => j.entity_id === values[0] && ["pending", "processing"].includes(j.status)) ?? null;
+          if (sql.includes("FROM yaos_sync_jobs") && sql.includes("json_extract")) return jobs.find((j) => j.path === values[0] && ["pending", "processing"].includes(j.status)) ?? null;
           throw new Error("Unexpected first SQL: " + sql);
         },
         async all() {
-          if (sql.includes("FROM notes WHERE sync_uuid = ?")) {
-            const [uuid] = this.values;
-            return { results: notes.filter((n) => n.sync_uuid === uuid).map((n) => ({ ...n })) };
+          if (sql.includes("FROM yaos_file_identity_map")) {
+            const [fileId, noteId, syncUuid] = values;
+            return { results: mappings.filter((m) =>
+              (fileId && m.file_id === fileId) || (noteId && m.note_id === noteId) || (syncUuid && m.sync_uuid === syncUuid)
+            ).map((m) => ({ ...m })) };
           }
+          if (sql.includes("FROM notes WHERE sync_uuid = ?")) return { results: notes.filter((n) => n.sync_uuid === values[0]).map((n) => ({ ...n })) };
           if (sql.includes("FROM notes")) return { results: notes.map((n) => ({ ...n })) };
           throw new Error("Unexpected all SQL: " + sql);
         },
         async run() {
-          const v = this.values;
-          if (sql.startsWith("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at")) {
-            const row = notes.find((n) => n.id === v[4]);
-            if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], source_modified_at: v[2], imported_at: v[3], deleted_at: null });
+          const v = values;
+          if (sql.startsWith("INSERT INTO yaos_sync_identity_review")) {
+            const row = { file_id: v[0], path: v[1], content_hash: v[2], classification: v[3], reason: v[4], first_seen_at: v[5], last_seen_at: v[6] };
+            const existing = reviews.find((r) => r.file_id === row.file_id);
+            if (existing) Object.assign(existing, row, { first_seen_at: existing.first_seen_at });
+            else reviews.push(row);
+            return { meta: { changes: 1 } };
+          }
+          if (sql.startsWith("DELETE FROM yaos_sync_identity_review")) {
+            const before = reviews.length;
+            for (let i = reviews.length - 1; i >= 0; i--) if (reviews[i].file_id === v[0]) reviews.splice(i, 1);
+            return { meta: { changes: before - reviews.length } };
+          }
+          if (sql.startsWith("INSERT INTO yaos_file_identity_map")) {
+            const row = { file_id: v[0], sync_uuid: v[1], note_id: v[2], last_path: v[3], created_at: v[4], updated_at: v[5] };
+            if (mappings.some((m) => m.file_id === row.file_id || m.note_id === row.note_id || m.sync_uuid === row.sync_uuid)) throw new Error("UNIQUE constraint failed");
+            mappings.push(row);
+            return { meta: { changes: 1 } };
+          }
+          if (sql.startsWith("UPDATE yaos_file_identity_map")) {
+            const row = mappings.find((m) => m.file_id === v[2] && m.note_id === v[3] && m.sync_uuid === v[4]);
+            if (row) { row.last_path = v[0]; row.updated_at = v[1]; }
             return { meta: { changes: row ? 1 : 0 } };
           }
-                    if (sql.startsWith("INSERT INTO note_revisions")) {
+          if (sql.startsWith("UPDATE notes SET sync_uuid = ?")) {
+            const row = notes.find((n) => n.id === v[1]);
+            if (row && (!row.sync_uuid || row.sync_uuid === v[2])) row.sync_uuid = v[0];
+            return { meta: { changes: row ? 1 : 0 } };
+          }
+          if (sql.startsWith("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at")) {
+            const row = notes.find((n) => n.id === v[4]);
+            if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], source_modified_at: v[2], imported_at: v[3] });
+            return { meta: { changes: row ? 1 : 0 } };
+          }
+          if (sql.startsWith("INSERT INTO note_revisions")) {
             revisions.push({ note_id: v[0], path: v[1], title: v[2], content: v[3], content_hash: v[4], saved_at: v[5] });
             return { meta: { changes: 1 } };
           }
           if (sql.startsWith("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?")) {
             const row = notes.find((n) => n.id === v[9]);
-            if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], title: v[2], content: v[3], content_hash: v[4], source_modified_at: v[5], imported_at: v[6], updated_at: v[7], tags_json: v[8], summary: null, ai_tags_json: "[]", related_json: "[]", organized_hash: null, organization_failures: 0, last_failure_stage: null, next_retry_at: null, review_state: "ready", deleted_at: null });
+            if (row) Object.assign(row, { path: v[0], sync_uuid: v[1], title: v[2], content: v[3], content_hash: v[4], source_modified_at: v[5], imported_at: v[6], updated_at: v[7], tags_json: v[8], deleted_at: null });
             return { meta: { changes: row ? 1 : 0 } };
           }
-          if (sql.startsWith("UPDATE agent_memory_metadata SET status = 'superseded'")) return { meta: { changes: 0 } };
+          if (sql.startsWith("UPDATE agent_memory_metadata")) return { meta: { changes: 0 } };
           if (sql.startsWith("INSERT INTO notes")) {
-            notes.push({ id: v[0], path: v[1], sync_uuid: v[2], title: v[3], content: v[4], content_hash: v[5], source_modified_at: v[6], imported_at: v[7], updated_at: v[8], tags_json: v[9], deleted_at: null });
+            const row = { id: v[0], path: v[1], sync_uuid: v[2], title: v[3], content: v[4], content_hash: v[5], source_modified_at: v[6], imported_at: v[7], updated_at: v[8], tags_json: v[9], deleted_at: null };
+            if (notes.some((n) => n.id === row.id || n.path === row.path)) throw new Error("UNIQUE constraint failed");
+            notes.push(row);
             return { meta: { changes: 1 } };
           }
-          if (sql.startsWith("UPDATE note_revisions SET note_id = ?")) {
-            for (const row of revisions) if (row.note_id === v[1]) row.note_id = v[0];
-            return { meta: { changes: 1 } };
-          }
-          if (sql.startsWith("UPDATE note_relations SET source_note_id = ?")) return { meta: { changes: 1 } };
-          if (sql.startsWith("UPDATE note_relations SET target_note_id = ?")) return { meta: { changes: 1 } };
-          if (sql.startsWith("UPDATE note_archive_events SET note_id = ?")) return { meta: { changes: 1 } };
-          if (sql.startsWith("UPDATE telegram_note_actions SET note_id = ?")) return { meta: { changes: 1 } };
           throw new Error("Unexpected run SQL: " + sql);
         }
       };
@@ -97,62 +117,129 @@ function makeDb(initialNotes = []) {
 const deps = {
   readJson: (request) => request.json(),
   json: (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }),
-  stableId: (path) => path,
+  stableId: (path) => path.normalize("NFC").replaceAll("\\", "/"),
   titleFrom: (path, supplied) => supplied || path.split("/").at(-1).replace(/\.md$/i, ""),
-  sha256: async (text) => "hash:" + text,
+  sha256: async (text) => createHash("sha256").update(text).digest("hex"),
   extractTags: (_content, tags) => tags || [],
   readUuid,
   isValidSyncUuid,
-  deterministicUuid,
-  MAX_NOTES_PER_SYNC: 500,
-  MAX_NOTE_CHARS: 200000
+  MAX_NOTES_PER_SYNC: 20,
+  MAX_NOTE_CHARS: 500000,
+  RESERVED_ROOT: "__system"
 };
 const syncNotes = new Function(...Object.keys(deps), "return (" + syncNotesSource + ");")(...Object.values(deps));
-const syncUuid = await deterministicUuid("notes:old/path.md");
-const originalContent = "Legacy note without an id property";
-const movedContent = `---\nid: "${syncUuid}"\n---\n\nLegacy note without an id property`;
-const oldRow = { id: "old/path.md", path: "old/path.md", sync_uuid: syncUuid, title: "Note", content: originalContent, content_hash: "hash:" + originalContent, source_modified_at: null, imported_at: "old", updated_at: "old", tags_json: "[]", deleted_at: null };
+const uuidA = "123e4567-e89b-42d3-a456-426614174001";
+const uuidB = "123e4567-e89b-42d3-a456-426614174002";
+const now = "2026-10-28T00:00:00.000Z";
+const hash = (text) => createHash("sha256").update(text).digest("hex");
+const note = (id, path, content, sync_uuid = uuidA, deleted_at = null) => ({
+  id, path, title: path.split("/").at(-1).replace(/\.md$/i, ""), content, content_hash: hash(content),
+  sync_uuid, source_modified_at: null, imported_at: now, updated_at: now, tags_json: "[]", deleted_at
+});
+const request = (notes, observations, observationComplete = true) => new Request("https://test/api/sync", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ notes, observations, observationComplete })
+});
+const observation = (fileId, path, content, deleted = false) => ({
+  fileId, path, deleted, contentHash: deleted ? "" : hash(content), legacyId: readUuid(content)
+});
 
 {
-  const db = makeDb([oldRow]);
-  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "new/path.md", title: "Note", content: movedContent }] }) });
-  const response = await syncNotes(request, { DB: db });
-  const result = await response.json();
-  assert.equal(response.status, 200);
-  assert.equal(result.created, 0, "A path move must not create a duplicate note");
-  assert.equal(result.updated, 1, "A path move must be reported as an update");
+  const db = makeDb();
+  const content = "# New note\n\nfirst";
+  const res = await syncNotes(request([{ fileId: "file-A", path: "Notes/a.md", content }], [observation("file-A", "Notes/a.md", content)]), { DB: db });
+  const result = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(result.created, 1, "a complete observation with a new stable fileId creates a note");
   assert.equal(db.notes.length, 1);
-  assert.equal(db.notes[0].id, "old/path.md", "A path move preserves the stable D1 row ID");
-  assert.equal(db.notes[0].path, "new/path.md");
-  assert.equal(db.notes[0].sync_uuid, syncUuid, "The UUID remains stable across the path move");
-  assert.equal(db.notes[0].content, movedContent);
+  assert.ok(isValidSyncUuid(db.notes[0].sync_uuid));
+  assert.equal(db.notes[0].sync_uuid === readUuid(content), false);
+  assert.equal(db.mappings.length, 1);
+  assert.equal(db.mappings[0].file_id, "file-A");
 }
 
 {
-  const duplicate = { ...oldRow, id: "another.md", path: "another.md" };
-  const db = makeDb([oldRow, duplicate]);
-  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "new/path.md", title: "Note", content: movedContent }] }) });
-  const response = await syncNotes(request, { DB: db });
-  const result = await response.json();
-  assert.equal(response.status, 409, "Duplicate UUIDs must fail closed");
-  assert.equal(result.error, "ambiguous_sync_uuid");
-  assert.equal(db.notes.length, 2, "Ambiguous identities must not be mutated");
-  assert.equal(db.notes[0].path, "old/path.md");
-  assert.equal(db.notes[1].path, "another.md");
-}
-
-
-{
-  const archived = { ...oldRow, deleted_at: "2026-10-19T10:00:00.000Z" };
-  const db = makeDb([archived]);
-  const request = new Request("https://test/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: [{ path: "old/path.md", title: "Note", content: movedContent }] }) });
-  const response = await syncNotes(request, { DB: db });
-  const result = await response.json();
-  assert.equal(response.status, 200);
-  assert.equal(result.archivedSkipped, 1, "An archived note must be skipped rather than reactivated");
+  const original = "# Existing\n\nversion one";
+  const db = makeDb([note("Notes/a.md", "Notes/a.md", original)], [{ file_id: "file-A", sync_uuid: uuidA, note_id: "Notes/a.md", last_path: "Notes/a.md", created_at: now, updated_at: now }]);
+  const edited = "# Existing\n\nversion two";
+  const res = await syncNotes(request([{ fileId: "file-A", path: "Notes/a.md", content: edited }], [observation("file-A", "Notes/a.md", edited)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.updated, 1, "editing a mapped note updates the same D1 row");
   assert.equal(db.notes.length, 1);
-  assert.equal(db.notes[0].deleted_at, archived.deleted_at, "The archived timestamp must remain unchanged");
-  assert.equal(db.notes[0].content, originalContent, "An archived note's content must not be overwritten");
+  assert.equal(db.notes[0].content, edited);
+  assert.equal(db.revisions.length, 1, "edits preserve a revision");
 }
 
-console.log("Sync identity behavior tests passed.");
+{
+  const original = "# Existing\n\nversion one";
+  const db = makeDb([note("Notes/a.md", "Notes/a.md", original)], [{ file_id: "file-A", sync_uuid: uuidA, note_id: "Notes/a.md", last_path: "Notes/a.md", created_at: now, updated_at: now }]);
+  const moved = "# Existing\n\nversion one";
+  const res = await syncNotes(request([{ fileId: "file-A", path: "Archive/a.md", content: moved }], [observation("file-A", "Archive/a.md", moved)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.updated, 1, "a stable fileId preserves identity across a rename");
+  assert.equal(db.notes.length, 1);
+  assert.equal(db.notes[0].path, "Archive/a.md");
+  assert.equal(db.notes[0].id, "Notes/a.md", "the stable D1 row ID is preserved");
+  assert.equal(db.mappings[0].last_path, "Archive/a.md");
+}
+
+{
+  const content = "# Same content\n\nidentical body";
+  const db = makeDb([note("Notes/original.md", "Notes/original.md", content)], [{ file_id: "file-original", sync_uuid: uuidA, note_id: "Notes/original.md", last_path: "Notes/original.md", created_at: now, updated_at: now }]);
+  const observations = [observation("file-original", "Notes/original.md", content), observation("file-copy", "Notes/copy.md", content)];
+  const res = await syncNotes(request([{ fileId: "file-copy", path: "Notes/copy.md", content }], observations), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 1, "identical content with a distinct fileId is a new copy, not a merge");
+  assert.equal(db.notes.length, 2);
+  assert.notEqual(db.notes[0].sync_uuid, db.notes[1].sync_uuid);
+  assert.equal(db.mappings.length, 2);
+}
+
+{
+  const existingContent = "# Existing";
+  const newContent = "# New on first scan";
+  const db = makeDb([note("Notes/existing.md", "Notes/existing.md", existingContent)], []);
+  const observations = [observation("file-existing", "Notes/existing.md", existingContent), observation("file-new", "Notes/new.md", newContent)];
+  const res = await syncNotes(request([{ fileId: "file-new", path: "Notes/new.md", content: newContent }], observations), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 1, "initial reconciliation maps existing D1 notes before creating confirmed-new files");
+  assert.equal(db.notes.length, 2);
+  assert.equal(db.mappings.some((m) => m.file_id === "file-existing"), true);
+  assert.equal(db.mappings.some((m) => m.file_id === "file-new"), true);
+}
+
+{
+  const content = "# Maybe new";
+  const db = makeDb();
+  const res = await syncNotes(request([{ fileId: "file-partial", path: "Notes/partial.md", content }], [observation("file-partial", "Notes/partial.md", content)], false), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 0, "partial observations never auto-create");
+  assert.equal(result.deferred, 1);
+  assert.equal(db.notes.length, 0);
+  assert.equal(db.reviews[0].classification, "deferred");
+}
+
+{
+  const content = "# Duplicate canonical UUID";
+  const db = makeDb([
+    note("Notes/one.md", "Notes/one.md", content, uuidA),
+    note("Notes/two.md", "Notes/two.md", content, uuidA)
+  ]);
+  const res = await syncNotes(request([], [observation("file-one", "Notes/one.md", content)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.needsReview, 1, "duplicate D1 sync_uuid ownership fails closed");
+  assert.equal(db.mappings.length, 0);
+  assert.equal(db.reviews[0].classification, "needs_review");
+}
+
+{
+  const legacyId = uuidA;
+  const content = `---\nid: "${legacyId}"\n---\n\n# Conflicting legacy ID`;
+  const db = makeDb([note("Notes/known.md", "Notes/known.md", "# Known", uuidB)], [{ file_id: "file-known", sync_uuid: uuidB, note_id: "Notes/known.md", last_path: "Notes/known.md", created_at: now, updated_at: now }]);
+  const res = await syncNotes(request([{ fileId: "file-known", path: "Notes/known.md", content }], [observation("file-known", "Notes/known.md", content)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.needsReview, 1, "a frontmatter UUID conflicting with notes.sync_uuid is never silently adopted");
+  assert.equal(db.notes[0].content, "# Known", "conflicting content is not applied");
+}
+
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, initial reconciliation, partial observation, duplicate UUID, and frontmatter conflict.");
