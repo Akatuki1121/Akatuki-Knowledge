@@ -50,6 +50,7 @@ var worker_default = {
       if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
       try {
         if (request.method === "GET" && url.pathname === "/api/notes") return listNotes(url, env);
+        if (request.method === "POST" && url.pathname === "/api/notes") { const response = await createNote(request, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
         if (request.method === "GET" && url.pathname === "/api/sync/manifest") return syncManifest(url, env);
         if (request.method === "POST" && url.pathname === "/api/sync/export") return exportSyncNotes(request, env);
         if (request.method === "GET" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/related")) return listRelatedNotes(url, env);
@@ -403,6 +404,46 @@ async function exportSyncNotes(request, env) {
   return json({ notes });
 }
 __name(exportSyncNotes, "exportSyncNotes");
+async function createNote(request, env) {
+  const body = await readJson(request);
+  if (typeof body.path !== "string" || !body.path.trim() || typeof body.content !== "string" || !body.content.trim() || body.content.length > MAX_NOTE_CHARS) {
+    return json({ error: "path and content must be non-empty strings within the note size limit" }, 400);
+  }
+  const path = stableId(body.path.trim());
+  if (path.length > 1000 || path.startsWith("/") || !/\.md$/i.test(path) || path.split("/").some((part) => !part || part === ".." || part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) {
+    return json({ error: "unsafe_note_path" }, 400);
+  }
+  const existingPath = await env.DB.prepare("SELECT id FROM notes WHERE path = ?").bind(path).first();
+  if (existingPath) return json({ error: "note_path_exists", path }, 409);
+  const content = body.content;
+  const contentUuid = readUuid(content);
+  const syncUuid = isValidSyncUuid(contentUuid) ? contentUuid : crypto.randomUUID();
+  const existingUuid = await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ? LIMIT 1").bind(syncUuid).first();
+  if (existingUuid) return json({ error: "sync_uuid_exists" }, 409);
+  const title = titleFrom(path, body.title);
+  const contentHash = await sha256(content);
+  const inspected = inspectWholeContent(content, env);
+  const credential = inspected.credentials;
+  const aiAllowed = credential ? 0 : 1;
+  const sensitivity = credential ? "credentials" : "unknown";
+  const reviewState = credential ? "blocked_credentials" : "ready";
+  const tags = JSON.stringify(extractTags(content, body.tags));
+  const now = new Date().toISOString();
+  const payload = {
+    id: path, path, title, content, contentHash, syncUuid,
+    deletedAt: null, expectedPreviousContent: null, allowRestore: false
+  };
+  // Insert the note and its first outbox event atomically. YAOS creates the
+  // vault file on upsert and returns the real fileId; Akatuki never fabricates it.
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)")
+      .bind(path, path, syncUuid, title, content, contentHash, now, now, tags, aiAllowed, sensitivity, reviewState),
+    env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, 'notes', ?, 'upsert', ?, 'pending', 0, ?, ?, ?)")
+      .bind(crypto.randomUUID(), path, JSON.stringify(payload), now, now, now)
+  ]);
+  return json({ ok: true, id: path, path, title, syncUuid, contentHash, aiAllowed: Boolean(aiAllowed), reviewState, queued: true }, 201);
+}
+__name(createNote, "createNote");
 async function listNotes(url, env) {
   const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 50)));
   const { results } = await env.DB.prepare(`SELECT id, path, title, tags_json, '[]' AS ai_tags_json, related_json, summary, knowledge_type, knowledge_scope, source_modified_at, updated_at, ai_allowed, sensitivity, 'obsidian' AS source, review_state FROM notes WHERE deleted_at IS NULL UNION ALL SELECT id, NULL AS path, title, tags_json, ai_tags_json, related_json, summary, knowledge_type, knowledge_scope, NULL AS source_modified_at, updated_at, ai_allowed, sensitivity, 'telegram' AS source, review_state FROM telegram_notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`).bind(limit).all();
