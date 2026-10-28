@@ -51,7 +51,7 @@ for (const contract of [
   'const verified = !verifiedItem || verifiedItem.deleted',
   'const verified = Boolean(verifiedItem && !verifiedItem.deleted',
   'current.value.set("deletedAt", now)',
-  'const desiredUuid = readUuid(desiredContent);',
+  'const desiredUuid = telegram ? readUuid(desiredContent) : uuid;',
   'readUuid(textValue.toString()) === desiredUuid',
   'if (found.length > 1) throw new Error("ambiguous_sync_identity")',
   'const hasUuid = fm && /^id:\\s*',
