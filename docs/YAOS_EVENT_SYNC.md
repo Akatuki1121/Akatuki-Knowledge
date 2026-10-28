@@ -24,20 +24,44 @@ These checks confirm the current configuration and recorded reconciliation resul
 
 ## Identity and note paths
 
-- Existing Obsidian notes retain their current D1 row ID. A valid YAML `id:` UUID reconciles a moved Vault path to that same row; legacy notes without a valid UUID continue to use the path. Duplicate UUIDs fail closed with HTTP 409.
-- Telegram notes retain their stable D1 ID. Their Vault filename is derived from the title slug only; identity is the deterministic UUID in the YAML `id:` frontmatter, so a title change or a file rename still updates the same Vault note instead of creating a duplicate. Filenames written by the previous rule (title slug plus a 16-character hash of the D1 ID) are still recognized as a fallback match during the staged migration, and are renamed to the slug-only form on the next update. If a different note already occupies the slug filename, the sync deterministically appends an ordinal (`-2`, `-3`, ...) instead of overwriting it; the ordinal is not part of the identity.
-- Notes written by the event path receive a deterministic UUID in YAML `id:` frontmatter if they do not already contain a valid UUID. Telegram and Obsidian IDs use separate seeds. Existing valid UUIDs are preserved; a non-UUID `id:` value is replaced because this field is reserved for sync identity.
-- Step 2 of the staged migration (Issue #107) is a dedicated, dry-run-by-default rename operation: the authenticated `POST /sync/telegram-rename` endpoint (apply only with `?apply=1`) renames Telegram files that still carry the legacy hash suffix. A file is renamed only when its frontmatter `id:` and the D1 row found via the filename suffix agree on the same UUID (the step 1 priority: the D1 content's valid frontmatter UUID, otherwise the deterministic UUID of the row ID); missing, mismatched, or duplicated identities and occupied target paths are reported and skipped (fail-closed, no ordinal is invented). The operation rewrites only YAOS `meta` paths and `pathToId`, never note bodies, includes tombstones (renamed as tombstones), re-checks every file inside the apply transaction, and verifies the result by reading the Vault back. Rolling back is renaming the files back; bodies and D1 rows are unchanged.
-- Create, rename, delete, and restore operations maintain YAOS `meta`, `idToText`, and `pathToId`. Deletions are represented as YAOS metadata tombstones. Archived rows are always enqueued as deletes, even if a stale caller labels them as upserts. A YAOS tombstone is revived only through the explicit D1 restore path.
-- Before overwriting a live Vault note, the worker compares its content with the desired content and expected previous revision. Independent Vault edits cause a fail-closed `vault_content_conflict` instead of being overwritten. The sync UUID frontmatter line is ignored for this comparison. Every successful delivery is followed by a read-back verification; a job is marked `sent` only after verification succeeds.
+### Authoritative identity (target design)
+
+- The authoritative identity is the UUID stored in Akatuki Knowledge D1 as `notes.sync_uuid`. YAOS metadata is not the source of truth for identity.
+- The sync identity is transport/storage metadata and must not be written into the Markdown body or YAML frontmatter. Obsidian remains the editing client; users and other AI agents must be able to create and edit ordinary notes without managing IDs.
+- Akatuki Knowledge must persist the mapping `YAOS fileId ↔ notes.sync_uuid`. YAOS's stable `fileId` is retained when the same file is renamed and re-registered at a new path. YAOS `pathToId` represents current path mappings only and is not historical rename evidence. YAOS itself and its protocol are out of scope for changes.
+- When resolving an identity, `notes.sync_uuid` takes precedence over any legacy frontmatter `id`. A frontmatter ID may be inspected only as migration-era evidence; it must not override a known D1 identity or be newly written to note content.
+- This identity-separation work covers Obsidian notes only. Telegram notes and Telegram identity reconciliation are explicitly out of scope and must not be reintroduced into this migration.
+
+### Incoming-file classification
+
+Classify from the positive conditions that prove a file is new, not merely from the absence of a match.
+
+1. **Known identity / update:** an unambiguous persisted `fileId ↔ sync_uuid` mapping resolves to one D1 note. Update that note while preserving its revision and conflict checks.
+2. **Confirmed new note:** the current YAOS observation is complete and healthy; the file has a newly observed stable `fileId`; no existing mapping or other strong identity evidence points to a D1 note; there is no relevant unresolved deletion/move/tombstone, pending sync operation, duplicate identity, or conflicting mapping. Create a D1 note and assign a new random UUID in `notes.sync_uuid`; persist the mapping atomically with the identity decision.
+3. **Deferred observation:** a scan or required metadata is incomplete, temporarily unavailable, or inconsistent in a way that may clear on retry. Do not create a D1 note or send the case to user review yet; re-observe safely.
+4. **Ambiguous identity (`needs_review`):** the observation is complete, but evidence cannot distinguish a rename/move from a copy followed by deletion, or multiple candidate notes/mappings remain. Do not create, merge, or overwrite automatically.
+5. **Identity conflict:** duplicate UUIDs, one-to-many mappings, or contradictory authoritative records must fail closed. Do not choose a winner or overwrite another note.
+
+A global unrelated deletion must not block every genuinely new file. Only a deletion, tombstone, or missing prior path that plausibly relates to the incoming file is a reason to defer or review it. Likewise, content similarity is only a diagnostic hint: it is not proof of identity and its absence is not proof of newness. If the original still exists and a second file appears with a different stable `fileId`, treat it as a new copy unless stronger contradictory identity evidence exists.
+
+During initial reconciliation, first establish mappings for existing D1 notes using available strong evidence. Only then classify unmatched files under the same confirmed-new conditions. An unmatched file in an incomplete first scan is not automatically new. Do not bulk-create all unmatched files merely because no current path mapping exists.
 
 ## Monitoring
 
 The authenticated `GET /sync/status` endpoint reports pending, processing, sent, and dead-letter outbox counts. `GET /sync/outbox?status=dead&limit=50` lists individual jobs (job ID, entity/note ID, operation, state, attempts, timestamps, and last error) without returning `payload_json`, which can contain note content. Pagination uses the `before` job ID cursor. `POST /sync/outbox/{jobId}/retry` requeues only a `dead` job; it preserves the attempt count and last error for diagnosis and starts a bounded background drain. All three endpoints require the existing Bearer API token. If the outbox migration is absent in an environment, listing reports that condition instead of failing the whole status request.
 
-## Frontmatter identity migration status
+## Identifier separation migration status
 
-Frontmatter `id:` removal is intentionally not part of the outbox-admin change. The current YAOS Durable Object still uses a valid frontmatter UUID to locate moved Obsidian notes and as the primary identity for Telegram notes; `diffAgainstD1` currently sends path/title/content but no independent sync UUID, and `stripFrontmatterIds` removes the line without first persisting a UUID on every corresponding YAOS `meta` record. Removing the field before a coordinated metadata backfill would therefore break rename tracking for files whose paths change after stripping, and could break Telegram note matching. A safe follow-up must first backfill and collision-check `meta.syncUuid` from D1 `notes.sync_uuid` / Telegram deterministic identity, pass that value through the pull contract, use it as the primary match key, retain frontmatter IDs only as a migration fallback, and verify create/update/rename/delete/restore plus duplicate-UUID refusal before enabling content stripping. This must be staged with the YAOS state migration and tested against the isolated integration suite; no production mutation is part of this PR.
+Identifier separation is a follow-up to the outbox diagnostics/retry change; it is not implemented by PR #145. The existing code and this migration plan must be treated separately: do not infer that the identity mapping or frontmatter removal is already complete.
+
+The follow-up is Akatuki-Knowledge-only and must be delivered in this order:
+
+1. Persist a durable, collision-checked mapping between YAOS's stable `fileId` and D1 `notes.sync_uuid`. Keep D1 authoritative; do not promote YAOS metadata to the source of truth. Preserve existing valid `notes.sync_uuid` values rather than rotating them.
+2. Resolve `syncUuid` from `notes.sync_uuid` before considering any legacy frontmatter `id`. Remove dependence on frontmatter for ongoing identity, and do not add IDs to note bodies/frontmatter.
+3. Implement and test the incoming-file classification above, including confirmed-new conditions, deferred observations, `needs_review`, duplicate-ID refusal, rename/move, copy, delete, and restore cases. Similarity/hash may help diagnostics but must not automatically merge notes.
+4. Preserve existing revision history, expected-revision conflict checks, tombstone/restore behavior, and per-note outbox ordering. A later event must not bypass an earlier pending or processing event; delivery remains successful only after read-back verification.
+
+No YAOS source/protocol changes, production deployment, or direct production D1 writes are part of this work. The existing-note migration is a separate future operation and, when authorized, must run `restore-all → verify → organize` in that order. It is not to be run as part of this PR.
 
 ## Migration and recovery safety
 
