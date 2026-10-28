@@ -46,6 +46,7 @@ const outbox = createSyncOutbox({
   assert.equal(inserted[0].values[2], "note-1");
   assert.equal(inserted[0].values[3], "delete", "An archived note must enqueue a tombstone, not an upsert");
   const payload = JSON.parse(inserted[0].values[4]);
+  assert.equal(payload.syncUuid, uuid, "the D1 sync_uuid is retained for a delete/tombstone event");
   assert.equal(payload.expectedPreviousContent, "previous content");
   assert.equal(payload.allowRestore, true);
 }
