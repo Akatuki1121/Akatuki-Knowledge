@@ -31,7 +31,7 @@ for (const contract of [
   'if (job.operation === "delete" || payload.deletedAt) {',
   'const legacyId = readUuid(content)',
   'SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?',
-  'SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE sync_uuid = ?',
+  'SELECT id, path, sync_uuid FROM notes WHERE sync_uuid = ?',
   'UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL',
   'UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?',
   'matches.some((note) => note.id !== previous.id)',
