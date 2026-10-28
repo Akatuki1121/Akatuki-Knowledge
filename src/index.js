@@ -263,18 +263,15 @@ async function syncNotes(request, env) {
     } else {
       previous = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?").bind(path).first();
       if (!previous && isValidSyncUuid(legacyId)) {
-        const canonical = (await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE sync_uuid = ?").bind(legacyId).all()).results || [];
-        if (canonical.length === 1) previous = canonical[0];
-        else if (canonical.length > 1) {
-          await recordReview(fileId, path, contentHash, "needs_review", "duplicate_sync_uuid_conflict");
-          continue;
-        } else {
-          const allNotes = (await env.DB.prepare("SELECT id, path, sync_uuid, content, deleted_at FROM notes").all()).results || [];
-          if (allNotes.some((note) => readUuid(note.content || "") === legacyId)) {
-            await recordReview(fileId, path, contentHash, "needs_review", "legacy_frontmatter_identity_mismatch");
-            continue;
-          }
-        }
+        const canonical = (await env.DB.prepare("SELECT id, path, sync_uuid FROM notes WHERE sync_uuid = ?").bind(legacyId).all()).results || [];
+        const allNotes = canonical.length ? [] : ((await env.DB.prepare("SELECT id, path, sync_uuid, content, deleted_at FROM notes").all()).results || [])
+          .filter((note) => readUuid(note.content || "") === legacyId);
+        const reason = canonical.length > 1 ? "duplicate_sync_uuid_conflict"
+          : canonical.length === 1 ? "legacy_frontmatter_identity_candidate"
+          : allNotes.length ? "legacy_frontmatter_identity_mismatch"
+          : "unmapped_legacy_frontmatter_id";
+        await recordReview(fileId, path, contentHash, "needs_review", reason);
+        continue;
       }
     }
 
@@ -11083,7 +11080,7 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
-  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, error: sync.ok ? void 0 : body.error };
+  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
 __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
@@ -11218,6 +11215,20 @@ var wrapper_default = {
         notificationAttempts: Number(task.notification_attempts || 0),
         result: task.checkpoint?.result ?? null
       }, { status: 200, headers: JSON_HEADERS2 });
+    }
+
+    if (url.pathname === "/sync/identity-review" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      const classification = url.searchParams.get("classification") || "needs_review";
+      if (!["deferred", "needs_review"].includes(classification)) return Response.json({ ok: false, error: "invalid_classification", items: [] }, { status: 400, headers: JSON_HEADERS2 });
+      const limitValue = Number(url.searchParams.get("limit") || 50);
+      const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(100, Math.floor(limitValue))) : 50;
+      try {
+        const result = await env.DB.prepare("SELECT file_id, path, content_hash, classification, reason, first_seen_at, last_seen_at FROM yaos_sync_identity_review WHERE classification = ? ORDER BY last_seen_at DESC LIMIT ?").bind(classification, limit).all();
+        return Response.json({ ok: true, classification, items: result.results || [] }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, error: "identity_review_unavailable", items: [] }, { status: 503, headers: JSON_HEADERS2 });
+      }
     }
 
     if (url.pathname === "/sync/outbox" && request.method === "GET") {
