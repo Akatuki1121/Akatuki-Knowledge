@@ -76,6 +76,13 @@ function makeDb(initialNotes = [], initialMappings = []) {
           }
           if (sql.startsWith("INSERT INTO yaos_file_identity_map")) {
             const row = { file_id: v[0], sync_uuid: v[1], note_id: v[2], last_path: v[3], created_at: v[4], updated_at: v[5] };
+            const sameFile = mappings.find((m) => m.file_id === row.file_id);
+            if (sameFile && sql.includes("ON CONFLICT(file_id) DO UPDATE")) {
+              if (sameFile.note_id !== row.note_id || sameFile.sync_uuid !== row.sync_uuid) throw new Error("UNIQUE constraint failed");
+              sameFile.last_path = row.last_path;
+              sameFile.updated_at = row.updated_at;
+              return { meta: { changes: 1 } };
+            }
             if (mappings.some((m) => m.file_id === row.file_id || m.note_id === row.note_id || m.sync_uuid === row.sync_uuid)) throw new Error("UNIQUE constraint failed");
             mappings.push(row);
             return { meta: { changes: 1 } };
