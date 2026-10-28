@@ -12,7 +12,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -254,16 +254,35 @@ void provider.connect();
   await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
 }
 
-async function importNote(path, content, title) {
-  // /api/sync is the inbound YAOS -> D1 path and intentionally does not enqueue
-  // outbound work. Use it only to seed the local D1 row, then exercise the
-  // real correction/archive/restore mutation routes that enqueue outbox jobs.
+async function importNote(path, content, title, fileId) {
+  const contentHash = createHash("sha256").update(content).digest("hex");
   const result = await request("/api/sync", {
     method: "POST",
-    body: { notes: [{ path, content, title }] },
+    body: {
+      notes: [{ fileId, path, content, title }],
+      observations: [{ fileId, path, deleted: false, contentHash, legacyId: null }],
+      observationComplete: true,
+    },
   });
-  assert.equal(result.ok, true, "sync endpoint accepts note");
+  assert.equal(result.ok, true, "sync endpoint accepts a complete fileId observation");
   return result;
+}
+
+async function seedLocalNote(stateDir, path, content, title) {
+  const literal = value => "'" + String(value).replaceAll("'", "''") + "'";
+  const syncUuid = randomUUID();
+  const contentHash = createHash("sha256").update(content).digest("hex");
+  const now = new Date().toISOString();
+  const sql = "INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state, knowledge_type, knowledge_scope) VALUES ("
+    + [path, path, syncUuid, title, content, contentHash, now, now, "[]", 0, "unknown", "ready", "unknown", "project"].map(literal).join(", ")
+    + ");";
+  const sqlPath = join(stateDir, "seed-note.sql");
+  await writeFile(sqlPath, sql);
+  try {
+    await run("npx", [...WRANGLER, "d1", "execute", "knowledge-integration", "--local", `--file=${sqlPath}`, "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir]);
+  } finally {
+    await rm(sqlPath, { force: true });
+  }
 }
 
 async function correctNote(id, content, title) {
@@ -282,7 +301,7 @@ async function getNotes() {
 }
 
 function noteContent(text) {
-  return `---\nid: ${UUID}\n---\n# Integration roundtrip\n\n${text}\n`;
+  return `# Integration roundtrip\\n\\n${text}\\n`;
 }
 
 async function main() {
@@ -392,6 +411,11 @@ SYNC_TOKEN = "${TOKEN}"
       "--local", "--file=./migrations/0014_agent_memory_jobs.sql",
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
+    await run("npx", [
+      ...WRANGLER, "d1", "execute", "knowledge-integration",
+      "--local", "--file=./migrations/pending/0015_yaos_file_identity_map.sql",
+      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
+    ]);
     markPhase("ローカルD1の準備完了");
 
     async function startWorker() {
@@ -446,7 +470,9 @@ SYNC_TOKEN = "${TOKEN}"
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
     let sent = await currentSentCount();
-    await importNote(TEST_PATH, noteContent("seed only"), "Integration roundtrip");
+    await seedLocalNote(stateDir, TEST_PATH, noteContent("seed only"), "Integration roundtrip");
+    await request("/__scheduled?cron=0+*+*+*+*");
+    await waitForSent(sent);
     let notes = await getNotes();
     const note = notes.find(item => item.path === TEST_PATH);
     assert.ok(note, "created note is visible in local D1");
@@ -460,10 +486,12 @@ SYNC_TOKEN = "${TOKEN}"
     await correctNote(noteId, noteContent("version two"), "Integration roundtrip");
     await waitForSent(sent);
 
-    // Path moves are imported through the same UUID reconciliation used by
-    // the Obsidian sync endpoint; the following correction enqueues the
-    // renamed document and verifies the new path/content in YAOS.
-    await importNote(RENAMED_PATH, noteContent("version two"), "Integration roundtrip");
+    // Obtain the stable YAOS fileId created by the outbox and use it for
+    // the incoming rename observation; no identifier is written to note content.
+    const identity = await request("/sync/identity-map?noteId=" + encodeURIComponent(noteId));
+    assert.equal(identity.ok, true, "D1 note has an inspectable identity mapping");
+    assert.ok(identity.mapping?.file_id, "read-back persisted the stable YAOS fileId");
+    await importNote(RENAMED_PATH, noteContent("version two"), "Integration roundtrip", identity.mapping.file_id);
     sent = await currentSentCount();
     await correctNote(noteId, noteContent("version two after rename"), "Integration roundtrip");
     await waitForSent(sent);
