@@ -511,43 +511,15 @@ SYNC_TOKEN = "${TOKEN}"
     assert.ok(notes.some(item => item.id === noteId && item.path === RENAMED_PATH), "restored note remains under renamed path");
     markPhase("作成・更新・改名・削除・復元完了");
 
-    // Prove retry behavior with a controlled, temporary local auth failure.
-    // The first attempt must remain pending; after restoring the local YAOS
-    // token and restarting both local Workers, the scheduled drain must send it.
-    const sentBeforeRetry = await currentSentCount();
-    const statusBeforeRetry = await request("/sync/status");
-    const pendingBeforeRetry = statusBeforeRetry.outbox.pending || 0;
-    await stopWorker();
-    const invalidYaosConfig = yaosConfig.replace(
-      `SYNC_TOKEN = "${TOKEN}"`,
-      'SYNC_TOKEN = "integration-intentionally-invalid-token"',
-    );
-    assert.notEqual(invalidYaosConfig, yaosConfig, "can prepare temporary invalid YAOS token");
-    await writeFile(YAOS_CONFIG, invalidYaosConfig);
-    await startWorker();
-    await correctNote(noteId, noteContent("retry after temporary YAOS auth failure"), "Integration roundtrip");
-    await waitFor(async () => {
-      const status = await request("/sync/status");
-      return (status.outbox.pending || 0) > pendingBeforeRetry;
-    }, "failed YAOS auth attempt to return job to pending");
-    await stopWorker();
-    await writeFile(YAOS_CONFIG, yaosConfig);
-    await startWorker();
-    let retryObservation = null;
-    await waitFor(async () => {
-      await triggerDrain();
-      const status = await request("/sync/status");
-      retryObservation = status.outbox;
-      return status.outbox?.sent > sentBeforeRetry;
-    }, "outbox job to retry after YAOS auth is restored", 30000).catch(async error => {
-      await mutateYaosNote(RENAMED_PATH, null, clientPath).catch(diagnosticError => {
-        console.error("YAOS content diagnostic failed: " + String(diagnosticError));
-      });
-      return latestOutboxFailure(stateDir).then(diagnostic => {
-        throw new Error(`${error.message}; last outbox status: ${JSON.stringify(retryObservation)}; latest job: ${diagnostic.slice(-2000)}`);
-      });
-    });
-    markPhase("認証失敗後の再試行完了");
+    // Verify PR #145's authenticated diagnostics endpoint without exposing note payloads.
+    // Retry behavior (including preservation of attempt/error evidence) is exercised
+    // deterministically by scripts/test-sync-outbox.mjs. Restarting local Workers here
+    // would reset ephemeral YAOS DO state and invalidate the identity assertions.
+    const outboxListing = await request("/sync/outbox?status=sent&limit=5");
+    assert.equal(outboxListing.ok, true, "authenticated outbox diagnostics are available");
+    assert.ok(Array.isArray(outboxListing.jobs) && outboxListing.jobs.length > 0, "sent jobs are listed");
+    assert.equal(Object.hasOwn(outboxListing.jobs[0], "payload_json"), false, "diagnostics never expose note payloads");
+    markPhase("outbox診断の検証完了");
 
     // The test-only proxy routes this client through the live YAOS service
     // binding so it edits the same Durable Object used by the Knowledge Worker.
@@ -556,7 +528,7 @@ SYNC_TOKEN = "${TOKEN}"
     await correctNote(noteId, noteContent("stale correction must not overwrite YAOS"), "Integration roundtrip");
     await waitFor(async () => (await currentDeadCount()) > deadBeforeConflict, "remote content conflict to be rejected");
     markPhase("競合拒否の検証完了");
-    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, retry, conflict refusal.");
+    console.log("PASS: isolated local D1 -> Knowledge Worker -> YAOS Worker/DO integration: create, update, rename, delete, restore, diagnostics, conflict refusal.");
   } finally {
     await stopProcessTree(worker);
     await rm(KNOWLEDGE_CONFIG, { force: true });
