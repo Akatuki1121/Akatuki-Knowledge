@@ -86,16 +86,23 @@ async function drainSyncOutbox(env, limit = 5) {
       if (!response.ok || result.ok !== true || result.verified !== true) throw new Error(result.error || ("yaos_sync_status_" + response.status));
       const payload = JSON.parse(job.payload_json);
       if (job.entity_type === "notes") {
-        if (!isValidSyncUuid(payload.syncUuid) || typeof result.fileId !== "string" || !result.fileId) throw new Error("sync_identity_mapping_missing");
-        const existing = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ? OR note_id = ? OR sync_uuid = ?")
-          .bind(result.fileId, job.entity_id, payload.syncUuid).all()).results || [];
-        if (existing.some((mapping) => mapping.file_id !== result.fileId || mapping.note_id !== job.entity_id || mapping.sync_uuid !== payload.syncUuid)) {
-          throw new Error("sync_identity_mapping_conflict");
+        if (!isValidSyncUuid(payload.syncUuid)) throw new Error("invalid_sync_uuid");
+        // Deleting a note that was never present in YAOS is idempotent. There is
+        // no stable fileId to map in that case; all successful upserts/restores
+        // and deletes of known files still require a verified mapping.
+        if (typeof result.fileId !== "string" || !result.fileId) {
+          if (job.operation !== "delete") throw new Error("sync_identity_mapping_missing");
+        } else {
+          const existing = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ? OR note_id = ? OR sync_uuid = ?")
+            .bind(result.fileId, job.entity_id, payload.syncUuid).all()).results || [];
+          if (existing.some((mapping) => mapping.file_id !== result.fileId || mapping.note_id !== job.entity_id || mapping.sync_uuid !== payload.syncUuid)) {
+            throw new Error("sync_identity_mapping_conflict");
+          }
+          await env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid")
+            .bind(result.fileId, payload.syncUuid, job.entity_id, payload.path || "", new Date().toISOString(), new Date().toISOString()).run();
+          const verifiedMap = await env.DB.prepare("SELECT file_id, sync_uuid, note_id FROM yaos_file_identity_map WHERE file_id = ?").bind(result.fileId).first();
+          if (!verifiedMap || verifiedMap.note_id !== job.entity_id || verifiedMap.sync_uuid !== payload.syncUuid) throw new Error("sync_identity_mapping_conflict");
         }
-        await env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid")
-          .bind(result.fileId, payload.syncUuid, job.entity_id, payload.path || "", new Date().toISOString(), new Date().toISOString()).run();
-        const verifiedMap = await env.DB.prepare("SELECT file_id, sync_uuid, note_id FROM yaos_file_identity_map WHERE file_id = ?").bind(result.fileId).first();
-        if (!verifiedMap || verifiedMap.note_id !== job.entity_id || verifiedMap.sync_uuid !== payload.syncUuid) throw new Error("sync_identity_mapping_conflict");
       }
       const finishedAt = new Date().toISOString();
       await env.DB.prepare("UPDATE yaos_sync_jobs SET status = 'sent', sent_at = ?, updated_at = ?, lease_expires_at = NULL, last_error = NULL WHERE job_id = ? AND status = 'processing'").bind(finishedAt, finishedAt, job.job_id).run();
