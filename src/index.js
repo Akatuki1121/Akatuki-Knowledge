@@ -223,6 +223,11 @@ async function syncNotes(request, env) {
       }
       await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = '')").bind(syncUuid, row.id).run();
     }
+    const owners = (await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ?").bind(syncUuid).all()).results || [];
+    if (owners.some((owner) => owner.id !== row.id)) {
+      await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "duplicate_sync_uuid_conflict");
+      continue;
+    }
     const normalizedRow = { ...row, sync_uuid: syncUuid };
     try { await insertMapping(observation.fileId, normalizedRow, path); }
     catch { await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict"); }
