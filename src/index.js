@@ -144,59 +144,220 @@ async function syncNotes(request, env) {
   if (!Array.isArray(body.notes) || body.notes.length > MAX_NOTES_PER_SYNC) {
     return json({ error: "notes must be an array of at most " + MAX_NOTES_PER_SYNC + " items" }, 400);
   }
+  const observations = Array.isArray(body.observations) ? body.observations : [];
+  if (observations.length > 2000) return json({ error: "too_many_observations" }, 400);
+  const observationComplete = body.observationComplete === true;
   const now = new Date().toISOString();
-  let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0;
+  let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0;
+  const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
+  const safePath = (value) => typeof value === "string" && value.trim() && !value.startsWith("/") && !value.split("/").includes("..") && value.length <= 1000 && /\.md$/i.test(value);
+  const recordReview = async (fileId, path, contentHash, classification, reason) => {
+    if (!fileId) return;
+    await env.DB.prepare("INSERT INTO yaos_sync_identity_review (file_id, path, content_hash, classification, reason, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET path = excluded.path, content_hash = excluded.content_hash, classification = excluded.classification, reason = excluded.reason, last_seen_at = excluded.last_seen_at")
+      .bind(fileId, path, contentHash || "", classification, reason, now, now).run();
+    if (classification === "deferred") deferred++;
+    else needsReview++;
+    if (reason.includes("conflict") || reason.includes("duplicate")) identityConflicts++;
+  };
+  const mappingsFor = async (fileId, noteId, syncUuid) => {
+    const result = await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ? OR note_id = ? OR sync_uuid = ?")
+      .bind(fileId || "", noteId || "", syncUuid || "").all();
+    return result.results || [];
+  };
+  const insertMapping = async (fileId, row, path) => {
+    if (!fileId || !row || !isValidSyncUuid(row.sync_uuid)) throw new Error("invalid_identity_mapping");
+    const existing = await mappingsFor(fileId, row.id, row.sync_uuid);
+    if (existing.some((m) => m.file_id !== fileId || m.note_id !== row.id || m.sync_uuid !== row.sync_uuid)) {
+      throw new Error("sync_identity_mapping_conflict");
+    }
+    if (!existing.some((m) => m.file_id === fileId)) {
+      await env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(fileId, row.sync_uuid, row.id, path, now, now).run();
+    } else {
+      await env.DB.prepare("UPDATE yaos_file_identity_map SET last_path = ?, updated_at = ? WHERE file_id = ? AND note_id = ? AND sync_uuid = ?")
+        .bind(path, now, fileId, row.id, row.sync_uuid).run();
+    }
+    await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId).run();
+  };
+
+  // Establish identities for already-known D1 notes before considering any file new.
+  for (const observation of observations) {
+    if (!observation || typeof observation.fileId !== "string" || !observation.fileId || !safePath(observation.path)) continue;
+    const path = stableId(observation.path);
+    if (observation.deleted === true) continue;
+    const mapped = await mappingsFor(observation.fileId, "", "");
+    if (mapped.length) {
+      if (mapped.length !== 1) {
+        await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict");
+        continue;
+      }
+      const map = mapped[0];
+      const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE id = ?").bind(map.note_id).first();
+      if (!row || row.sync_uuid !== map.sync_uuid || !isValidSyncUuid(row.sync_uuid)) {
+        await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict");
+        continue;
+      }
+      const occupied = await env.DB.prepare("SELECT id FROM notes WHERE path = ?").bind(path).first();
+      if (occupied && occupied.id !== row.id) {
+        await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "path_identity_conflict");
+        continue;
+      }
+      try { await insertMapping(observation.fileId, row, path); }
+      catch { await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict"); }
+      continue;
+    }
+    const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?").bind(path).first();
+    if (!row || row.deleted_at) continue;
+    const legacyId = isValidSyncUuid(observation.legacyId) ? observation.legacyId : null;
+    if (legacyId && isValidSyncUuid(row.sync_uuid) && legacyId !== row.sync_uuid) {
+      await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "frontmatter_id_conflicts_with_d1_sync_uuid");
+      continue;
+    }
+    let syncUuid = row.sync_uuid;
+    if (!isValidSyncUuid(syncUuid)) {
+      syncUuid = crypto.randomUUID();
+      const owners = (await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ?").bind(syncUuid).all()).results || [];
+      if (owners.length) {
+        await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "duplicate_sync_uuid_conflict");
+        continue;
+      }
+      await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = '')").bind(syncUuid, row.id).run();
+    }
+    const normalizedRow = { ...row, sync_uuid: syncUuid };
+    try { await insertMapping(observation.fileId, normalizedRow, path); }
+    catch { await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict"); }
+  }
+
   for (const input of body.notes) {
     if (!input || typeof input.path !== "string" || !input.path.trim() || typeof input.content !== "string") continue;
     const path = stableId(input.path.trim());
-    if (path.startsWith("/") || path.split("/").includes("..") || path.length > 1e3 || !/\.md$/i.test(path)) continue;
+    if (!safePath(path) || path.split("/").some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) continue;
     if (input.content.length > MAX_NOTE_CHARS) continue;
+    const fileId = typeof input.fileId === "string" && input.fileId.length > 0 && input.fileId.length <= 256 ? input.fileId : null;
     const title = titleFrom(path, input.title);
     const content = input.content;
     const contentHash = await sha256(content);
-    let previous = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?").bind(path).first();
-    const incomingUuid = readUuid(content);
-    const isSyncUuid = isValidSyncUuid(incomingUuid);
-    if (isSyncUuid) {
-      let matches = (await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE sync_uuid = ?").bind(incomingUuid).all()).results || [];
-      if (matches.length === 0) {
-        const allNotes = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes").all();
-        matches = (allNotes.results || []).filter((note) => readUuid(note.content) === incomingUuid);
+    const legacyId = readUuid(content);
+    if (!fileId) {
+      deferred++;
+      continue;
+    }
+    const observation = observedByFileId.get(fileId);
+    if (!observation || stableId(observation.path || "") !== path || observation.deleted === true) {
+      await recordReview(fileId, path, contentHash, "deferred", "file_not_in_complete_observation");
+      continue;
+    }
+
+    const mapped = await mappingsFor(fileId, "", "");
+    let previous = null;
+    if (mapped.length) {
+      if (mapped.length !== 1) {
+        await recordReview(fileId, path, contentHash, "needs_review", "sync_identity_mapping_conflict");
+        continue;
       }
-      if (matches.length > 1 || (previous && matches.some((note) => note.id !== previous.id)) || (previous && isValidSyncUuid(previous.sync_uuid) && previous.sync_uuid !== incomingUuid)) {
-        return json({ error: "ambiguous_sync_uuid", path, conflicts: matches.map((note) => note.path) }, 409);
+      previous = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
+      if (!previous || previous.sync_uuid !== mapped[0].sync_uuid || !isValidSyncUuid(previous.sync_uuid)) {
+        await recordReview(fileId, path, contentHash, "needs_review", "sync_identity_mapping_conflict");
+        continue;
       }
-      if (!previous && matches.length === 1) previous = matches[0];
+    } else {
+      previous = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?").bind(path).first();
+      if (!previous && isValidSyncUuid(legacyId)) {
+        const canonical = (await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE sync_uuid = ?").bind(legacyId).all()).results || [];
+        if (canonical.length === 1) previous = canonical[0];
+        else if (canonical.length > 1) {
+          await recordReview(fileId, path, contentHash, "needs_review", "duplicate_sync_uuid_conflict");
+          continue;
+        } else {
+          const allNotes = (await env.DB.prepare("SELECT id, path, sync_uuid, content, deleted_at FROM notes").all()).results || [];
+          if (allNotes.some((note) => readUuid(note.content || "") === legacyId)) {
+            await recordReview(fileId, path, contentHash, "needs_review", "legacy_frontmatter_identity_mismatch");
+            continue;
+          }
+        }
+      }
+    }
+
+    const occupied = await env.DB.prepare("SELECT id, path, sync_uuid, deleted_at FROM notes WHERE path = ?").bind(path).first();
+    if (previous && occupied && occupied.id !== previous.id) {
+      await recordReview(fileId, path, contentHash, "needs_review", "path_identity_conflict");
+      continue;
     }
     if (previous?.deleted_at) {
+      await recordReview(fileId, path, contentHash, "needs_review", "archived_note_identity");
       archivedSkipped++;
       continue;
     }
-    const syncUuid = isSyncUuid ? incomingUuid : (isValidSyncUuid(previous?.sync_uuid) ? previous.sync_uuid : await deterministicUuid("notes:" + (previous?.id || path)));
-    const tags = JSON.stringify(extractTags(content, input.tags));
-    const moved = Boolean(previous && previous.path !== path);
-    if (previous && previous.content_hash === contentHash && previous.title === title) {
-      await env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id).run();
-      if (moved) updated++;
-      else unchanged++;
+    if (previous && isValidSyncUuid(legacyId) && isValidSyncUuid(previous.sync_uuid) && legacyId !== previous.sync_uuid) {
+      await recordReview(fileId, path, contentHash, "needs_review", "frontmatter_id_conflicts_with_d1_sync_uuid");
       continue;
     }
     if (previous) {
-      await env.DB.batch([
-        env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now),
-        env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready' WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id),
-        ...(previous.content_hash !== contentHash ? [
-          env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = 'obsidian' AND note_id = ? AND status IN ('active', 'unverified', 'conflicted')")
-            .bind(now, previous.id)
-        ] : [])
-      ]);
-      updated++;
+      const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(previous.id).first();
+      if (pending) {
+        await recordReview(fileId, path, contentHash, "deferred", "outbox_operation_pending");
+        continue;
+      }
     } else {
-      await env.DB.prepare("INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(path, path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags).run();
-      created++;
+      if (!observationComplete) {
+        await recordReview(fileId, path, contentHash, "deferred", "incomplete_vault_observation");
+        continue;
+      }
+      const tombstone = observations.some((item) => item?.deleted === true && stableId(item.path || "") === path);
+      if (tombstone || occupied?.deleted_at) {
+        await recordReview(fileId, path, contentHash, "needs_review", "tombstone_or_deleted_path_conflict");
+        continue;
+      }
+      const pendingPath = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND status IN ('pending', 'processing') AND json_extract(payload_json, '$.path') = ? LIMIT 1").bind(path).first();
+      if (pendingPath) {
+        await recordReview(fileId, path, contentHash, "deferred", "outbox_operation_pending");
+        continue;
+      }
+    }
+
+    let syncUuid = previous?.sync_uuid;
+    if (!isValidSyncUuid(syncUuid)) syncUuid = crypto.randomUUID();
+    const owners = (await env.DB.prepare("SELECT id, path FROM notes WHERE sync_uuid = ?").bind(syncUuid).all()).results || [];
+    if (owners.some((row) => row.id !== previous?.id)) {
+      await recordReview(fileId, path, contentHash, "needs_review", "duplicate_sync_uuid_conflict");
+      continue;
+    }
+    const tags = JSON.stringify(extractTags(content, input.tags));
+    const moved = Boolean(previous && previous.path !== path);
+    try {
+      if (previous && previous.content_hash === contentHash && previous.title === title) {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
+          env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid").bind(fileId, syncUuid, previous.id, path, now, now),
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId)
+        ]);
+        if (moved) updated++; else unchanged++;
+      } else if (previous) {
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now),
+          env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, review_state = 'ready' WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, previous.id),
+          env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid").bind(fileId, syncUuid, previous.id, path, now, now),
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId),
+          ...(previous.content_hash !== contentHash ? [env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = 'obsidian' AND note_id = ? AND status IN ('active', 'unverified', 'conflicted')").bind(now, previous.id)] : [])
+        ]);
+        updated++;
+      } else {
+        if (!observationComplete) {
+          await recordReview(fileId, path, contentHash, "deferred", "incomplete_vault_observation");
+          continue;
+        }
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(path, path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags),
+          env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").bind(fileId, syncUuid, path, path, now, now),
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId)
+        ]);
+        created++;
+      }
+    } catch (error) {
+      await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, archivedSkipped, note: "Sync never deletes note records. Missing Vault files are not automatically propagated as deletions." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, archivedSkipped, deferred, needsReview, identityConflicts, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
