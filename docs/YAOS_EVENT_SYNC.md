@@ -52,7 +52,7 @@ The authenticated `GET /sync/status` endpoint reports pending, processing, sent,
 
 ## Identifier separation implementation status
 
-The identity-separation implementation is on the dedicated follow-up branch and is not part of PR #145. Its additive D1 schema remains under `migrations/pending/`; do not deploy it or apply it to production as part of this PR.
+The identity-separation implementation is on this dedicated follow-up PR and is separate from PR #145. Its additive D1 schema was applied to production D1 on 2026-10-28 after owner authorization. The production `d1_migrations` ledger entry is being verified separately; keep this PR unmerged until that verification is complete and the record PR is merged.
 
 1. `notes.sync_uuid` is authoritative for Akatuki-owned notes. The additive `yaos_file_identity_map` table uniquely binds YAOS's stable `fileId`, D1 `sync_uuid`, and D1 note ID. Mapping conflicts fail closed; mapping writes are checked by reading them back.
 2. Outbound sync uses D1 `notes.sync_uuid` first. A conflicting legacy frontmatter ID is rejected rather than silently adopted. Telegram identity behavior is unchanged and out of scope.
@@ -61,7 +61,7 @@ The identity-separation implementation is on the dedicated follow-up branch and 
 
 Authenticated `GET /sync/identity-map?noteId=...` exposes one note's mapping for diagnostics. `GET /sync/identity-review?classification=deferred|needs_review&limit=...` lists bounded review cases without returning note bodies.
 
-The separate existing-note migration is not included. When explicitly authorized in the future, it must run `restore-all → verify → organize` in that order. No YAOS source/protocol change, production deploy, or direct production D1 write is part of this branch.
+The separate existing-note migration is not included. When explicitly authorized in the future, it must run `restore-all → verify → organize` in that order. This PR does not modify YAOS source/protocol or write to production D1. Production deployment remains on hold until the ledger verification and migration-record PR are complete.
 
 ## Migration and recovery safety
 
