@@ -221,7 +221,12 @@ async function syncNotes(request, env) {
         await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "duplicate_sync_uuid_conflict");
         continue;
       }
-      await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = '')").bind(syncUuid, row.id).run();
+      const update = await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = '' OR sync_uuid = ?)").bind(syncUuid, row.id, row.sync_uuid ?? "").run();
+      const verifiedRow = await env.DB.prepare("SELECT id, sync_uuid FROM notes WHERE id = ?").bind(row.id).first();
+      if (!verifiedRow || verifiedRow.sync_uuid !== syncUuid) {
+        await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "d1_sync_uuid_persistence_conflict");
+        continue;
+      }
     }
     const owners = (await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ?").bind(syncUuid).all()).results || [];
     if (owners.some((owner) => owner.id !== row.id)) {
