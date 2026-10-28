@@ -270,4 +270,33 @@ const observation = (fileId, path, content, deleted = false) => ({
   assert.equal(db.reviews[0].classification, "needs_review");
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, initial reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
+
+
+{
+  const content = "# A note deleted from YAOS";
+  const db = makeDb([note("Notes/deleted.md", "Notes/deleted.md", content)], [{
+    file_id: "file-deleted", sync_uuid: uuidA, note_id: "Notes/deleted.md",
+    last_path: "Notes/deleted.md", created_at: now, updated_at: now
+  }]);
+  const res = await syncNotes(request([], [observation("file-deleted", "Notes/deleted.md", content, true)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 0, "a YAOS tombstone never recreates a deleted file as a new note");
+  assert.equal(db.notes.length, 1, "an inbound tombstone does not silently delete or rewrite the D1 source of truth");
+  assert.equal(db.mappings.length, 1, "the stable identity mapping remains available for an explicit restore");
+}
+
+{
+  const content = "# Restored without a frontmatter identifier";
+  const db = makeDb([note("Notes/restored.md", "Notes/restored.md", content, uuidA, "2026-10-27T00:00:00.000Z")], [{
+    file_id: "file-restored", sync_uuid: uuidA, note_id: "Notes/restored.md",
+    last_path: "Notes/restored.md", created_at: now, updated_at: now
+  }]);
+  const res = await syncNotes(request([{ fileId: "file-restored", path: "Notes/restored.md", content }], [observation("file-restored", "Notes/restored.md", content)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 0, "a restored-looking Vault file cannot silently resurrect an archived D1 note");
+  assert.equal(result.needsReview, 1, "restore requires an explicit D1-side restore operation");
+  assert.equal(db.notes[0].deleted_at, "2026-10-27T00:00:00.000Z");
+  assert.equal(db.mappings.length, 1);
+}
+
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, explicit restore boundary, initial reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
