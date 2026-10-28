@@ -21,7 +21,7 @@ for (const contract of [
   "const comparableContent = (value)",
   "let changedCount = 0, contentConflict = false",
   'error: "vault_content_conflict"',
-  'const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload"]',
+  'const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload", "sync_identity_conflict", "sync_identity_mapping_conflict", "sync_identity_mapping_missing", "invalid_sync_uuid"]',
 
   'const effectiveOperation = row.deleted_at ? "delete" : operation;',
   'async function enqueueSyncJob(env, entityType, entityId, operation, options = {})',
