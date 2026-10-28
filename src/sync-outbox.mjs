@@ -86,3 +86,44 @@ async function drainSyncOutbox(env, limit = 5) {
 
   return { enqueueSyncJob, backfillSyncUuidIndex, drainSyncOutbox };
 }
+export async function listSyncOutboxJobs(env, options = {}) {
+  if (!env?.DB) return { ok: false, error: "outbox_unavailable", jobs: [] };
+  const allowedStatuses = new Set(["pending", "processing", "sent", "dead"]);
+  const status = options.status;
+  if (status !== undefined && !allowedStatuses.has(status)) return { ok: false, error: "invalid_status", jobs: [] };
+  const limitValue = Number(options.limit ?? 50);
+  const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(100, Math.floor(limitValue))) : 50;
+  const beforeValue = options.before === undefined ? null : Number(options.before);
+  if (beforeValue !== null && (!Number.isSafeInteger(beforeValue) || beforeValue < 1)) return { ok: false, error: "invalid_cursor", jobs: [] };
+  try {
+    const clauses = [];
+    const bindings = [];
+    if (status) { clauses.push("status = ?"); bindings.push(status); }
+    if (beforeValue !== null) { clauses.push("job_id < ?"); bindings.push(beforeValue); }
+    const where = clauses.length ? " WHERE " + clauses.join(" AND ") : "";
+    bindings.push(limit + 1);
+    const result = await env.DB.prepare("SELECT job_id, entity_type, entity_id, operation, status, attempts, next_attempt_at, lease_expires_at, last_error, created_at, updated_at, sent_at FROM yaos_sync_jobs" + where + " ORDER BY job_id DESC LIMIT ?").bind(...bindings).all();
+    const jobs = result.results || [];
+    const hasMore = jobs.length > limit;
+    if (hasMore) jobs.pop();
+    return { ok: true, jobs, nextBefore: hasMore ? jobs.at(-1)?.job_id ?? null : null };
+  } catch {
+    return { ok: false, error: "outbox_unavailable", jobs: [] };
+  }
+}
+
+export async function retrySyncOutboxJob(env, jobId) {
+  if (!env?.DB) return { ok: false, requeued: false, error: "outbox_unavailable" };
+  if (!Number.isSafeInteger(jobId) || jobId < 1) return { ok: false, requeued: false, error: "invalid_job_id" };
+  const now = new Date().toISOString();
+  try {
+    const result = await env.DB.prepare("UPDATE yaos_sync_jobs SET status = 'pending', next_attempt_at = ?, lease_expires_at = NULL, updated_at = ? WHERE job_id = ? AND status = 'dead'").bind(now, now, jobId).run();
+    if (result.meta?.changes) return { ok: true, requeued: true, jobId, status: "pending", note: "attempts and last_error are preserved for diagnosis" };
+    const existing = await env.DB.prepare("SELECT status FROM yaos_sync_jobs WHERE job_id = ?").bind(jobId).first();
+    if (!existing) return { ok: false, requeued: false, error: "job_not_found" };
+    return { ok: false, requeued: false, error: "job_not_dead", status: existing.status };
+  } catch {
+    return { ok: false, requeued: false, error: "outbox_unavailable" };
+  }
+}
+

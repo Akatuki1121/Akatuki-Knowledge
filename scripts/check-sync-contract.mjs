@@ -8,6 +8,9 @@ const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.ur
 for (const contract of [
   "async function enqueueSyncJob",
   "async function drainSyncOutbox",
+  "export async function listSyncOutboxJobs(env, options = {})",
+  "export async function retrySyncOutboxJob(env, jobId)",
+  "SELECT job_id, entity_type, entity_id, operation, status, attempts, next_attempt_at, lease_expires_at, last_error, created_at, updated_at, sent_at FROM yaos_sync_jobs",
   'SELECT status, COUNT(*) AS count FROM yaos_sync_jobs GROUP BY status',
   'outbox = { ok: true, ...counts }',
   'SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1',

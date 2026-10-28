@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createSyncOutbox } from "../src/sync-outbox.mjs";
+import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "../src/sync-outbox.mjs";
 
 const uuid = "123e4567-e89b-42d3-a456-426614174000";
 const outbox = createSyncOutbox({
@@ -55,3 +55,36 @@ const outbox = createSyncOutbox({
 }
 
 console.log("Sync outbox module tests passed.");
+
+{
+  const listed = [];
+  let retrySql = "";
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async all() {
+          assert.match(sql, /SELECT job_id, entity_type, entity_id, operation, status, attempts/);
+          assert.doesNotMatch(sql, /payload_json/, "Admin listing must never expose note payloads");
+          listed.push({ sql, values });
+          return { results: [{ job_id: 9, entity_type: "notes", entity_id: "n-1", operation: "upsert", status: "dead", attempts: 8, last_error: "vault_content_conflict" }] };
+        },
+        async run() {
+          retrySql = sql;
+          return { meta: { changes: 1 } };
+        },
+        async first() { return { status: "pending" }; }
+      };
+    }
+  };
+  const listing = await listSyncOutboxJobs({ DB: db }, { status: "dead", limit: 5 });
+  assert.equal(listing.ok, true);
+  assert.equal(listing.jobs[0].last_error, "vault_content_conflict");
+  assert.deepEqual(listed[0].values, ["dead", 6]);
+  assert.equal((await listSyncOutboxJobs({ DB: db }, { status: "secret" })).error, "invalid_status");
+  assert.equal((await retrySyncOutboxJob({ DB: db }, 9)).requeued, true);
+  assert.match(retrySql, /WHERE job_id = \? AND status = 'dead'/, "Only dead jobs may be retried");
+  assert.doesNotMatch(retrySql, /attempts\s*=|last_error\s*=/, "Retry preserves attempt count and error evidence");
+  assert.equal((await retrySyncOutboxJob({ DB: db }, 0)).error, "invalid_job_id");
+}

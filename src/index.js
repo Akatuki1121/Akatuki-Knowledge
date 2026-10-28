@@ -16,7 +16,7 @@ import {
   toSqliteDateTime
 } from "./background-task-store.mjs";
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
-import { createSyncOutbox } from "./sync-outbox.mjs";
+import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -11029,6 +11029,22 @@ var wrapper_default = {
         notificationAttempts: Number(task.notification_attempts || 0),
         result: task.checkpoint?.result ?? null
       }, { status: 200, headers: JSON_HEADERS2 });
+    }
+
+    if (url.pathname === "/sync/outbox" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      const status = url.searchParams.get("status") || undefined;
+      const before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
+      const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
+      const result = await listSyncOutboxJobs(env, { status, before, limit });
+      return Response.json(result, { status: result.ok ? 200 : 503, headers: JSON_HEADERS2 });
+    }
+    const retryMatch = url.pathname.match(new RegExp("^/sync/outbox/([0-9]+)/retry$"));
+    if (retryMatch && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      const result = await retrySyncOutboxJob(env, Number(retryMatch[1]));
+      if (result.ok && result.requeued) ctx.waitUntil(drainSyncOutbox(env, 3));
+      return Response.json(result, { status: result.ok ? 200 : result.error === "job_not_found" ? 404 : 409, headers: JSON_HEADERS2 });
     }
 
     if (url.pathname === "/sync/status" && request.method === "GET") {
