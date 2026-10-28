@@ -54,6 +54,61 @@ const outbox = createSyncOutbox({
   assert.deepEqual(result, { ok: false, skipped: "missing_binding" });
 }
 
+
+{
+  const inserted = [];
+  const row = {
+    id: "note-restore", path: "notes/restore.md", title: "Restore",
+    content: "# Restored without an embedded identifier", content_hash: "hash",
+    deleted_at: null, sync_uuid: uuid
+  };
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async first() {
+          if (sql.includes("FROM notes WHERE id = ?")) return row;
+          if (sql.includes("FROM note_revisions")) return { content: "# archived revision" };
+          throw new Error("Unexpected first query: " + sql);
+        },
+        async run() {
+          if (sql.startsWith("INSERT INTO yaos_sync_jobs")) inserted.push({ sql, values });
+          return { meta: { changes: 1 } };
+        }
+      };
+    }
+  };
+  await outbox.enqueueSyncJob({ DB: db }, "notes", "note-restore", "upsert", { allowRestore: true });
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].values[3], "upsert", "restoration is queued as an upsert after the tombstone");
+  const payload = JSON.parse(inserted[0].values[4]);
+  assert.equal(payload.syncUuid, uuid, "D1 sync_uuid remains authoritative without a frontmatter ID");
+  assert.equal(payload.allowRestore, true);
+}
+
+{
+  const inserted = [];
+  const row = {
+    id: "note-conflict", path: "notes/conflict.md", title: "Conflict",
+    content: `---\\nid: "${uuidB}"\\n---\\n# legacy id conflicts with D1`, content_hash: "hash",
+    deleted_at: null, sync_uuid: uuid
+  };
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async first() { if (sql.includes("FROM notes WHERE id = ?")) return row; throw new Error("Unexpected first query: " + sql); },
+        async all() { return { results: [] }; },
+        async run() { if (sql.startsWith("INSERT INTO yaos_sync_jobs")) inserted.push({ sql, values }); return { meta: { changes: 1 } }; }
+      };
+    }
+  };
+  await assert.rejects(() => outbox.enqueueSyncJob({ DB: db }, "notes", "note-conflict", "upsert"), /sync_outbox_enqueue_failed/);
+  assert.equal(inserted.length, 0, "a frontmatter/D1 UUID conflict must not enqueue an overwrite");
+}
+
 console.log("Sync outbox module tests passed.");
 
 {
