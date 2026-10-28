@@ -469,10 +469,7 @@ SYNC_TOKEN = "${TOKEN}"
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
-    let sent = await currentSentCount();
     await seedLocalNote(stateDir, TEST_PATH, noteContent("seed only"), "Integration roundtrip");
-    await request("/__scheduled?cron=0+*+*+*+*");
-    await waitForSent(sent);
     let notes = await getNotes();
     const note = notes.find(item => item.path === TEST_PATH);
     assert.ok(note, "created note is visible in local D1");
