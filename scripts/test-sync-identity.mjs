@@ -8,6 +8,11 @@ const marker = '__name(syncNotes, "syncNotes");';
 const end = source.indexOf(marker, start);
 assert.ok(start >= 0 && end > start, "Could not extract syncNotes from the Worker bundle");
 const syncNotesSource = source.slice(start, end);
+const identityMigration = await readFile(new URL("../migrations/pending/0015_yaos_file_identity_map.sql", import.meta.url), "utf8");
+assert.match(identityMigration, /file_id TEXT PRIMARY KEY/);
+assert.match(identityMigration, /sync_uuid TEXT NOT NULL UNIQUE/);
+assert.match(identityMigration, /note_id TEXT NOT NULL UNIQUE/);
+assert.match(identityMigration, /classification IN \('deferred', 'needs_review'\)/);
 
 function readUuid(content) {
   const fm = String(content || "").slice(0, 4000).match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -242,4 +247,27 @@ const observation = (fileId, path, content, deleted = false) => ({
   assert.equal(db.notes[0].content, "# Known", "conflicting content is not applied");
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, initial reconciliation, partial observation, duplicate UUID, and frontmatter conflict.");
+
+{
+  const content = "# Potentially new while an earlier outbox operation is pending";
+  const db = makeDb();
+  db.jobs.push({ entity_id: "Notes/pending.md", path: "Notes/pending.md", status: "pending" });
+  const res = await syncNotes(request([{ fileId: "file-pending", path: "Notes/pending.md", content }], [observation("file-pending", "Notes/pending.md", content)]), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 0, "a pending operation for the path defers creation");
+  assert.equal(result.deferred, 1);
+  assert.equal(db.reviews[0].classification, "deferred");
+}
+
+{
+  const content = "# File shares a path with a tombstone";
+  const db = makeDb();
+  const observations = [observation("file-deleted", "Notes/reused.md", content, true), observation("file-live", "Notes/reused.md", content)];
+  const res = await syncNotes(request([{ fileId: "file-live", path: "Notes/reused.md", content }], observations), { DB: db });
+  const result = await res.json();
+  assert.equal(result.created, 0, "a tombstone at the same path blocks automatic creation");
+  assert.equal(result.needsReview, 1);
+  assert.equal(db.reviews[0].classification, "needs_review");
+}
+
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, initial reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
