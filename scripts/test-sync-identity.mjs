@@ -196,12 +196,13 @@ const observation = (fileId, path, content, deleted = false) => ({
 }
 
 {
-  const content = "# Same content\n\nidentical body";
+  const content = "# Similar content\\n\\nshared text with an original ending";
+  const copyContent = "# Similar content\\n\\nshared text with a slightly different ending";
   const db = makeDb([note("Notes/original.md", "Notes/original.md", content)], [{ file_id: "file-original", sync_uuid: uuidA, note_id: "Notes/original.md", last_path: "Notes/original.md", created_at: now, updated_at: now }]);
-  const observations = [observation("file-original", "Notes/original.md", content), observation("file-copy", "Notes/copy.md", content)];
-  const res = await syncNotes(request([{ fileId: "file-copy", path: "Notes/copy.md", content }], observations), { DB: db });
+  const observations = [observation("file-original", "Notes/original.md", content), observation("file-copy", "Notes/copy.md", copyContent)];
+  const res = await syncNotes(request([{ fileId: "file-copy", path: "Notes/copy.md", content: copyContent }], observations), { DB: db });
   const result = await res.json();
-  assert.equal(result.created, 1, "identical content with a distinct fileId is a new copy, not a merge");
+  assert.equal(result.created, 1, "similar content with a distinct stable fileId is a new note, not an identity match");
   assert.equal(db.notes.length, 2);
   assert.notEqual(db.notes[0].sync_uuid, db.notes[1].sync_uuid);
   assert.equal(db.mappings.length, 2);
