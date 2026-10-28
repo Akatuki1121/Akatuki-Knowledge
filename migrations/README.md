@@ -13,7 +13,7 @@ The live ledger records `0008` through `0012`. On 2026-10-22 the live schema was
 
 ## Applied migration 0015 (verification gate)
 
-The DDL in `0015_yaos_file_identity_map.sql` was applied to production D1 on 2026-10-28 after owner authorization. The two tables and two indexes were verified in the D1 Console. The `d1_migrations` ledger entry is being recorded separately by the owner-authorized human procedure; do not merge this record PR until the ledger contains exactly one row named `0015_yaos_file_identity_map.sql` and the total ledger row count is 15. `applied_at` records the ledger insertion time, not a reconstructed DDL execution time.
+The DDL in `0015_yaos_file_identity_map.sql` was applied to production D1 on 2026-10-28 after owner authorization; the two tables and two indexes were verified in the D1 Console. The production D1 `d1_migrations` ledger was verified after the owner-authorized INSERT: exactly one row exists for `0015_yaos_file_identity_map.sql` (`id=15`, `applied_at=2026-10-28 17:23:06 UTC`) and the ledger has 15 rows total. The existing rows `id=1` through `14` and their `name`/`applied_at` values were unchanged. `applied_at` is the approved ledger-recording time, not a reconstructed DDL execution time. The migration record and repository file are aligned; `applied_at` intentionally records the approved ledger insertion time.
 
 ## `pending/`
 
