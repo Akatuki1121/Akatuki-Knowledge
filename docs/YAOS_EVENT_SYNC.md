@@ -33,7 +33,7 @@ These checks confirm the current configuration and recorded reconciliation resul
 
 ## Monitoring
 
-The authenticated `GET /sync/status` endpoint reports pending, processing, sent, and dead-letter outbox counts. If the outbox migration is absent in an environment, the endpoint reports that condition instead of failing the whole status request.
+The authenticated `GET /sync/status` endpoint reports pending, processing, sent, and dead-letter outbox counts. `GET /sync/outbox?status=dead&limit=50` lists individual jobs (job ID, entity/note ID, operation, state, attempts, timestamps, and last error) without returning `payload_json`, which can contain note content. Pagination uses the `before` job ID cursor. `POST /sync/outbox/{jobId}/retry` requeues only a `dead` job; it preserves the attempt count and last error for diagnosis and starts a bounded background drain. All three endpoints require the existing Bearer API token. If the outbox migration is absent in an environment, listing reports that condition instead of failing the whole status request.
 
 ## Migration and recovery safety
 
