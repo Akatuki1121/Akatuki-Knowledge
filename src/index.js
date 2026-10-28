@@ -9516,40 +9516,40 @@ var YjsClientDO = class extends DurableObject {
     const meta = doc2.getMap("meta");
     const idToText = doc2.getMap("idToText");
     const initialized = doc2.getMap("sys").get("initialized") === true;
-    const rows = (await this.env.DB.prepare("SELECT path, content_hash FROM notes WHERE deleted_at IS NULL").all()).results;
-    const d1 = new Map(rows.map((r) => [norm(r.path), r.content_hash]));
+    const rows = (await this.env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes ORDER BY id").all()).results || [];
+    const mapRows = (await this.env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map").all()).results || [];
+    const byPath = new Map(rows.map((r) => [norm(r.path), r]));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const byFileId = new Map(mapRows.map((r) => [r.file_id, r]));
+    const bySyncUuid = new Map(rows.filter((r) => isValidSyncUuid(r.sync_uuid)).map((r) => [r.sync_uuid, r]));
     const result = {
-      ok: true,
-      readOnly: true,
-      initialized,
-      vaultFiles: 0,
-      skipped: 0,
-      same: 0,
-      notes: [],
-      collectedBytes: 0,
-      differ: [],
-      differOnlyLineEnding: 0,
-      newInVault: [],
-      differCount: 0,
-      newCount: 0
+      ok: true, readOnly: true, initialized, vaultFiles: 0, skipped: 0, unreadable: 0,
+      same: 0, notes: [], observations: [], collectedBytes: 0, differ: [],
+      differOnlyLineEnding: 0, newInVault: [], differCount: 0, newCount: 0,
+      observationComplete: false
     };
     const entries = [];
     meta.forEach((value, fileId) => {
       const isMap = value instanceof YMap;
-      const rec = value;
-      const path = isMap ? value.get("path") : rec?.path;
-      if (typeof path !== "string") return;
-      const deleted = isMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : rec?.deletedAt !== void 0 || rec?.deleted === true;
-      if (deleted || !path.toLowerCase().endsWith(".md")) return;
-      entries.push({ path: norm(path), fileId });
+      const path = isMap ? value.get("path") : value?.path;
+      if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
+      const deleted = isMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+      entries.push({ path: norm(path), fileId, deleted });
     });
-    const queue = /* @__PURE__ */ __name((path, content) => {
+    let queuedCandidates = 0;
+    const queue = (path, fileId, content, contentHash) => {
+      queuedCandidates++;
       if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + content.length > MAX_PULL_BYTES) return;
       const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
-      result.notes.push({ path, title, content });
+      result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
       result.collectedBytes += content.length;
-    }, "queue");
-    for (const { path, fileId } of entries) {
+    };
+    for (const entry of entries) {
+      const { path, fileId, deleted } = entry;
+      if (deleted) {
+        result.observations.push({ fileId, path, deleted: true, contentHash: "" });
+        continue;
+      }
       const segments = path.split("/");
       if (segments.some((s) => s.startsWith(".")) || path.startsWith(`${RESERVED_ROOT}/`)) {
         result.skipped++;
@@ -9558,35 +9558,46 @@ var YjsClientDO = class extends DurableObject {
       const text2 = idToText.get(fileId);
       if (!(text2 instanceof YText)) {
         result.skipped++;
+        result.unreadable++;
         continue;
       }
       const content = text2.toString();
       if (content.length > 5e5) {
         result.skipped++;
+        result.unreadable++;
         continue;
       }
       result.vaultFiles++;
-      const known = d1.get(path);
-      if (known === void 0) {
-        queue(path, content);
+      const hash = await sha256Hex(content);
+      result.observations.push({ fileId, path, deleted: false, contentHash: hash, legacyId: readUuid(content) });
+      const mapping = byFileId.get(fileId);
+      const mappedRow = mapping ? byId.get(mapping.note_id) : null;
+      const pathRow = byPath.get(path);
+      const known = mapping ? mappedRow : pathRow;
+      if (!known || known.deleted_at) {
+        queue(path, fileId, content, hash);
         result.newCount++;
         if (result.newInVault.length < MAX_SMALL_LIST) result.newInVault.push(path);
         continue;
       }
-      const hash = await sha256Hex(content);
-      if (hash === known) {
+      if (mapping && (mapping.sync_uuid !== known.sync_uuid || !isValidSyncUuid(known.sync_uuid))) {
+        queue(path, fileId, content, hash);
+        result.differCount++;
+        if (result.differ.length < MAX_SMALL_LIST) result.differ.push(path);
+        continue;
+      }
+      const hashMatches = hash === known.content_hash
+        || await sha256Hex(content.replace(/\r\n/g, "\n")) === known.content_hash
+        || await sha256Hex(content.replace(/\r?\n/g, "\r\n")) === known.content_hash;
+      if (hashMatches && norm(known.path) === path) {
         result.same++;
         continue;
       }
-      if (await sha256Hex(content.replace(/\r\n/g, "\n")) === known || await sha256Hex(content.replace(/\r?\n/g, "\r\n")) === known) {
-        result.same++;
-        result.differOnlyLineEnding++;
-        continue;
-      }
-      queue(path, content);
+      queue(path, fileId, content, hash);
       result.differCount++;
       if (result.differ.length < MAX_SMALL_LIST) result.differ.push(path);
     }
+    result.observationComplete = initialized && result.unreadable === 0 && result.notes.length === queuedCandidates;
     return result;
   }
   // Recover stable note IDs only for Vault files that already exist and whose body matches D1.
