@@ -35,6 +35,10 @@ These checks confirm the current configuration and recorded reconciliation resul
 
 The authenticated `GET /sync/status` endpoint reports pending, processing, sent, and dead-letter outbox counts. `GET /sync/outbox?status=dead&limit=50` lists individual jobs (job ID, entity/note ID, operation, state, attempts, timestamps, and last error) without returning `payload_json`, which can contain note content. Pagination uses the `before` job ID cursor. `POST /sync/outbox/{jobId}/retry` requeues only a `dead` job; it preserves the attempt count and last error for diagnosis and starts a bounded background drain. All three endpoints require the existing Bearer API token. If the outbox migration is absent in an environment, listing reports that condition instead of failing the whole status request.
 
+## Frontmatter identity migration status
+
+Frontmatter `id:` removal is intentionally not part of the outbox-admin change. The current YAOS Durable Object still uses a valid frontmatter UUID to locate moved Obsidian notes and as the primary identity for Telegram notes; `diffAgainstD1` currently sends path/title/content but no independent sync UUID, and `stripFrontmatterIds` removes the line without first persisting a UUID on every corresponding YAOS `meta` record. Removing the field before a coordinated metadata backfill would therefore break rename tracking for files whose paths change after stripping, and could break Telegram note matching. A safe follow-up must first backfill and collision-check `meta.syncUuid` from D1 `notes.sync_uuid` / Telegram deterministic identity, pass that value through the pull contract, use it as the primary match key, retain frontmatter IDs only as a migration fallback, and verify create/update/rename/delete/restore plus duplicate-UUID refusal before enabling content stripping. This must be staged with the YAOS state migration and tested against the isolated integration suite; no production mutation is part of this PR.
+
 ## Migration and recovery safety
 
 - The additive outbox schema is applied in production and recorded by `migrations/0009_yaos_sync_jobs.sql`.
