@@ -12,6 +12,7 @@ PENDING_MIGRATIONS = [
     Path("migrations/0011_agent_tasks.sql"),
     Path("migrations/0012_bot_ai_permission_previews.sql"),
     Path("migrations/0013_agent_memory_metadata.sql"),
+    Path("migrations/pending/0015_yaos_file_identity_map.sql"),
 ]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"
