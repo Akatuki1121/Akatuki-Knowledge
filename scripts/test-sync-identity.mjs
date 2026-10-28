@@ -8,7 +8,7 @@ const marker = '__name(syncNotes, "syncNotes");';
 const end = source.indexOf(marker, start);
 assert.ok(start >= 0 && end > start, "Could not extract syncNotes from the Worker bundle");
 const syncNotesSource = source.slice(start, end);
-const identityMigration = await readFile(new URL("../migrations/pending/0015_yaos_file_identity_map.sql", import.meta.url), "utf8");
+const identityMigration = await readFile(new URL("../migrations/0015_yaos_file_identity_map.sql", import.meta.url), "utf8");
 assert.match(identityMigration, /file_id TEXT PRIMARY KEY/);
 assert.match(identityMigration, /sync_uuid TEXT NOT NULL UNIQUE/);
 assert.match(identityMigration, /note_id TEXT NOT NULL UNIQUE/);
