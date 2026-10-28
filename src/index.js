@@ -10345,9 +10345,14 @@ var YjsClientDO = class extends DurableObject {
       if (isValidSyncUuid(contentUuid) && contentUuid !== uuid) return { ok: false, verified: false, error: "sync_identity_conflict" };
     }
     const desiredUuid = telegram ? readUuid(desiredContent) : uuid;
-    const identityMapping = !telegram
-      ? await this.env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(payload.id, uuid).first()
-      : null;
+    const identityMappings = !telegram
+      ? ((await this.env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(payload.id, uuid).all()).results || [])
+      : [];
+    if (!telegram && identityMappings.some((mapping) => mapping.note_id !== payload.id || mapping.sync_uuid !== uuid)) {
+      return { ok: false, verified: false, error: "sync_identity_mapping_conflict" };
+    }
+    if (!telegram && identityMappings.length > 1) return { ok: false, verified: false, error: "sync_identity_mapping_conflict" };
+    const identityMapping = identityMappings[0] || null;
     const mappedFileId = identityMapping?.file_id || null;
     const comparableContent = (value) => {
       const normalized = String(value ?? "").replace(/\r\n/g, "\n");
@@ -11215,6 +11220,18 @@ var wrapper_default = {
         notificationAttempts: Number(task.notification_attempts || 0),
         result: task.checkpoint?.result ?? null
       }, { status: 200, headers: JSON_HEADERS2 });
+    }
+
+    if (url.pathname === "/sync/identity-map" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      const noteId = url.searchParams.get("noteId") || "";
+      if (!noteId || noteId.length > 1000) return Response.json({ ok: false, error: "invalid_note_id" }, { status: 400, headers: JSON_HEADERS2 });
+      try {
+        const result = await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path, created_at, updated_at FROM yaos_file_identity_map WHERE note_id = ?").bind(noteId).first();
+        return Response.json({ ok: true, mapping: result || null }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, error: "identity_mapping_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
     }
 
     if (url.pathname === "/sync/identity-review" && request.method === "GET") {
