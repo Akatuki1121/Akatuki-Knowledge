@@ -11,6 +11,10 @@ The live ledger records `0008` through `0012`. On 2026-10-22 the live schema was
 - `0008_folders_schema_reconstructed.sql` is a reconstruction, not the original historical change. Production already had the `folders` table and `notes.folder_id` before the ledger recorded it. Do not run it against production again: `ALTER TABLE notes ADD COLUMN folder_id` would fail on the existing column.
 - `0009`, `0011` and `0012` were applied on 2026-10-20 and 2026-10-21; `0010` was applied after `0011` and `0012`. Wrangler decides by name, so the order in the ledger does not matter.
 
+## Applied migration 0015 (verification gate)
+
+The DDL in `0015_yaos_file_identity_map.sql` was applied to production D1 on 2026-10-28 after owner authorization; the two tables and two indexes were verified in the D1 Console. The production D1 `d1_migrations` ledger was verified after the owner-authorized INSERT: exactly one row exists for `0015_yaos_file_identity_map.sql` (`id=15`, `applied_at=2026-10-28 17:23:06 UTC`) and the ledger has 15 rows total. The existing rows `id=1` through `14` and their `name`/`applied_at` values were unchanged. `applied_at` is the approved ledger-recording time, not a reconstructed DDL execution time. The migration record and repository file are aligned; `applied_at` intentionally records the approved ledger insertion time.
+
 ## `pending/`
 
 Put a migration that has not been applied to production in `migrations/pending/`. While that directory holds any `.sql` file, the GitHub Actions production deploy is skipped. Move the file up to `migrations/` after it has been applied and recorded in `d1_migrations`.
