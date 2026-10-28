@@ -11060,7 +11060,7 @@ async function pullFromVault(env, ctx, origin, apply) {
     new Request(`${origin}/api/sync`, {
       method: "POST",
       headers: { authorization: `Bearer ${env.API_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ notes: data.notes })
+      body: JSON.stringify({ notes: data.notes, observations: data.observations, observationComplete: data.observationComplete })
     }),
     env,
     ctx
