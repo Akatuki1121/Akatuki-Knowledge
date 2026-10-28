@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "../src/sync-outbox.mjs";
 
 const uuid = "123e4567-e89b-42d3-a456-426614174000";
+const uuidB = "123e4567-e89b-42d3-a456-426614174001";
 const outbox = createSyncOutbox({
   readUuid(content) {
     return content.match(/^---\r?\n[\s\S]*?^id:\s*["']?([0-9a-f-]+)["']?\s*$/im)?.[1] ?? null;
