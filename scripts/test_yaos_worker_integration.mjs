@@ -413,7 +413,7 @@ SYNC_TOKEN = "${TOKEN}"
     ]);
     await run("npx", [
       ...WRANGLER, "d1", "execute", "knowledge-integration",
-      "--local", "--file=./migrations/pending/0015_yaos_file_identity_map.sql",
+      "--local", "--file=./migrations/0015_yaos_file_identity_map.sql",
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
     markPhase("ローカルD1の準備完了");
