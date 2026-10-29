@@ -11881,7 +11881,7 @@ async function pullFromVault(env, ctx, origin, apply) {
   if (!res.ok || !data.ok) return { ok: false, stage: "read_vault", error: data.error || `status_${res.status}` };
   if (!data.initialized || data.vaultFiles === 0) return { ok: true, skipped: "vault_not_initialized", vaultFiles: data.vaultFiles };
   const summary = { ok: true, vaultFiles: data.vaultFiles, same: data.same, differ: data.differCount, new: data.newCount, queued: data.notes.length };
-  if (!apply || data.notes.length === 0) return { ...summary, applied: false, paths: data.notes.map((n) => n.path) };
+  if (!apply) return { ...summary, applied: false, paths: data.notes.map((n) => n.path) };
   const sync = await originalFetch(
     new Request(`${origin}/api/sync`, {
       method: "POST",
