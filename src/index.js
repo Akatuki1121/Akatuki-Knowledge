@@ -149,7 +149,6 @@ async function syncNotes(request, env) {
   if (observations.length > 2000) return json({ error: "too_many_observations" }, 400);
   const observationComplete = body.observationComplete === true;
   const candidateFileIds = new Set(body.notes.map((input) => typeof input?.fileId === "string" ? input.fileId : null).filter(Boolean));
-  const knownFileIds = new Set(((await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map").all()).results || []).map((row) => row.file_id));
   const isVaultAuthoritativePath = (path) => path === "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md"
     || path.startsWith("Notes/設定/")
     || path.startsWith("Notes/Purge/経緯/");
@@ -191,7 +190,7 @@ async function syncNotes(request, env) {
     if (!observation || typeof observation.fileId !== "string" || !observation.fileId || !safePath(observation.path)) continue;
     // /sync/pull sends a complete vault observation, but only queued candidate files need identity reconciliation.
     // Avoid a D1 query/write sequence for every unchanged vault file on each pull.
-    if (!candidateFileIds.has(observation.fileId) && knownFileIds.has(observation.fileId)) continue;
+    if (!candidateFileIds.has(observation.fileId)) continue;
     const path = stableId(observation.path);
     if (observation.deleted === true) continue;
     const mapped = await mappingsFor(observation.fileId, "", "");
