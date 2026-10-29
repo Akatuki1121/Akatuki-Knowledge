@@ -12562,9 +12562,11 @@ var wrapper_default = {
       return;
     }
     if (event.cron === PULL_CRON) {
+      let improvementPullReady = false;
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
+        improvementPullReady = result.ok === true;
         // Persist every scheduled pull outcome (success and failure alike) so
         // GET /sync/status can show the latest pull without reading logs.
         await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "scheduled"));
@@ -12583,6 +12585,14 @@ var wrapper_default = {
         }
       } catch (error) {
         console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false }, failure: describeSafeFailure("safe_note_id_recovery_failed", error) }));
+      }
+      if (improvementPullReady) {
+        try {
+          const automation = await runImprovementInbox(env);
+          if (automation.queued > 0 || automation.skipped) console.log(JSON.stringify({ improvementInbox: automation }));
+        } catch (error) {
+          console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
+        }
       }
       return worker_default.scheduled(event, env, ctx);
     }
