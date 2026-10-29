@@ -368,7 +368,7 @@ async function syncNotes(request, env) {
             .bind(path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, aiAllowed, reviewState, previous.id, path),
           env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid")
             .bind(fileId, syncUuid, previous.id, path, now, now),
-          env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE note_id = ? AND restored_at IS NULL").bind(now, previous.id),
+          env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE archive_event_id = ? AND restored_at IS NULL").bind(now, archiveEvent?.archive_event_id ?? -1),
           env.DB.prepare("DELETE FROM agent_memory_suppressions WHERE source = 'obsidian' AND note_id = ?").bind(previous.id),
           env.DB.prepare("UPDATE agent_memory_metadata SET status = 'unverified', updated_at = ? WHERE source = 'obsidian' AND note_id = ? AND status = 'forgotten'").bind(now, previous.id),
           env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId)
