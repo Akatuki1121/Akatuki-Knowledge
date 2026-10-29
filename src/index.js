@@ -12037,7 +12037,7 @@ var wrapper_default = {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       let body;
       try { body = await request.json(); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
-      if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ ok: false, error: "invalid_request" }, { status: 400, headers: JSON_HEADERS2 });
+      if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.dryRun !== "boolean") return Response.json({ ok: false, error: "invalid_request" }, { status: 400, headers: JSON_HEADERS2 });
       const result = await purgeDeadSyncOutboxJobs(env, { dryRun: body.dryRun === true, jobIds: body.jobIds });
       const status = result.ok ? 200 : result.error === "invalid_job_ids" ? 400 : 503;
       return Response.json(result, { status, headers: JSON_HEADERS2 });
