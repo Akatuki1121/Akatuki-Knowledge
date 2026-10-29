@@ -201,4 +201,100 @@ assert.ok(docs.includes("YAOS Worker and its Durable Object protocol unchanged")
 assert.ok(docs.includes("Identity-preserving note move API"));
 assert.ok(docs.includes("notes.updated_at"));
 assert.ok(docs.includes("migrations/0008_folders_schema_reconstructed.sql"));
+
+function buildHandler(name, marker, globals) {
+  const handler = handlerSlice(name, marker);
+  return new Function(...Object.keys(globals), `return (${handler});`)(...Object.values(globals));
+}
+const jsonResult = (data, status = 200) => ({ data, status, ok: status < 400 });
+const decodeRoute = (url) => {
+  const match = url.pathname.match(/^\\/api\\/notes\\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+};
+const normalizePath = (value) => value.replace(/\\\\/g, "/").replace(/\\/+/g, "/").replace(/^\\.\\//, "");
+const movedNote = { id: "Notes/Old.md", path: "Notes/New.md", title: "Moved", content: "# Moved", content_hash: "a".repeat(64), sync_uuid: "11111111-1111-4111-8111-111111111111", ai_allowed: 1, review_state: "ready", deleted_at: null };
+function makeDeleteDb(seed) {
+  const state = structuredClone(seed);
+  const db = {
+    state,
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async all() {
+          if (sql.includes("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL LIMIT 2")) {
+            return { results: state.notes.filter(n => n.path === values[0] && !n.deleted_at).slice(0, 2).map(n => ({ id: n.id })) };
+          }
+          return { results: [] };
+        },
+        async first() {
+          if (sql.includes("SELECT id, path, title, content, content_hash, sync_uuid, ai_allowed, review_state FROM notes")) {
+            return state.notes.find(n => n.id === values[0] && !n.deleted_at) || null;
+          }
+          if (sql.includes("SELECT content FROM note_revisions")) return null;
+          return null;
+        },
+        async run() {
+          if (sql.includes("UPDATE notes SET deleted_at = ?")) {
+            const note = state.notes.find(n => n.id === values[1] && !n.deleted_at);
+            if (note) { note.deleted_at = values[0]; return { meta: { changes: 1 } }; }
+            return { meta: { changes: 0 } };
+          }
+          return { meta: { changes: 1 } };
+        }
+      };
+    },
+    async batch(statements) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    }
+  };
+  return db;
+}
+const deleteHandler = buildHandler("deleteNote", '__name(deleteNote, "deleteNote");', {
+  json: jsonResult,
+  noteIdFromRoute: decodeRoute,
+  stableId: normalizePath,
+  locateNote: async (env, id) => env.DB.state.notes.some(n => n.id === id && !n.deleted_at) ? "notes" : null,
+  prepareSyncJob: async () => ({ statements: [] }),
+  buildAgentMemorySuppressionStatements: () => []
+});
+for (const reference of ["Notes%2FNew.md", "Notes%2FOld.md"]) {
+  const db = makeDeleteDb({ notes: [structuredClone(movedNote)] });
+  const response = await deleteHandler(new URL(`https://worker.test/api/notes/${reference}`), { DB: db });
+  assert.equal(response.data.deleted, true, `DELETE by ${reference} should delete the moved note`);
+  assert.ok(db.state.notes[0].deleted_at, "the addressed note should be archived");
+}
+const readHandler = buildHandler("getNoteByPath", '__name(getNoteByPath, "getNoteByPath");', {
+  json: jsonResult,
+  noteIdFromRoute: decodeRoute,
+  stableId: normalizePath,
+  RESERVED_ROOT: "System"
+});
+const readResponse = await readHandler(new URL("https://worker.test/api/notes/Notes%2FNew.md"), {
+  DB: { prepare() { return { bind() { return this; }, async first() { return { id: movedNote.id, path: movedNote.path, title: movedNote.title, content: movedNote.content, contentHash: movedNote.content_hash, syncUuid: movedNote.sync_uuid, aiAllowed: 1, tagsJson: '["example"]' }; } }; } }
+});
+assert.equal(readResponse.data.note.content, movedNote.content, "path read returns the note body");
+assert.equal(readResponse.data.note.contentHash, movedNote.content_hash, "path read returns the content hash");
+const manifestHandler = buildHandler("syncManifest", '__name(syncManifest, "syncManifest");', { json: jsonResult });
+const manifestRows = Array.from({ length: 614 }, (_, index) => ({ id: `note-${String(index).padStart(4, "0")}`, source: "obsidian" }));
+const manifestDb = { prepare(sql) { let values = []; return {
+  bind(...args) { values = args; return this; },
+  async all() { return { results: manifestRows.filter(row => row.id > values[0]).slice(0, values[2]) }; },
+  async first() { return { totalCount: manifestRows.length }; }
+}; } };
+const gathered = [];
+let cursor = "";
+let totalCount = 0;
+do {
+  const page = await manifestHandler(new URL(`https://worker.test/api/sync/manifest?limit=500&cursor=${encodeURIComponent(cursor)}`), { DB: manifestDb });
+  gathered.push(...page.data.notes);
+  cursor = page.data.nextCursor || "";
+  totalCount = page.data.totalCount;
+} while (cursor);
+assert.equal(totalCount, manifestRows.length, "manifest reports total count");
+assert.equal(gathered.length, manifestRows.length, "cursor pagination returns every row beyond the page limit");
+assert.equal(new Set(gathered.map(row => row.id)).size, manifestRows.length, "manifest pages contain no duplicate IDs");
+
 console.log("Sync contract checks passed.");
