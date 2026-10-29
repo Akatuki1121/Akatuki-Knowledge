@@ -99,9 +99,9 @@ function getArchivedRebindTarget(path) {
 // (which requires id === path) can never apply. The identity map still binds
 // the note under a conflicting mapping, which is why a normal outbox delete
 // also dead-ends in sync_identity_mapping_conflict. This repair only
-// tombstones that single vault entry after proving the archived D1 row
-// preserves identical content, then clears the identity map and identity
-// review residue for the note. The archived D1 row itself is never modified.
+// tombstones only the frozen entries below. The archived-history target
+// preserves its D1 content; the conflict-copy target instead requires its
+// body (minus one exact frontmatter ID line) to equal the current live note.
 const VAULT_FOSSIL_TARGETS = Object.freeze([
   {
     vaultPath: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
