@@ -10772,7 +10772,7 @@ var YjsClientDO = class extends DurableObject {
           "Notes/Inbox/【依頼】Telegram上の知識bot「Akatuki knowledge」の仕様を一緒に詰めたい。.md",
           "Notes/Inbox/akatuki-knowledge-triage.md",
           "Notes/Inbox/Akatuki-Knowledgeの記録.md",
-          "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+          "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md",
           "Notes/Inbox/ようこそ.md",
           "Notes/Inbox/connection-test.md",
           "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - crdt from device-mv9d29rh 2026-10-17T15-33-06Z).md",
