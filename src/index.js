@@ -11436,13 +11436,14 @@ async function appendImprovementResult(env, payload, taskId, result) {
   if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
   const marker = "<!-- akatuki-improvement-result:" + taskId + " -->";
   if (row.content.includes(marker)) return true;
+  const recordedError = result.error || null;
   const resultText = JSON.stringify({
     taskId,
     status: result.status,
     pullRequestUrl: result.pullRequestUrl || null,
     autoMergeEnabled: result.autoMergeEnabled === true,
     reason: result.reason || null,
-    error: result.error || null,
+    error: recordedError,
     recordedAt: new Date().toISOString()
   });
   const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
@@ -12633,7 +12634,7 @@ var wrapper_default = {
       if (improvementPullReady) {
         try {
           const automation = await runImprovementInbox(env);
-          if (automation.queued > 0 || automation.skipped) console.log(JSON.stringify({ improvementInbox: automation }));
+          // Improvement outcomes are recorded in their source notes.
         } catch (error) {
           console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
         }
