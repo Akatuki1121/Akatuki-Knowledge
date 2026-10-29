@@ -36,7 +36,6 @@ for (const required of [
   "task_cancelled",
   "listAgentTasks",
   "allowWebResearch",
-  "GEMINI_WEB_RESEARCH_ENABLED",
   "callWorkersAi",
   "parseGroundedWebResearch",
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
@@ -95,6 +94,10 @@ assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only pro
 assert.ok(source.includes('throw new Error("web_research_disabled")'), "Web research must remain disabled");
 assert.ok(source.includes('body.allowWebResearch !== undefined && body.allowWebResearch !== false'), "API must reject web research requests");
 assert.ok(config.includes('binding = "AI"'), "Workers AI binding must be configured");
+assert.ok(source.includes("runImprovementInbox(env)"), "Hourly pull must be followed by improvement inbox scanning");
+assert.ok(source.includes("executeApprovedImprovementPlan"), "Improvement plan execution must use the constrained executor");
+assert.ok(source.includes("appendImprovementResult"), "Improvement task outcomes must be written back to their source note");
+assert.ok(source.includes("IMPROVEMENT_AUTOMATION_LIMITS.maxTasksPerDay"), "Improvement tasks must have an explicit daily cap");
 assert.ok(toolLoop.includes('throw new Error("unknown_tool")'), "Unknown tools must fail closed");
 assert.ok(toolLoop.includes('throw new Error("tool_loop_detected")'), "Repeated tool calls must stop");
 assert.ok(toolLoop.includes("AGENT_TOOL_LIMITS.maxToolOutputChars"), "Tool output size must be bounded");
