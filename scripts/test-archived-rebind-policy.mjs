@@ -27,8 +27,9 @@ function validInput(target) {
   };
 }
 
-assert.equal(ARCHIVED_REBIND_TARGETS.length, 7, "only the seven Inbox targets with matching D1 path and vault identity are repairable");
+assert.equal(ARCHIVED_REBIND_TARGETS.length, 11, "the allowlist contains seven existing Inbox targets plus four exact additional targets");
 assert.equal(validateArchivedRebind({ path: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md" }).error, "path_not_allowed", "the history target with a D1/vault path mismatch is excluded");
+assert.equal(validateArchivedRebind({ path: "Notes/Inbox/Purge conflict.md" }).error, "path_not_allowed", "deleted Purge conflict notes are excluded");
 for (const target of ARCHIVED_REBIND_TARGETS) {
   const result = validateArchivedRebind(validInput(target));
   assert.equal(result.ok, true, "exact allowlisted target should pass: " + target.path);
@@ -74,6 +75,10 @@ const readNoteStart = source.indexOf('if (action === "read-note") {');
 const readNoteEnd = source.indexOf('if (action === "reconcile-note") {', readNoteStart);
 assert.ok(readNoteStart >= 0 && readNoteEnd > readNoteStart, "actual Durable Object read-note handler must exist");
 const readNoteHandler = source.slice(readNoteStart, readNoteEnd);
+const readNotePaths = [...readNoteHandler.matchAll(/^\s*"([^"]+)",?$/gm)].map(match => match[1]);
+for (const target of ARCHIVED_REBIND_TARGETS) {
+  assert.ok(readNotePaths.includes(target.path), "read-note allowlist and repair allowlist must stay aligned: " + target.path);
+}
 for (const target of ARCHIVED_REBIND_TARGETS) {
   assert.ok(readNoteHandler.includes(JSON.stringify(target.path)), "Durable Object read-note allowlist must include repair target: " + target.path);
 }
@@ -87,4 +92,24 @@ assert.ok(source.includes("deleted_at IS NOT NULL AND content_hash = ? AND sync_
 assert.ok(source.includes("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND sync_uuid = ? AND note_id = ? AND last_path = ?"), "the old identity mapping is removed only by exact identity");
 assert.ok(source.includes("NOT EXISTS (SELECT 1 FROM yaos_file_identity_map WHERE file_id = ?)"), "the current fileId must be unmapped before rebind");
 assert.ok(source.includes("restore_verification_failed"), "post-write state is verified");
-console.log("Guarded archived vault rebind tests passed: all 8 allowlisted targets; D1/vault hash mismatch; live D1 row; existing current-file mapping; unexpected fileId; unlisted path; exact revision, rebind, and verification contracts.");
+
+for (const target of ARCHIVED_REBIND_TARGETS.slice(7)) {
+  const input = validInput(target);
+  assert.equal(validateArchivedRebind(input).ok, true, "new exact target is allowed: " + target.path);
+  for (const key of ["expectedOldFileId", "expectedCurrentFileId", "expectedSyncUuid"]) {
+    const rejected = validInput(target);
+    rejected[key] = "mismatch";
+    assert.equal(validateArchivedRebind(rejected).error, "identity_precondition_failed", "new target rejects mismatched " + key + ": " + target.path);
+  }
+  const live = validInput(target);
+  live.note.deleted_at = null;
+  assert.equal(validateArchivedRebind(live).error, "archived_note_precondition_failed", "new target rejects live D1 row: " + target.path);
+  const d1Hash = validInput(target);
+  d1Hash.actualD1Hash = "c".repeat(64);
+  assert.equal(validateArchivedRebind(d1Hash).error, "content_hash_precondition_failed", "new target rejects D1 hash mismatch: " + target.path);
+  const vaultHash = validInput(target);
+  vaultHash.actualVaultHash = "c".repeat(64);
+  assert.equal(validateArchivedRebind(vaultHash).error, "content_hash_precondition_failed", "new target rejects vault hash mismatch: " + target.path);
+}
+
+console.log("Guarded archived vault rebind tests passed: all 11 allowlisted targets; D1/vault hash mismatch; live D1 row; existing current-file mapping; unexpected fileId; unlisted path; exact revision, rebind, and verification contracts.");

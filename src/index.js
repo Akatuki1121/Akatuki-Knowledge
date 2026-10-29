@@ -42,7 +42,11 @@ const ARCHIVED_REBIND_TARGETS = Object.freeze([
   { path: "Notes/Inbox/【依頼】Telegram上の知識bot「Akatuki knowledge」の仕様を一緒に詰めたい。.md", currentFileId: "mJzLFguxm4kkhxmA", oldFileId: "nsEAjQ7-OkoG29Jy", syncUuid: "94afba99-0012-511d-9969-0499f86e3a3d" },
   { path: "Notes/Inbox/akatuki-knowledge-triage.md", currentFileId: "xI1hOes1Xznnv9TG", oldFileId: "XrTSfF-A7rQ6qNBE", syncUuid: "737f562f-cdfd-5c5f-b4cf-438a3e1fd9b3" },
   { path: "Notes/Inbox/Akatuki-Knowledgeの記録.md", currentFileId: "p0oCIS2G-hAKwtfn", oldFileId: "gijPK-Ib3wFUGPwv", syncUuid: "3ef3e351-0420-56f4-b633-b2cdf481d0d2" },
-  { path: "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md", currentFileId: "pVraKhyhv1AKzars", oldFileId: "TwF2Co0473bbMSwJ", syncUuid: "162b7002-3dbe-5f30-aa3b-cef60d85260c" }
+  { path: "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md", currentFileId: "pVraKhyhv1AKzars", oldFileId: "TwF2Co0473bbMSwJ", syncUuid: "162b7002-3dbe-5f30-aa3b-cef60d85260c" },
+  { path: "Notes/Inbox/ようこそ.md", currentFileId: "mCprhTkueNmorsO6", oldFileId: "x7NgWSTWtHI7FQZj", syncUuid: "eb68bebb-25b3-5c7b-92c1-09b1691c9d73" },
+  { path: "Notes/Inbox/connection-test.md", currentFileId: "VVRe7ldXiWf7Yzwf", oldFileId: "9alIIyr3fzqJfka3", syncUuid: "cbd9c2b6-e630-512b-98b7-2f4b15be07c2" },
+  { path: "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - crdt from device-mv9d29rh 2026-10-17T15-33-06Z).md", currentFileId: "xY8ijUe3ey1U3S1r", oldFileId: "k57x0NiaLxLss3if", syncUuid: "0d7663cd-d2b3-5bb7-baa7-8e3a752250bf" },
+  { path: "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - disk from device-mv9d29rh 2026-10-17T15-33-06Z).md", currentFileId: "Og2hIVkBo-oBLJ22", oldFileId: "xL7WSa-rkcG2QTkp", syncUuid: "59d864af-4622-5c3c-9e0e-c75ffde5579b" },
 ]);
 
 const TARGETS_BY_PATH = new Map(ARCHIVED_REBIND_TARGETS.map((target) => [target.path, target]));
@@ -10768,7 +10772,11 @@ var YjsClientDO = class extends DurableObject {
           "Notes/Inbox/【依頼】Telegram上の知識bot「Akatuki knowledge」の仕様を一緒に詰めたい。.md",
           "Notes/Inbox/akatuki-knowledge-triage.md",
           "Notes/Inbox/Akatuki-Knowledgeの記録.md",
-          "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+          "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md",
+          "Notes/Inbox/ようこそ.md",
+          "Notes/Inbox/connection-test.md",
+          "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - crdt from device-mv9d29rh 2026-10-17T15-33-06Z).md",
+          "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - disk from device-mv9d29rh 2026-10-17T15-33-06Z).md"
         ]);
         if (!allowedPaths.has(norm(path))) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400 });
         const doc = await this.pullVault();
