@@ -11611,9 +11611,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           if (!task || task.status !== "running" || task.lease_token !== leaseToken) throw new Error("lease_lost");
           if (!["knowledge_query", "github_query"].includes(task.task_type) || typeof task.payload?.prompt !== "string") throw new Error("invalid_input");
           if (task.task_type === "github_query" && task.payload.allowGitHubRead !== true) throw new Error("invalid_input");
-          if (task.payload.allowWebResearch === true && (task.task_type !== "knowledge_query" || this.env.GEMINI_WEB_RESEARCH_ENABLED !== "true")) {
-            throw new Error("web_research_not_enabled");
-          }
+          if (task.payload.allowWebResearch === true) throw new Error("web_research_disabled");
 
           const checkpoint = task.checkpoint || {};
           const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 512;
