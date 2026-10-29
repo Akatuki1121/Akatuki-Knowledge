@@ -12110,13 +12110,10 @@ var wrapper_default = {
       if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 100) {
         return Response.json({ error: "invalid_idempotency_key" }, { status: 400, headers: JSON_HEADERS2 });
       }
-      if (body.allowWebResearch !== undefined && typeof body.allowWebResearch !== "boolean") {
-        return Response.json({ error: "invalid_web_research_permission" }, { status: 400, headers: JSON_HEADERS2 });
+      if (body.allowWebResearch !== undefined && body.allowWebResearch !== false) {
+        return Response.json({ error: "web_research_disabled" }, { status: 400, headers: JSON_HEADERS2 });
       }
-      const allowWebResearch = body.allowWebResearch === true;
-      if (allowWebResearch && env.GEMINI_WEB_RESEARCH_ENABLED !== "true") {
-        return Response.json({ error: "web_research_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
-      }
+      const allowWebResearch = false;
       const inspection = inspectAndRedact(body.prompt, { blocklist: env.PRIVACY_BLOCKLIST || "" });
       if (!inspection.ok || hasSensitiveCategory(inspection.findings)) {
         return Response.json({ error: "sensitive_input_blocked" }, { status: 422, headers: JSON_HEADERS2 });
