@@ -26,6 +26,52 @@ test("Workers AI client uses bounded tool-capable model and returns text", async
   assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 1024);
 });
 
+test("Workers AI client preserves sanitized upstream failure and keeps stable reason", async () => {
+  const upstream = new Error("quota exceeded for model");
+  upstream.name = "WorkersAiError";
+  upstream.code = "model_error";
+  const env = { AI: { run: async () => { throw upstream; } } };
+  await assert.rejects(
+    callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json" }),
+    (error) => {
+      assert.ok(error.message.startsWith("workers_ai_request_failed"));
+      assert.equal(error.reason, "workers_ai_request_failed");
+      assert.match(error.message, /quota exceeded/);
+      assert.match(error.message, /model_error/);
+      assert.deepEqual(error.workersAiError, { name: "WorkersAiError", message: "quota exceeded for model", code: "model_error" });
+      assert.equal(error.cause, upstream);
+      return true;
+    }
+  );
+});
+
+test("Workers AI client does not pass signal to AI.run", async () => {
+  let called;
+  const env = { AI: { run: async (...args) => { called = args; return { response: "ok" }; } } };
+  const result = await callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json", signal: AbortSignal.timeout(1000) });
+  assert.equal(result, "ok");
+  assert.equal(called.length, 2);
+  assert.equal("signal" in called[1], false);
+  assert.deepEqual(called[1].response_format, { type: "json_object" });
+});
+
+test("Workers AI client truncates and redacts sanitized failure messages", async () => {
+  const upstream = new Error(`failed api_key=secret-token-123 ${"y".repeat(300)}`);
+  upstream.code = 429;
+  const env = { AI: { run: async () => { throw upstream; } } };
+  await assert.rejects(
+    callWorkersAi(env, "prompt", 500),
+    (error) => {
+      assert.ok(error.message.startsWith("workers_ai_request_failed"));
+      assert.equal(error.workersAiError.code, 429);
+      assert.ok(error.workersAiError.message.length <= 200);
+      assert.match(error.workersAiError.message, /api_key=\[redacted\]/);
+      assert.doesNotMatch(error.message, /secret-token-123/);
+      return true;
+    }
+  );
+});
+
 test("improvement plan rejects paths outside the three allowed roots", () => {
   const plan = validPlan();
   plan.operations[1].path = ".github/workflows/deploy.yml";
@@ -51,7 +97,7 @@ test("improvement request fixture uses current frontmatter-free heading format",
   assert.match(note, /^## 何が困っているか/m);
   assert.match(note, /^## どうなっていてほしいか/m);
   assert.match(note, /^## どうなれば直ったと言えるか/m);
-  assert.doesNotMatch(note, /^id:\\s/m);
+  assert.doesNotMatch(note, /^id:\s/m);
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(note))), (byte) => byte.toString(16).padStart(2, "0")).join("");
   assert.equal(await improvementIdempotencyKey("fixture-sync-uuid", digest), await improvementIdempotencyKey("fixture-sync-uuid", digest));
 });
