@@ -16,7 +16,7 @@ import {
   toSqliteDateTime
 } from "./background-task-store.mjs";
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
-import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob, purgeDeadSyncOutboxJobs } from "./sync-outbox.mjs";
+import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -354,7 +354,7 @@ async function syncNotes(request, env) {
   ]);
   const isVaultAuthoritativePath = (path) => vaultAuthoritativePaths.has(path);
   const now = new Date().toISOString();
-  let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0;
+  let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0, resolvedReviews = 0;
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
   const safePath = (value) => typeof value === "string" && value.trim() && !value.startsWith("/") && !value.split("/").includes("..") && value.length <= 1000 && /\.md$/i.test(value);
   const recordReview = async (fileId, path, contentHash, classification, reason) => {
@@ -445,6 +445,32 @@ async function syncNotes(request, env) {
     const normalizedRow = { ...row, sync_uuid: syncUuid };
     try { await insertMapping(observation.fileId, normalizedRow, path); }
     catch { await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict"); }
+  }
+
+  // A recorded live-content conflict can also converge from the D1 side (a
+  // correction, or a delivered outbox update): the note then stops differing,
+  // never re-enters the candidate list below, and its review row would linger
+  // forever. On a complete observation, drop rows whose conflict no longer
+  // exists: the uniquely mapped D1 note is live, sits at the observed path,
+  // holds exactly the observed content hash, and has no outbox operation in
+  // flight. Rows recorded for any other reason describe identity problems,
+  // which identical content cannot resolve, so they are never touched here.
+  if (body.vaultPull === true && observationComplete) {
+    const staleReviews = await env.DB.prepare("SELECT file_id, path FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'vault_pull_live_content_conflict'").all();
+    for (const review of staleReviews.results || []) {
+      const observation = observedByFileId.get(review.file_id);
+      if (!observation || observation.deleted === true || !observation.contentHash) continue;
+      const path = stableId(observation.path || "");
+      if (path !== review.path) continue;
+      const mapped = await mappingsFor(review.file_id, "", "");
+      if (mapped.length !== 1 || mapped[0].last_path !== path) continue;
+      const row = await env.DB.prepare("SELECT id, path, content_hash, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
+      if (!row || row.deleted_at || row.path !== path || row.content_hash !== observation.contentHash) continue;
+      const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(row.id).first();
+      if (pending) continue;
+      await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'").bind(review.file_id).run();
+      resolvedReviews++;
+    }
   }
 
   for (const input of body.notes) {
@@ -613,7 +639,7 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, archivedSkipped, deferred, needsReview, identityConflicts, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
@@ -11654,7 +11680,7 @@ function summarizeVaultPull(result, error, source) {
   if (result.applied !== void 0) summary.applied = result.applied === true;
   if (typeof result.stage === "string" && /^[a-z_]{1,40}$/.test(result.stage)) summary.stage = result.stage;
   if (typeof result.skipped === "string" && /^[a-z_]{1,60}$/.test(result.skipped)) summary.skipped = result.skipped;
-  for (const key of ["vaultFiles", "queued", "created", "updated", "unchanged", "deferred", "needsReview", "identityConflicts"]) {
+  for (const key of ["vaultFiles", "queued", "created", "updated", "unchanged", "deferred", "needsReview", "identityConflicts", "resolvedReviews"]) {
     if (Number.isFinite(result[key])) summary[key] = result[key];
   }
   if (result.error !== void 0) summary.errorCode = safeErrorCode(result.error);
@@ -11703,7 +11729,7 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
-  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
+  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
 __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
@@ -12074,15 +12100,6 @@ var wrapper_default = {
       const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
       const result = await listSyncOutboxJobs(env, { status, before, limit });
       return Response.json(result, { status: result.ok ? 200 : 503, headers: JSON_HEADERS2 });
-    }
-    if (url.pathname === "/sync/outbox/purge-dead" && request.method === "POST") {
-      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
-      let body;
-      try { body = await request.json(); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
-      if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.dryRun !== "boolean") return Response.json({ ok: false, error: "invalid_request" }, { status: 400, headers: JSON_HEADERS2 });
-      const result = await purgeDeadSyncOutboxJobs(env, { dryRun: body.dryRun === true, jobIds: body.jobIds });
-      const status = result.ok ? 200 : result.error === "invalid_job_ids" ? 400 : 503;
-      return Response.json(result, { status, headers: JSON_HEADERS2 });
     }
     const retryMatch = url.pathname.match(new RegExp("^/sync/outbox/([0-9]+)/retry$"));
     if (retryMatch && request.method === "POST") {

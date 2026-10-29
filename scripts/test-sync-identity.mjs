@@ -55,6 +55,14 @@ function makeDb(initialNotes = [], initialMappings = []) {
         },
         async all() {
           stats.all++;
+          if (sql.includes("FROM yaos_sync_identity_review")) {
+            const classification = sql.match(/classification = '([^']+)'/)?.[1];
+            const reason = sql.match(/reason = '([^']+)'/)?.[1];
+            return { results: reviews.filter((r) =>
+              (classification === undefined || r.classification === classification) &&
+              (reason === undefined || r.reason === reason)
+            ).map((r) => ({ ...r })) };
+          }
           if (sql.includes("FROM yaos_file_identity_map")) {
             const [fileId, noteId, syncUuid] = values;
             return { results: mappings.filter((m) =>
@@ -78,8 +86,11 @@ function makeDb(initialNotes = [], initialMappings = []) {
           if (sql.startsWith("UPDATE note_archive_events")) return { meta: { changes: 1 } };
           if (sql.startsWith("DELETE FROM agent_memory_suppressions")) return { meta: { changes: 1 } };
           if (sql.startsWith("DELETE FROM yaos_sync_identity_review")) {
+            const reason = sql.match(/reason = '([^']+)'/)?.[1];
             const before = reviews.length;
-            for (let i = reviews.length - 1; i >= 0; i--) if (reviews[i].file_id === v[0]) reviews.splice(i, 1);
+            for (let i = reviews.length - 1; i >= 0; i--) {
+              if (reviews[i].file_id === v[0] && (reason === undefined || reviews[i].reason === reason)) reviews.splice(i, 1);
+            }
             return { meta: { changes: before - reviews.length } };
           }
           if (sql.startsWith("INSERT INTO yaos_file_identity_map")) {
@@ -392,6 +403,86 @@ for (const path of [
 }
 
 {
+  const content = "# Converged after a D1-side correction";
+  const path = "Notes/Tasks/converged.md";
+  const db = makeDb([note(path, path, content, uuidA)], [{
+    file_id: "file-converged", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-converged", path, content_hash: hash(content), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: now });
+  const res = await syncNotes(request([], [observation("file-converged", path, content)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.resolvedReviews, 1, "a live-content conflict that converged from the D1 side resolves itself on the next complete pull");
+  assert.equal(db.reviews.length, 0, "the resolved review row is dropped");
+  assert.equal(db.notes[0].content, content, "self-resolution never rewrites the note");
+  const again = await syncNotes(request([], [observation("file-converged", path, content)], true, true), { DB: db });
+  assert.equal((await again.json()).resolvedReviews, 0, "self-resolution is idempotent");
+  assert.equal(db.reviews.length, 0);
+}
+
+{
+  const d1Content = "# D1 still differs";
+  const vaultContent = "# Vault version";
+  const path = "Notes/Tasks/still-divergent.md";
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-divergent", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-divergent", path, content_hash: hash(vaultContent), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: now });
+  const res = await syncNotes(request([], [observation("file-divergent", path, vaultContent)], true, true), { DB: db });
+  assert.equal((await res.json()).resolvedReviews, 0, "a note whose content still differs keeps its review row");
+  assert.equal(db.reviews.length, 1);
+}
+
+{
+  const content = "# Identical content, unresolved identity";
+  const path = "Notes/Tasks/identity-row.md";
+  const db = makeDb([note(path, path, content, uuidA)], [{
+    file_id: "file-identity-row", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-identity-row", path, content_hash: hash(content), classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: now, last_seen_at: now });
+  const res = await syncNotes(request([], [observation("file-identity-row", path, content)], true, true), { DB: db });
+  assert.equal((await res.json()).resolvedReviews, 0, "identical content never resolves an identity review row");
+  assert.equal(db.reviews.length, 1);
+  assert.equal(db.reviews[0].reason, "sync_identity_mapping_conflict");
+}
+
+{
+  const content = "# Converged but delivery in flight";
+  const path = "Notes/Tasks/in-flight.md";
+  const db = makeDb([note(path, path, content, uuidA)], [{
+    file_id: "file-in-flight", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-in-flight", path, content_hash: hash(content), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: now });
+  db.jobs.push({ entity_id: path, path, status: "pending" });
+  const res = await syncNotes(request([], [observation("file-in-flight", path, content)], true, true), { DB: db });
+  assert.equal((await res.json()).resolvedReviews, 0, "a pending outbox operation keeps the review row until delivery settles");
+  assert.equal(db.reviews.length, 1);
+}
+
+{
+  const content = "# Converged";
+  const path = "Notes/Tasks/guards.md";
+  const seed = () => {
+    const db = makeDb([note(path, path, content, uuidA)], [{
+      file_id: "file-guards", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+    }]);
+    db.reviews.push({ file_id: "file-guards", path, content_hash: hash(content), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: now });
+    return db;
+  };
+  const partial = seed();
+  const partialRes = await syncNotes(request([], [observation("file-guards", path, content)], false, true), { DB: partial });
+  assert.equal((await partialRes.json()).resolvedReviews, 0, "a partial observation never resolves review rows");
+  assert.equal(partial.reviews.length, 1);
+  const plainSync = seed();
+  const plainRes = await syncNotes(request([], [observation("file-guards", path, content)], true, false), { DB: plainSync });
+  assert.equal((await plainRes.json()).resolvedReviews, 0, "a non-pull sync never resolves review rows");
+  assert.equal(plainSync.reviews.length, 1);
+  const tombstoned = seed();
+  const tombstoneRes = await syncNotes(request([], [observation("file-guards", path, content, true)], true, true), { DB: tombstoned });
+  assert.equal((await tombstoneRes.json()).resolvedReviews, 0, "a tombstoned vault entry never resolves review rows");
+  assert.equal(tombstoned.reviews.length, 1);
+}
+
+{
   const content = "# Pull candidate";
   const unrelated = Array.from({ length: 600 }, (_, i) => observation("unchanged-" + i, "Notes/unchanged-" + i + ".md", "# unchanged"));
   const observations = [observation("candidate", "Notes/candidate.md", content), ...unrelated];
@@ -403,4 +494,4 @@ for (const path of [
     "600 unrelated vault observations must not fan out into hundreds of D1 queries/writes");
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
