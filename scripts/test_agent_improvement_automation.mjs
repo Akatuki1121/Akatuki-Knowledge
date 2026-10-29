@@ -34,6 +34,28 @@ test("improvement plan rejects paths outside the three allowed roots", () => {
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
 });
 
+test("improvement request fixture uses current frontmatter-free heading format", async () => {
+  const note = [
+    "## 何が困っているか",
+    "",
+    "GitHub の改善依頼が人の承認待ちで止まり、端末を起こすまで進まない。",
+    "",
+    "## どうなっていてほしいか",
+    "",
+    "許可された変更範囲なら、PR 作成と CI 待ちの自動マージ設定まで進んでほしい。",
+    "",
+    "## どうなれば直ったと言えるか",
+    "",
+    "同じ content_hash は二重起票されず、結果がこのノートに記録される。"
+  ].join("\\n");
+  assert.match(note, /^## 何が困っているか/m);
+  assert.match(note, /^## どうなっていてほしいか/m);
+  assert.match(note, /^## どうなれば直ったと言えるか/m);
+  assert.doesNotMatch(note, /^id:\\s/m);
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(note))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  assert.equal(await improvementIdempotencyKey("fixture-sync-uuid", digest), await improvementIdempotencyKey("fixture-sync-uuid", digest));
+});
+
 test("idempotency key is stable and bounded for sync UUID plus content hash", async () => {
   const hash = "a".repeat(64);
   const first = await improvementIdempotencyKey("sync-uuid", hash);
