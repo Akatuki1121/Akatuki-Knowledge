@@ -139,8 +139,8 @@ assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計�
 
 // Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
 const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
-// Telegram 通知ステップ5件の廃止で 17 から 12 に減った。
-assert.equal(retryConfigs.length, 12, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
+// Telegram 通知ステップ5件の廃止で 17 から 12 に減った。PR #169 で改善計画の実行と結果書き戻しの2ステップが加わり、14になった。
+assert.equal(retryConfigs.length, 14, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
 assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
