@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { ARCHIVED_REBIND_TARGETS, validateArchivedRebind } from "../src/archived-rebind-policy.mjs";
+const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const policyStart = source.indexOf("const ARCHIVED_REBIND_TARGETS");
+const policyEnd = source.indexOf("function getArchivedRebindTarget", policyStart);
+assert.ok(policyStart >= 0 && policyEnd > policyStart, "inline archived-rebind policy must exist in the recovered Worker bundle");
+const policySource = source.slice(policyStart, source.indexOf("\\n}", policyEnd) + 2);
+const { ARCHIVED_REBIND_TARGETS, validateArchivedRebind } = new Function(policySource + "\\nreturn { ARCHIVED_REBIND_TARGETS, validateArchivedRebind };")();
 
 const expectedD1Hash = "a".repeat(64);
 const expectedVaultHash = "b".repeat(64);
@@ -64,7 +69,6 @@ for (const target of ARCHIVED_REBIND_TARGETS) {
   assert.equal(validateArchivedRebind(input).error, "path_not_allowed", "directory membership does not expand the allowlist");
 }
 
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 assert.ok(source.includes('url.pathname === "/sync/restore-archived-rebind"'), "dedicated authenticated endpoint exists");
 assert.ok(source.includes("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) SELECT"), "old D1 content is recorded as a revision");
 assert.ok(source.includes("deleted_at IS NOT NULL AND content_hash = ? AND sync_uuid = ?"), "restore is conditional on the archived D1 row and expected D1 hash");
