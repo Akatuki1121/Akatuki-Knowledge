@@ -16,6 +16,7 @@ export const checks = [
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
   ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
   ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
+  ["sync-archived-rebind-policy", process.execPath, ["scripts/test-archived-rebind-policy.mjs"]],
   ["sync-conflicts", process.execPath, ["scripts/test-sync-conflicts.mjs"]],
   ["sync-telegram-identity", process.execPath, ["scripts/test-sync-telegram-identity.mjs"]],
   ["sync-telegram-rename", process.execPath, ["scripts/test-sync-telegram-rename.mjs"]],
