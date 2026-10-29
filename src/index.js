@@ -9391,7 +9391,7 @@ var YjsClientDO = class extends DurableObject {
       }, "finish");
       const timer = setTimeout(() => finish(new Error(`sync_timeout_${SYNC_TIMEOUT_MS}ms${serverError ? `_${serverError}` : ""}`)), SYNC_TIMEOUT_MS);
       let pushed = false;
-      const settleOrPush = /* @__PURE__ */ __name(() => {
+      const settleOrPush = /* @__PURE__ */ __name(async () => {
         if (settled || pushed) return;
         if (!mutate) {
           finish(null);
@@ -9400,7 +9400,7 @@ var YjsClientDO = class extends DurableObject {
         pushed = true;
         try {
           const before = encodeStateVector(doc2);
-          const changed = mutate(doc2);
+          const changed = await mutate(doc2);
           if (changed > 0) {
             ws.send(encodeSyncFrame(SYNC_UPDATE, encodeStateAsUpdate(doc2, before)));
             setTimeout(() => finish(null), configuredSyncDelay(this.env.SYNC_PUSH_SETTLE_MS, PUSH_SETTLE_MS));
@@ -10369,6 +10369,125 @@ var YjsClientDO = class extends DurableObject {
     }
     return { ...base, applied: created.size > 0, createdCount: created.size, verified, unverified, rejected };
   }
+  async reconcileSpecificNote(body) {
+    const allowedPaths = new Set([
+      "Notes/Inbox/Meta社のMuseとは何か.md",
+      "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
+      "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
+      "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+    ]);
+    const path = typeof body.path === "string" ? norm(body.path) : "";
+    const direction = body.direction;
+    const expectedD1Hash = typeof body.expectedD1Hash === "string" ? body.expectedD1Hash : "";
+    const expectedVaultHash = typeof body.expectedVaultHash === "string" ? body.expectedVaultHash : "";
+    if (!allowedPaths.has(path)) return { ok: false, applied: false, error: "path_not_allowed" };
+    if (!/^[a-f0-9]{64}$/i.test(expectedD1Hash) || !/^[a-f0-9]{64}$/i.test(expectedVaultHash)) {
+      return { ok: false, applied: false, error: "invalid_expected_hash" };
+    }
+    if (!["d1_to_vault", "vault_to_d1"].includes(direction)) {
+      return { ok: false, applied: false, error: "invalid_direction" };
+    }
+    const locate = (doc) => {
+      const found = [];
+      doc.getMap("meta").forEach((entry, fileId) => {
+        const currentPath = entry instanceof YMap ? entry.get("path") : entry?.path;
+        if (typeof currentPath === "string" && norm(currentPath) === path) {
+          const deleted = entry instanceof YMap
+            ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true
+            : entry?.deletedAt !== void 0 || entry?.deleted === true;
+          found.push({ fileId, entry, deleted });
+        }
+      });
+      return found;
+    };
+    let outcome = { ok: false, applied: false, error: "not_started" };
+    await this.pullVault(async (doc) => {
+      const matches = locate(doc);
+      if (matches.length !== 1 || matches[0].deleted) {
+        outcome = { ok: false, applied: false, error: matches.length ? "vault_path_ambiguous_or_deleted" : "vault_note_not_found" };
+        return 0;
+      }
+      const current = matches[0];
+      const idToText = doc.getMap("idToText");
+      const textValue = idToText.get(current.fileId);
+      if (!(textValue instanceof YText)) {
+        outcome = { ok: false, applied: false, error: "vault_note_unreadable" };
+        return 0;
+      }
+      const vaultContent = textValue.toString();
+      const vaultHash = await sha256Hex(vaultContent);
+      if (vaultHash !== expectedVaultHash) {
+        outcome = { ok: false, applied: false, error: "vault_hash_precondition_failed", currentVaultHash: vaultHash };
+        return 0;
+      }
+      const note = await this.env.DB.prepare(
+        "SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ? AND path = ?"
+      ).bind(path, path).first();
+      if (!note || note.deleted_at || note.path !== path ||
+          note.content_hash !== expectedD1Hash || await sha256Hex(note.content) !== expectedD1Hash) {
+        outcome = { ok: false, applied: false, error: "d1_hash_precondition_failed" };
+        return 0;
+      }
+      if (direction === "vault_to_d1") {
+        if (vaultContent === note.content) {
+          outcome = { ok: true, applied: false, unchanged: true, path, contentHash: expectedVaultHash };
+          return 0;
+        }
+        const now = new Date().toISOString();
+        const inspected = inspectWholeContent(vaultContent, this.env);
+        const credential = inspected.credentials;
+        const tags = JSON.stringify(extractTags(vaultContent));
+        const update = this.env.DB.prepare(
+          "UPDATE notes SET content = ?, content_hash = ?, tags_json = ?, updated_at = ?, ai_allowed = CASE WHEN ? = 1 THEN 0 ELSE ai_allowed END, sensitivity = CASE WHEN ? = 1 THEN 'credentials' ELSE sensitivity END, review_state = CASE WHEN ? = 1 THEN 'blocked_credentials' ELSE 'ready' END WHERE id = ? AND path = ? AND content_hash = ? AND content = ? AND deleted_at IS NULL"
+        ).bind(vaultContent, vaultHash, tags, now, credential ? 1 : 0, credential ? 1 : 0, credential ? 1 : 0, path, path, expectedD1Hash, note.content);
+        const revision = this.env.DB.prepare(
+          "INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1"
+        ).bind(path, path, note.title, note.content, note.content_hash, now);
+        const results = await this.env.DB.batch([update, revision]);
+        if (Number(results[0]?.meta?.changes || 0) !== 1) {
+          outcome = { ok: false, applied: false, error: "d1_compare_and_swap_failed" };
+          return 0;
+        }
+        outcome = { ok: true, applied: true, direction, path, contentHash: vaultHash, revisionSaved: Number(results[1]?.meta?.changes || 0) === 1 };
+        return 0;
+      }
+      if (vaultContent === note.content) {
+        outcome = { ok: true, applied: false, unchanged: true, path, contentHash: expectedD1Hash };
+        return 0;
+      }
+      const pathToId = doc.getMap("pathToId");
+      const indexed = pathToId.get(path);
+      if (indexed !== void 0 && indexed !== current.fileId) {
+        outcome = { ok: false, applied: false, error: "vault_path_index_conflict" };
+        return 0;
+      }
+      if (current.entry instanceof YMap) {
+        current.entry.set("mtime", Date.now());
+        current.entry.set("device", WORKER_DEVICE);
+      }
+      textValue.delete(0, textValue.length);
+      if (note.content) textValue.insert(0, note.content);
+      pathToId.set(path, current.fileId);
+      outcome = { ok: true, applied: true, direction, path, contentHash: expectedD1Hash, fileId: current.fileId };
+      return 1;
+    });
+    if (!outcome.ok || !outcome.applied) return outcome;
+    const verifyVault = await this.pullVault();
+    const verifyMatches = locate(verifyVault);
+    const verifiedText = verifyMatches.length === 1 ? verifyVault.getMap("idToText").get(verifyMatches[0].fileId) : null;
+    const verifiedVaultContent = verifiedText instanceof YText ? verifiedText.toString() : null;
+    const verifiedVaultHash = typeof verifiedVaultContent === "string" ? await sha256Hex(verifiedVaultContent) : null;
+    const verifiedNote = await this.env.DB.prepare("SELECT content, content_hash FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL").bind(path, path).first();
+    const d1Verified = Boolean(verifiedNote && await sha256Hex(verifiedNote.content) === verifiedNote.content_hash);
+    const equal = Boolean(verifiedNote && verifiedVaultContent === verifiedNote.content && verifiedVaultHash === verifiedNote.content_hash);
+    return {
+      ...outcome,
+      verified: equal && d1Verified,
+      d1Hash: verifiedNote?.content_hash ?? null,
+      vaultHash: verifiedVaultHash,
+      error: equal && d1Verified ? undefined : "post_reconcile_verification_failed"
+    };
+  }
   async applyKnowledgeSyncJob(job) {
     if (!job || !["notes", "telegram_notes"].includes(job.entityType) || !["upsert", "delete"].includes(job.operation)) return { ok: false, verified: false, error: "invalid_job" };
     const payload = job.payload;
@@ -10519,6 +10638,43 @@ var YjsClientDO = class extends DurableObject {
   async fetch(request) {
     const reqUrl = new URL(request.url);
     const action = reqUrl.pathname.slice(1);
+    if (action === "read-note") {
+      try {
+        const path = new URL(request.url).searchParams.get("path") || "";
+        const allowedPaths = new Set([
+          "Notes/Inbox/Meta社のMuseとは何か.md",
+          "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
+          "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
+          "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+        ]);
+        if (!allowedPaths.has(norm(path))) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400 });
+        const doc = await this.pullVault();
+        const found = [];
+        doc.getMap("meta").forEach((entry, fileId) => {
+          const p = entry instanceof YMap ? entry.get("path") : entry?.path;
+          if (typeof p === "string" && norm(p) === norm(path)) {
+            const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+            found.push({ fileId, deleted });
+          }
+        });
+        if (found.length !== 1 || found[0].deleted) return Response.json({ ok: false, error: found.length ? "vault_path_ambiguous_or_deleted" : "vault_note_not_found" }, { status: 409 });
+        const value = doc.getMap("idToText").get(found[0].fileId);
+        if (!(value instanceof YText)) return Response.json({ ok: false, error: "vault_note_unreadable" }, { status: 503 });
+        const content = value.toString();
+        return Response.json({ ok: true, path: norm(path), fileId: found[0].fileId, content, contentHash: await sha256Hex(content) });
+      } catch {
+        return Response.json({ ok: false, error: "vault_note_read_failed" }, { status: 502 });
+      }
+    }
+    if (action === "reconcile-note") {
+      try {
+        const body = await request.json();
+        const result = await this.reconcileSpecificNote(body);
+        return Response.json(result, { status: result.ok ? 200 : result.error === "vault_note_not_found" ? 404 : 409 });
+      } catch {
+        return Response.json({ ok: false, applied: false, error: "guarded_note_reconcile_failed" }, { status: 502 });
+      }
+    }
     if (action === "knowledge-sync") {
       try {
         const body = await request.json(), result = await this.applyKnowledgeSyncJob(body);
@@ -11382,6 +11538,30 @@ var wrapper_default = {
     }
     if (url.pathname.startsWith("/sync/")) {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      const reconcilePaths = new Set([
+        "Notes/Inbox/Meta社のMuseとは何か.md",
+        "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
+        "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
+        "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+      ]);
+      if (url.pathname === "/sync/vault-note" && request.method === "GET") {
+        const path = url.searchParams.get("path") || "";
+        if (!reconcilePaths.has(path)) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
+        const res = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/read-note?path=" + encodeURIComponent(path)));
+        return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
+      }
+      if (url.pathname === "/sync/reconcile-note" && request.method === "POST") {
+        let body;
+        try { body = await readJson(request); } catch { return Response.json({ ok: false, applied: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
+        if (!reconcilePaths.has(body.path) || !["d1_to_vault", "vault_to_d1"].includes(body.direction) ||
+            !/^[a-f0-9]{64}$/i.test(body.expectedD1Hash || "") || !/^[a-f0-9]{64}$/i.test(body.expectedVaultHash || "")) {
+          return Response.json({ ok: false, applied: false, error: "invalid_reconcile_request" }, { status: 400, headers: JSON_HEADERS2 });
+        }
+        const res = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/reconcile-note", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+        }));
+        return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
+      }
       if ((url.pathname === "/sync/plan" || url.pathname === "/sync/diff") && request.method === "GET") {
         const res = await doFetch(env, url.pathname === "/sync/diff" ? "diff" : "plan");
         return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
