@@ -112,4 +112,4 @@ for (const target of ARCHIVED_REBIND_TARGETS.slice(7)) {
   assert.equal(validateArchivedRebind(vaultHash).error, "content_hash_precondition_failed", "new target rejects vault hash mismatch: " + target.path);
 }
 
-console.log("Guarded archived vault rebind tests passed: all 8 allowlisted targets; D1/vault hash mismatch; live D1 row; existing current-file mapping; unexpected fileId; unlisted path; exact revision, rebind, and verification contracts.");
+console.log("Guarded archived vault rebind tests passed: all 11 allowlisted targets; D1/vault hash mismatch; live D1 row; existing current-file mapping; unexpected fileId; unlisted path; exact revision, rebind, and verification contracts.");
