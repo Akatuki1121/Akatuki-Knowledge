@@ -300,7 +300,7 @@ async function syncNotes(request, env) {
     }
     const restorableArchived = body.vaultPull === true
       && Boolean(previous?.deleted_at)
-      && norm(previous.path) === path
+      && previous.path === path
       && occupied?.id === previous.id
       && observationComplete;
     if (previous?.deleted_at && !restorableArchived) {
