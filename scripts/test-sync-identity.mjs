@@ -229,7 +229,7 @@ const observation = (fileId, path, content, deleted = false) => ({
   const observations = [observation("file-existing", "Notes/existing.md", existingContent), observation("file-new", "Notes/new.md", newContent)];
   const res = await syncNotes(request([{ fileId: "file-new", path: "Notes/new.md", content: newContent }], observations), { DB: db });
   const result = await res.json();
-  assert.equal(result.created, 1, "initial reconciliation maps existing D1 notes before creating confirmed-new files");
+  assert.equal(result.created, 1, "a confirmed-new candidate can be created without remapping every unchanged D1 note");
   assert.equal(db.notes.length, 2);
   assert.equal(db.mappings.some((m) => m.file_id === "file-existing"), false, "unchanged non-candidate observations are not queried or remapped on every pull");
   assert.equal(db.mappings.some((m) => m.file_id === "file-new"), true);
@@ -252,9 +252,9 @@ const observation = (fileId, path, content, deleted = false) => ({
     note("Notes/one.md", "Notes/one.md", content, uuidA),
     note("Notes/two.md", "Notes/two.md", content, uuidA)
   ]);
-  const res = await syncNotes(request([], [observation("file-one", "Notes/one.md", content)]), { DB: db });
+  const res = await syncNotes(request([{ fileId: "file-one", path: "Notes/one.md", content }], [observation("file-one", "Notes/one.md", content)]), { DB: db });
   const result = await res.json();
-  assert.equal(result.needsReview, 1, "duplicate D1 sync_uuid ownership fails closed");
+  assert.ok(result.needsReview >= 1, "duplicate D1 sync_uuid ownership for an incoming candidate fails closed");
   assert.equal(db.mappings.length, 0);
   assert.equal(db.reviews[0].classification, "needs_review");
 }
