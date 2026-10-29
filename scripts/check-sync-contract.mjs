@@ -100,6 +100,8 @@ for (const contract of [
   "function summarizeVaultPull(result, error, source)",
   "async function persistVaultPullDiagnostics(env, summary)",
   "async function readVaultPullDiagnostics(env)",
+  "if (!apply) return { ...summary, applied: false, paths: data.notes.map((n) => n.path) };",
+  "body: JSON.stringify({ notes: data.notes, observations: data.observations, observationComplete: data.observationComplete, vaultPull: true })",
   "'vault_pull_latest'",
   'summarizeVaultPull(result, null, "scheduled")',
   'summarizeVaultPull(result, null, "manual")',
