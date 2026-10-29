@@ -37,8 +37,8 @@ assert.equal(conflictCopy.fileId, "FWadoGzyKLOx0QZP");
 assert.equal(conflictCopy.expectedContentHash, "dea439798a8075d0f23710fc9f4f827529111d91e7685596d92628d521617206");
 assert.equal(conflictCopy.comparisonPath, "Notes/AI論/思考/AI とエコーチャンバー.md");
 assert.equal(conflictCopy.removableFrontmatterId, "89fbc6d9-3a74-52ab-89c8-7d682e16b736");
-const originalBody = "---\\ntitle: Example\\n---\\n本文\\n";
-const duplicateBody = originalBody.replace("---\\ntitle:", '---\\nid: "89fbc6d9-3a74-52ab-89c8-7d682e16b736"\\ntitle:');
+const originalBody = "---\ntitle: Example\n---\n本文\n";
+const duplicateBody = originalBody.replace("---\ntitle:", '---\nid: "89fbc6d9-3a74-52ab-89c8-7d682e16b736"\ntitle:');
 const conflictInput = {
   path: conflictCopy.vaultPath,
   fileId: conflictCopy.fileId,
