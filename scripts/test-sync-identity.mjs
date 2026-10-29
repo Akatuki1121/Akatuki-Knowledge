@@ -327,6 +327,20 @@ const observation = (fileId, path, content, deleted = false) => ({
 }
 
 {
+  const archivedContent = "# Archived row without an identity map";
+  const vaultContent = "# Vault copy restores the archived path";
+  const db = makeDb([note("Notes/restored-without-map.md", "Notes/restored-without-map.md", archivedContent, uuidB, "2026-10-27T00:00:00.000Z")]);
+  const path = "Notes/restored-without-map.md";
+  const res = await syncNotes(request([{ fileId: "file-restored-no-map", path, content: vaultContent }], [observation("file-restored-no-map", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.updated, 1, "a same-path archived D1 row can be restored even when no identity mapping exists");
+  assert.equal(db.notes[0].content, vaultContent);
+  assert.equal(db.notes[0].deleted_at, null);
+  assert.equal(db.mappings.length, 1, "restore establishes the identity mapping");
+  assert.equal(db.revisions.length, 1, "the archived body is preserved before replacement");
+}
+
+{
   const d1Content = "# Keep the live D1 version";
   const vaultContent = "# Different, not owner-approved";
   const path = "Notes/Unapproved/live-note.md";
