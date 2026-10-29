@@ -355,22 +355,29 @@ const observation = (fileId, path, content, deleted = false) => ({
   assert.equal(db.reviews[0].reason, "vault_pull_live_content_conflict");
 }
 
-{
-  const d1Content = "# Old LCD module description";
-  const vaultContent = "# Owner-approved Obsidian LCD description";
-  const path = "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md";
+for (const path of [
+  "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md",
+  "Notes/設定/ポリシー/情報の平坦化：思考速度の防衛.md",
+  "Notes/設定/ポリシー/奏星のプロファイル.md",
+  "Notes/設定/テーマ/グラフビュー配色定義.md",
+  "Notes/Purge/経緯/Purge_リリース履歴.md"
+]) {
+  const d1Content = "# Old D1 content";
+  const vaultContent = "# Owner-approved Obsidian content";
   const db = makeDb([note(path, path, d1Content, uuidA)], [{
-    file_id: "file-lcd", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+    file_id: "file-approved", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
   }]);
-  const res = await syncNotes(request([{ fileId: "file-lcd", path, content: vaultContent }], [observation("file-lcd", path, vaultContent)], true, true), { DB: db });
+  const res = await syncNotes(request([{ fileId: "file-approved", path, content: vaultContent }], [observation("file-approved", path, vaultContent)], true, true), { DB: db });
   const result = await res.json();
-  assert.equal(result.updated, 1, "the specifically owner-approved divergent LCD note may follow Obsidian");
+  assert.equal(result.updated, 1, "the exact owner-approved path may follow Obsidian: " + path);
   assert.equal(db.notes[0].content, vaultContent);
 }
-
 for (const path of [
-  "Notes/設定/unapproved-new-note.md",
-  "Notes/Purge/経緯/unapproved-new-note.md"
+  "Notes/設定/ポリシー/unapproved-new-note.md",
+  "Notes/設定/テーマ/unapproved-new-note.md",
+  "Notes/設定/other/unapproved-new-note.md",
+  "Notes/Purge/経緯/unapproved-new-note.md",
+  "Notes/Purge/経緯/Purge_別リリース履歴.md"
 ]) {
   const d1Content = "# Preserve live D1 content";
   const vaultContent = "# Differing vault content";
@@ -396,4 +403,4 @@ for (const path of [
     "600 unrelated vault observations must not fan out into hundreds of D1 queries/writes");
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, owner-approved vault overwrite, live-D1 conflict refusal, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
