@@ -10376,6 +10376,12 @@ var YjsClientDO = class extends DurableObject {
       "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
       "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
     ]);
+    const directionByPath = new Map([
+      ["Notes/Inbox/Meta社のMuseとは何か.md", "d1_to_vault"],
+      ["Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md", "vault_to_d1"],
+      ["Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md", "d1_to_vault"],
+      ["Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md", "d1_to_vault"]
+    ]);
     const path = typeof body.path === "string" ? norm(body.path) : "";
     const direction = body.direction;
     const expectedD1Hash = typeof body.expectedD1Hash === "string" ? body.expectedD1Hash : "";
@@ -10386,6 +10392,9 @@ var YjsClientDO = class extends DurableObject {
     }
     if (!["d1_to_vault", "vault_to_d1"].includes(direction)) {
       return { ok: false, applied: false, error: "invalid_direction" };
+    }
+    if (directionByPath.get(path) !== direction) {
+      return { ok: false, applied: false, error: "direction_mismatch" };
     }
     const locate = (doc) => {
       const found = [];
@@ -10430,7 +10439,7 @@ var YjsClientDO = class extends DurableObject {
       }
       if (direction === "vault_to_d1") {
         if (vaultContent === note.content) {
-          outcome = { ok: true, applied: false, unchanged: true, path, contentHash: expectedVaultHash };
+          outcome = { ok: true, applied: false, unchanged: true, verified: true, path, contentHash: expectedVaultHash };
           return 0;
         }
         const now = new Date().toISOString();
@@ -10452,7 +10461,7 @@ var YjsClientDO = class extends DurableObject {
         return 0;
       }
       if (vaultContent === note.content) {
-        outcome = { ok: true, applied: false, unchanged: true, path, contentHash: expectedD1Hash };
+        outcome = { ok: true, applied: false, unchanged: true, verified: true, path, contentHash: expectedD1Hash };
         return 0;
       }
       const pathToId = doc.getMap("pathToId");
