@@ -47,7 +47,7 @@ test("improvement request fixture uses current frontmatter-free heading format",
     "## どうなれば直ったと言えるか",
     "",
     "同じ content_hash は二重起票されず、結果がこのノートに記録される。"
-  ].join("\\n");
+  ].join("\n");
   assert.match(note, /^## 何が困っているか/m);
   assert.match(note, /^## どうなっていてほしいか/m);
   assert.match(note, /^## どうなれば直ったと言えるか/m);
