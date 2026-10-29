@@ -7,7 +7,7 @@ assert.ok(policyStart >= 0 && policyEnd > policyStart, "inline vault-fossil poli
 const policySource = source.slice(policyStart, source.indexOf("\n}", policyEnd) + 2);
 const { VAULT_FOSSIL_TARGETS, validateVaultFossilRemoval, getVaultFossilTarget } = new Function(policySource + "\nreturn { VAULT_FOSSIL_TARGETS, validateVaultFossilRemoval, getVaultFossilTarget };")();
 
-assert.equal(VAULT_FOSSIL_TARGETS.length, 1, "the fossil allowlist contains exactly one target");
+assert.equal(VAULT_FOSSIL_TARGETS.length, 2, "only the two explicitly frozen fossil targets are allowlisted");
 const target = VAULT_FOSSIL_TARGETS[0];
 assert.equal(target.vaultPath, "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md");
 assert.equal(target.noteId, target.vaultPath, "the D1 row id is the history path");
@@ -30,6 +30,37 @@ function validInput() {
 
 assert.equal(validateVaultFossilRemoval(validInput()).ok, true, "the exact measured fossil state passes");
 assert.equal(validateVaultFossilRemoval(validInput()).alreadyDeleted, false);
+
+const conflictCopy = VAULT_FOSSIL_TARGETS[1];
+assert.equal(conflictCopy.vaultPath, "Notes/AI論/思考/AI とエコーチャンバー (YAOS conflict - disk from device-mv9dhgcw 2026-10-25T16-12-41Z).md");
+assert.equal(conflictCopy.fileId, "FWadoGzyKLOx0QZP");
+assert.equal(conflictCopy.expectedContentHash, "dea439798a8075d0f23710fc9f4f827529111d91e7685596d92628d521617206");
+assert.equal(conflictCopy.comparisonPath, "Notes/AI論/思考/AI とエコーチャンバー.md");
+assert.equal(conflictCopy.removableFrontmatterId, "89fbc6d9-3a74-52ab-89c8-7d682e16b736");
+const originalBody = "---\\ntitle: Example\\n---\\n本文\\n";
+const duplicateBody = originalBody.replace("---\\ntitle:", '---\\nid: "89fbc6d9-3a74-52ab-89c8-7d682e16b736"\\ntitle:');
+const conflictInput = {
+  path: conflictCopy.vaultPath,
+  fileId: conflictCopy.fileId,
+  expectedContentHash: conflictCopy.expectedContentHash,
+  observationComplete: true,
+  observation: { path: conflictCopy.vaultPath, fileId: conflictCopy.fileId, contentHash: conflictCopy.expectedContentHash, deleted: false },
+  vaultContent: duplicateBody,
+  comparisonContent: originalBody
+};
+assert.equal(validateVaultFossilRemoval(conflictInput).ok, true, "copy is removable only when stripping its frozen frontmatter id yields the canonical body");
+{
+  const input = { ...conflictInput, vaultContent: duplicateBody + "extra" };
+  assert.equal(validateVaultFossilRemoval(input).error, "vault_fossil_content_mismatch", "body changes fail closed");
+}
+{
+  const input = { ...conflictInput, comparisonContent: originalBody + "changed" };
+  assert.equal(validateVaultFossilRemoval(input).error, "vault_fossil_content_mismatch", "canonical note changes fail closed");
+}
+{
+  const input = { ...conflictInput, observation: { ...conflictInput.observation, fileId: "other-file" } };
+  assert.equal(validateVaultFossilRemoval(input).error, "vault_observation_precondition_failed", "wrong fileId fails closed");
+}
 assert.equal(validateVaultFossilRemoval({ path: "Notes/履歴/履歴 (YAOS conflict - disk from device-other 2026-10-25T00-00-00Z).md" }).error, "path_not_allowed", "other conflict files are excluded");
 assert.equal(validateVaultFossilRemoval({ path: target.tombstonePath }).error, "path_not_allowed", "the tombstone path is excluded");
 assert.equal(validateVaultFossilRemoval({ path: "Notes/AI論/思考/AI とエコーチャンバー.md" }).error, "path_not_allowed", "unrelated notes are excluded");
