@@ -25,9 +25,15 @@ for (const contract of [
 
   'const effectiveOperation = row.deleted_at ? "delete" : operation;',
   'async function enqueueSyncJob(env, entityType, entityId, operation, options = {})',
+  'async function prepareSyncJob(env, entityType, entityId, operation, options = {}, snapshot = null)',
+  'enqueueSyncJob, prepareSyncJob, backfillSyncUuidIndex, drainSyncOutbox',
+  'await prepareSyncJob(env, table, id2, "delete", { jobGuard: { checks: [["deleted_at", now]] } }, {',
+  'await prepareSyncJob(env, table, id2, "upsert", { allowRestore: true, jobGuard: { checks: [["deleted_at", null], ["updated_at", now]] } }, {',
+  'await prepareSyncJob(env, table, id2, "upsert", {}, {',
+  "INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) SELECT ",
+  'WHERE EXISTS (SELECT 1 FROM " + entityType + " WHERE "',
   'allowRestore: options.allowRestore === true',
   'current?.deleted && !payload.allowRestore',
-  'await enqueueSyncJob(env, table, id2, "upsert", { allowRestore: true })',
   'if (job.operation === "delete" || payload.deletedAt) {',
   'const legacyId = readUuid(content)',
   'SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE path = ?',
@@ -80,8 +86,6 @@ for (const contract of [
   "await drainSyncOutbox(env, POST_WRITE_DRAIN_BATCH_SIZE)",
   "await pullAfterWrite(env, ctx, origin, sent)",
   "ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin))",
-  'await enqueueSyncJob(env, table, id2, "delete")',
-  'await enqueueSyncJob(env, table, id2, "upsert")',
   'const VAULT_FOSSIL_TARGETS = Object.freeze([',
   "function validateVaultFossilRemoval(input)",
   "function getVaultFossilTarget(path)",
@@ -96,6 +100,36 @@ for (const contract of [
   "body.dryRun === true",
 ]) {
   assert.ok(source.includes(contract), "Missing source contract: " + contract);
+}
+
+// Note mutations and their outbox events are atomic: correction, delete, and
+// restore prepare the event against a post-mutation snapshot BEFORE writing,
+// then commit the mutation and the event in a single batch. The old
+// post-commit enqueueSyncJob calls from those handlers must not return.
+for (const retired of [
+  'await enqueueSyncJob(env, table, id2, "delete")',
+  'await enqueueSyncJob(env, table, id2, "upsert")',
+  'await enqueueSyncJob(env, table, id2, "upsert", { allowRestore: true })'
+]) {
+  assert.ok(!source.includes(retired), "Retired non-atomic enqueue call must not return: " + retired);
+}
+function handlerSlice(name, endMarker) {
+  const start = source.indexOf(`async function ${name}(`);
+  const end = source.indexOf(endMarker, start);
+  assert.ok(start >= 0 && end > start, name + " handler must exist");
+  return source.slice(start, end);
+}
+for (const [name, endMarker, batchCall] of [
+  ["deleteNote", '__name(deleteNote, "deleteNote");', "await env.DB.batch(statements)"],
+  ["restoreNote", '__name(restoreNote, "restoreNote");', "await env.DB.batch(restoreStatements)"],
+  ["correctNote", '__name(correctNote, "correctNote");', "await env.DB.batch(statements)"]
+]) {
+  const handler = handlerSlice(name, endMarker);
+  const prepareAt = handler.indexOf("await prepareSyncJob(");
+  const batchAt = handler.indexOf(batchCall);
+  assert.ok(prepareAt >= 0, name + " must prepare its outbox event before writing");
+  assert.ok(batchAt > prepareAt, name + " must prepare the event before committing its batch");
+  assert.ok(!handler.includes("enqueueSyncJob("), name + " must not enqueue after committing");
 }
 
 assert.ok(!source.includes('SELECT id, path, title, content, deleted_at FROM " + entityType'), "Telegram notes do not have a path column");

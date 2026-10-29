@@ -111,6 +111,129 @@ const outbox = createSyncOutbox({
   assert.equal(inserted.length, 0, "a frontmatter/D1 UUID conflict must not enqueue an overwrite");
 }
 
+// prepareSyncJob returns the write statements without executing them, so a
+// caller can commit a note mutation and its outbox event in one batch.
+function statementDb({ row = null, owners = [] } = {}) {
+  const executed = [];
+  const db = {
+    prepare(sql) {
+      let values = [];
+      const statement = {
+        sql,
+        get values() { return values; },
+        bind(...args) { values = args; return statement; },
+        async first() {
+          if (sql.includes("FROM notes WHERE id = ?")) return row;
+          if (sql.includes("FROM note_revisions")) return { content: "db previous content" };
+          throw new Error("Unexpected first query: " + sql);
+        },
+        async all() {
+          if (sql.includes("FROM notes WHERE sync_uuid = ?")) return { results: owners };
+          throw new Error("Unexpected all query: " + sql);
+        },
+        async run() { executed.push({ sql, values }); return { meta: { changes: 1 } }; }
+      };
+      return statement;
+    }
+  };
+  return { db, executed };
+}
+
+{
+  // Preparation alone must not write anything; the caller decides when the
+  // statements run (inside its own batch).
+  const row = {
+    id: "note-prep", path: "notes/prep.md", title: "Prep",
+    content: `---\nid: "${uuid}"\n---\ncontent`, content_hash: "hash",
+    deleted_at: null, sync_uuid: uuid
+  };
+  const { db, executed } = statementDb({ row });
+  const prepared = await outbox.prepareSyncJob({ DB: db }, "notes", "note-prep", "upsert");
+  assert.equal(executed.length, 0, "prepareSyncJob must not execute write statements");
+  assert.equal(prepared.statements.length, 1, "a settled identity needs only the job insert");
+  assert.ok(prepared.statements[0].sql.startsWith("INSERT INTO yaos_sync_jobs"));
+  assert.equal(prepared.effectiveOperation, "upsert");
+  const payload = JSON.parse(prepared.statements[0].values[4]);
+  assert.equal(payload.syncUuid, uuid);
+  assert.equal(payload.expectedPreviousContent, "db previous content", "without a snapshot the latest revision is read from D1");
+  for (const statement of prepared.statements) await statement.run();
+  assert.equal(executed.length, 1);
+}
+
+{
+  // Snapshot path (the correction shape): the D1 row does not yet hold the
+  // new content, so the row read must be skipped and the payload must
+  // describe the snapshot. A missing sync_uuid is backfilled from the
+  // content UUID as a prepared statement, ahead of the job insert.
+  const snapshotRow = {
+    id: "note-snap", path: "notes/snap.md", title: "Snap",
+    content: `---\nid: "${uuid}"\n---\nnew content`, content_hash: "newhash",
+    deleted_at: null, sync_uuid: null
+  };
+  const { db, executed } = statementDb({ row: null, owners: [] });
+  const prepared = await outbox.prepareSyncJob({ DB: db }, "notes", "note-snap", "upsert", {}, {
+    row: snapshotRow,
+    previousRevisionContent: "content before correction"
+  });
+  assert.equal(executed.length, 0);
+  assert.equal(prepared.statements.length, 2, "sync_uuid backfill precedes the job insert");
+  assert.ok(prepared.statements[0].sql.startsWith("UPDATE notes SET sync_uuid = ?"));
+  assert.deepEqual(prepared.statements[0].values.slice(0, 2), [uuid, "note-snap"]);
+  const payload = JSON.parse(prepared.statements[1].values[4]);
+  assert.equal(payload.content, snapshotRow.content, "the event describes the post-mutation content");
+  assert.equal(payload.contentHash, "newhash");
+  assert.equal(payload.expectedPreviousContent, "content before correction", "the snapshot supplies the pre-correction revision");
+  assert.equal(payload.syncUuid, uuid);
+}
+
+{
+  // A snapshot whose content UUID contradicts the D1 sync_uuid fails during
+  // preparation, before the caller has committed anything.
+  const snapshotRow = {
+    id: "note-snap-conflict", path: "notes/snap-conflict.md", title: "Snap conflict",
+    content: `---\nid: "${uuidB}"\n---\nconflicting`, content_hash: "hash",
+    deleted_at: null, sync_uuid: uuid
+  };
+  const { db, executed } = statementDb({ row: null });
+  await assert.rejects(
+    () => outbox.prepareSyncJob({ DB: db }, "notes", "note-snap-conflict", "upsert", {}, { row: snapshotRow, previousRevisionContent: null }),
+    /sync_outbox_enqueue_failed/
+  );
+  assert.equal(executed.length, 0, "a conflicting snapshot must fail before any write");
+}
+
+{
+  // Guarded insert (the delete/restore shape): the job insert becomes an
+  // INSERT ... SELECT gated on the post-mutation row state.
+  const row = {
+    id: "note-guard", path: "notes/guard.md", title: "Guard",
+    content: "# guard", content_hash: "hash",
+    deleted_at: "2026-10-29T00:00:00.000Z", sync_uuid: uuid
+  };
+  const { db } = statementDb({ row });
+  const prepared = await outbox.prepareSyncJob({ DB: db }, "notes", "note-guard", "delete", { jobGuard: { checks: [["deleted_at", "2026-10-29T00:00:00.000Z"]] } });
+  assert.equal(prepared.statements.length, 1);
+  const insert = prepared.statements[0];
+  assert.match(insert.sql, /INSERT INTO yaos_sync_jobs .* SELECT /, "guarded jobs use INSERT ... SELECT");
+  assert.ok(insert.sql.includes("WHERE EXISTS (SELECT 1 FROM notes WHERE id = ? AND deleted_at = ?)"));
+  assert.deepEqual(insert.values.slice(-2), ["note-guard", "2026-10-29T00:00:00.000Z"], "guard bindings follow the job values");
+  assert.equal(prepared.effectiveOperation, "delete");
+
+  const restored = await outbox.prepareSyncJob({ DB: db }, "notes", "note-guard", "upsert", { allowRestore: true, jobGuard: { checks: [["deleted_at", null], ["updated_at", "2026-10-29T01:00:00.000Z"]] } }, {
+    row: { ...row, deleted_at: null },
+    previousRevisionContent: null
+  });
+  const restoreInsert = restored.statements[0];
+  assert.ok(restoreInsert.sql.includes("deleted_at IS NULL AND updated_at = ?"), "a null guard value becomes IS NULL");
+  assert.deepEqual(restoreInsert.values.slice(-2), ["note-guard", "2026-10-29T01:00:00.000Z"]);
+
+  await assert.rejects(
+    () => outbox.prepareSyncJob({ DB: db }, "notes", "note-guard", "upsert", { jobGuard: { checks: [["content", "x"]] } }),
+    /sync_outbox_enqueue_failed/,
+    "guard columns outside the timestamp allowlist are rejected"
+  );
+}
+
 console.log("Sync outbox module tests passed.");
 
 {
