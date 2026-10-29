@@ -807,7 +807,7 @@ async function getNoteByPath(url, env) {
   } catch {
     return json({ error: "invalid_note_path" }, 400);
   }
-  if (!path || path.length > 1000 || path.startsWith("/") || !/\\.md$/i.test(path)
+  if (!path || path.length > 1000 || path.startsWith("/") || !/\.md$/i.test(path)
     || path.split("/").some((part) => !part || part === ".." || part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) {
     return json({ error: "unsafe_note_path" }, 400);
   }
