@@ -19,6 +19,7 @@ for (const required of [
   'name = "YJS_CLIENT"',
   'class_name = "YjsClientDO"',
   'binding = "YAOS"',
+  'binding = "AI"',
   'service = "yaos"',
   'environment = "production"',
   'name = "akatuki-knowledge-agent-tasks"',

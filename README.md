@@ -10,19 +10,20 @@ Obsidian のノートを検索し、AI で整理するための個人用ナレ�
 - **現在のパスによるノート API**: `GET /api/notes/<URLエンコードしたパス>` で生存ノートの本文とメタデータを取得できます。`DELETE /api/notes/<引数>` は現在の `notes.path` を優先し、該当しなければ従来の `notes.id` / Telegram ID として解決します。パス参照と ID 参照が異なるノートを指す場合は `409 ambiguous_note_reference` で拒否します。
 - **全件マニフェスト**: `GET /api/sync/manifest?limit=500&cursor=...` は `nextCursor` を使ってページ送りでき、`totalCount` に全レコード件数を返します。既存の `notes` / `nextCursor` フィールドは維持されます。
 - **バックグラウンドタスク**: `POST /api/agent-tasks` で、ナレッジベースを検索して要約するタスクを非同期に実行します。結果は `GET /api/agent-tasks` で取得します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
+- **改善依頼の自動実行**: 毎時の Vault pull が成功した後、`Notes/改善/`（`このフォルダについて.md` を除く）の D1 ノートを走査します。`sync_uuid` と `content_hash` の組み合わせで重複起票を防ぎ、Workers AI で変更計画を作成します。自動実行は `src/`・`scripts/`・`docs/` 内のファイル変更、ブランチ作成、PR 作成に限定し、計画ハッシュを再検証してから実行します。対象外の計画は PR を作らず理由をノートへ追記します。条件を満たす PR には squash 自動マージを有効化し、CI の成功を GitHub 側で待ちます。最大 3 タスク/日、最大 5 モデル呼び出し/タスクです。Web 調査は無効です。
 - **長期記憶メタデータ**: 既存ノートに由来・信頼度・有効期限などのメタデータを付けて扱います。D1 マイグレーション `0013_agent_memory_metadata.sql` は 2026-10-22 に本番へ適用・台帳記録済みで、`migrations/` に配置されています。
 
 ## 安全面の方針
 
 - AI へ送る内容は送信前に検査します。認証情報が見つかった場合や、安全にマスキングできない機微情報を含む場合は送信を止めます。パターンベースの検出なので、すべての秘密情報の検出は保証しません。
 - AI へ送れるのは `ai_allowed` で許可されたノートだけです。
-- ノートを変更する操作は、ユーザーの明示的な承認を経て実行します。
+- 通常のノート変更 API は既存の認証・outbox 経路を使います。改善エージェントの GitHub 書き込みは、明示的な許可範囲と計画ハッシュを満たす場合に限り自動実行します。
 
 ## 構成
 
 | コンポーネント | 役割 |
 | --- | --- |
-| Cloudflare Workers(`src/index.js`) | API とノート同期 |
+| Cloudflare Workers(`src/index.js`) | API、ノート同期、Workers AI による制約付き改善エージェント |
 | Cloudflare D1(`Akatuki-knowledge`) | ノート、同期状態、タスク状態の永続化 |
 | Durable Objects / Yjs | ノート同期のリアルタイム状態 |
 | Cloudflare Workflows | バックグラウンドタスクの実行 |

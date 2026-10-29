@@ -25,6 +25,10 @@ export const checks = [
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
   ["sync-strip-frontmatter-ids", process.execPath, ["scripts/test-sync-strip-frontmatter-ids.mjs"]],
   ["sync-cleanup-measurement-notes", process.execPath, ["scripts/test-sync-cleanup-measurement-notes.mjs"]],
+  ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
+  ["agent-improvement-policy-syntax", process.execPath, ["--check", "src/agent-improvement-policy.mjs"]],
+  ["agent-improvement-executor-syntax", process.execPath, ["--check", "src/agent-improvement-executor.mjs"]],
+  ["agent-improvement-automation", process.execPath, ["scripts/test_agent_improvement_automation.mjs"]],
   ["background-task-policy-syntax", process.execPath, ["--check", "src/background-task-policy.mjs"]],
   ["background-task-policy", process.execPath, ["scripts/test-background-task-policy.mjs"]],
   ["agent-tool-loop", process.execPath, ["scripts/test_agent_tool_loop.mjs"]],
@@ -48,7 +52,7 @@ export function selectChecks(args = []) {
   return args.includes("--sync-only")
   ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name === "sync-contract" || name === "yaos-integration-classifier" || name === "sync-module-syntax")
   : args.includes("--agent-only")
-    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-"))
+    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-"))
     : args.includes("--core-only")
       ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "notes-create-contract", "sync-identity-repair-contract", "sync-note-reconcile-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
