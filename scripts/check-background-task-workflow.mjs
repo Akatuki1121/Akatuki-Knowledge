@@ -37,7 +37,7 @@ for (const required of [
   "listAgentTasks",
   "allowWebResearch",
   "GEMINI_WEB_RESEARCH_ENABLED",
-  "callGeminiWebResearch",
+  "callWorkersAi",
   "parseGroundedWebResearch",
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
   'url.pathname === "/api/agent-tasks"',
@@ -81,7 +81,7 @@ assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Ev
 const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall })");
 const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
 assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
-assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output from Gemini");
+assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
 assert.ok(toolLoop.includes("maxModelCalls: 5") && toolLoop.includes("maxToolCalls: 4"), "Agent loop budgets must remain bounded");
@@ -92,9 +92,9 @@ assert.ok(toolLoop.includes("allowWebResearch === true"), "Web research must req
 assert.ok(webResearch.includes('step?.type === "google_search_call"'), "Web results must have a Google Search grounding step");
 assert.ok(webResearch.includes('step?.type === "url_context_result"'), "Web results must have inspected page retrieval");
 assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only provider citations may become web sources");
-assert.ok(source.includes('signal: AbortSignal.timeout(90_000)'), "Web research requests must be bounded by a timeout");
-assert.ok(source.includes('if (allowWebResearch && env.GEMINI_WEB_RESEARCH_ENABLED !== "true")'), "User opt-in alone must not enable web research while the Worker gate is off");
-assert.ok(!config.includes("GEMINI_WEB_RESEARCH_ENABLED"), "The default Wrangler config must keep potentially billable web research disabled");
+assert.ok(source.includes('throw new Error("web_research_disabled")'), "Web research must remain disabled");
+assert.ok(source.includes('body.allowWebResearch !== undefined && body.allowWebResearch !== false'), "API must reject web research requests");
+assert.ok(config.includes('binding = "AI"'), "Workers AI binding must be configured");
 assert.ok(toolLoop.includes('throw new Error("unknown_tool")'), "Unknown tools must fail closed");
 assert.ok(toolLoop.includes('throw new Error("tool_loop_detected")'), "Repeated tool calls must stop");
 assert.ok(toolLoop.includes("AGENT_TOOL_LIMITS.maxToolOutputChars"), "Tool output size must be bounded");
