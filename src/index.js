@@ -36,7 +36,6 @@ const { capLikeTerm, searchTerms, excerpt } = createNoteSearchText();
 // Telegram 廃止後は Workers Logs への出力のみで、送信関数の注入は不要になった。
 const { enqueueBotAlert } = createBotAlerts();
 const ARCHIVED_REBIND_TARGETS = Object.freeze([
-  { path: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md", currentFileId: "WlGQsLovflZyZU_s", oldFileId: "I33EQMDJSKHBGwu0", syncUuid: "bbe5d2d2-7f1b-5126-be79-25c585385bb5" },
   { path: "Notes/Inbox/スマホを置いて走れる。Xiaomiの「Smart Band 10 Pro」が過去最安8千円台  ライフハッカー・ジャパン.md", currentFileId: "WBOFMy9GgGVQZ7uf", oldFileId: "aEmAL9YytKj9jsAB", syncUuid: "8fcc6b2e-02c3-57e7-8f7b-4c0722a188a4" },
   { path: "Notes/Inbox/How to be more ambitious A tutorial for humans with models.md", currentFileId: "ZZ3dcx5iw1IttE8h", oldFileId: "0H4LcCwoiQZcV2k4", syncUuid: "3f65dfa7-bb6b-541a-a4fa-52f6ebfee34b" },
   { path: "Notes/Inbox/無題のファイル.md", currentFileId: "xjda4ykuJod9UV67", oldFileId: "m_E8FOrL7kMvzzL8", syncUuid: "661a4f2d-9e6c-5299-9044-54d5295bce53" },
@@ -10762,7 +10761,14 @@ var YjsClientDO = class extends DurableObject {
           "Notes/Inbox/Meta社のMuseとは何か.md",
           "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
           "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
-          "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+          "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md",
+          "Notes/Inbox/スマホを置いて走れる。Xiaomiの「Smart Band 10 Pro」が過去最安8千円台  ライフハッカー・ジャパン.md",
+          "Notes/Inbox/How to be more ambitious A tutorial for humans with models.md",
+          "Notes/Inbox/無題のファイル.md",
+          "Notes/Inbox/【依頼】Telegram上の知識bot「Akatuki knowledge」の仕様を一緒に詰めたい。.md",
+          "Notes/Inbox/akatuki-knowledge-triage.md",
+          "Notes/Inbox/Akatuki-Knowledgeの記録.md",
+          "Notes/Inbox/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
         ]);
         if (!allowedPaths.has(norm(path))) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400 });
         const doc = await this.pullVault();
