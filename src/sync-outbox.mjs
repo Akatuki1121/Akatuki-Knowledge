@@ -188,6 +188,44 @@ export async function listSyncOutboxJobs(env, options = {}) {
   }
 }
 
+function outboxErrorCode(value) {
+  const match = typeof value === "string" ? value.match(/^[a-z][a-z0-9_]{0,79}/i) : null;
+  return match ? match[0] : "unknown";
+}
+
+export async function purgeDeadSyncOutboxJobs(env, options = {}) {
+  if (!env?.DB) return { ok: false, error: "outbox_unavailable" };
+  const dryRun = options.dryRun === true;
+  const jobIds = options.jobIds;
+  if (jobIds !== undefined && (!Array.isArray(jobIds) || jobIds.some((id) => !Number.isSafeInteger(id) || id < 1) || new Set(jobIds).size !== jobIds.length)) return { ok: false, error: "invalid_job_ids" };
+  try {
+    let selected;
+    if (jobIds === undefined) selected = await env.DB.prepare("SELECT job_id, status, last_error FROM yaos_sync_jobs WHERE status = 'dead' ORDER BY job_id").all();
+    else if (jobIds.length === 0) selected = { results: [] };
+    else {
+      const placeholders = jobIds.map(() => "?").join(", ");
+      selected = await env.DB.prepare("SELECT job_id, status, last_error FROM yaos_sync_jobs WHERE job_id IN (" + placeholders + ") ORDER BY job_id").bind(...jobIds).all();
+    }
+    const rows = selected.results || [];
+    const deadRows = rows.filter((row) => row.status === "dead");
+    const skipped = jobIds === undefined ? [] : jobIds.flatMap((id) => {
+      const row = rows.find((candidate) => Number(candidate.job_id) === id);
+      if (!row) return [{ jobId: id, reason: "job_not_found" }];
+      if (row.status !== "dead") return [{ jobId: id, reason: "job_not_dead", status: row.status }];
+      return [];
+    });
+    const errorCounts = {};
+    for (const row of deadRows) { const code = outboxErrorCode(row.last_error); errorCounts[code] = (errorCounts[code] || 0) + 1; }
+    if (dryRun) return { ok: true, dryRun: true, targetCount: deadRows.length, targetIds: deadRows.map((row) => Number(row.job_id)), errorCounts, skipped };
+    const deletedIds = [];
+    for (const row of deadRows) {
+      const result = await env.DB.prepare("DELETE FROM yaos_sync_jobs WHERE job_id = ? AND status = 'dead'").bind(row.job_id).run();
+      if (result.meta?.changes) deletedIds.push(Number(row.job_id));
+    }
+    return { ok: true, dryRun: false, deletedCount: deletedIds.length, deletedIds, skipped };
+  } catch { return { ok: false, error: "outbox_unavailable" }; }
+}
+
 export async function retrySyncOutboxJob(env, jobId) {
   if (!env?.DB) return { ok: false, requeued: false, error: "outbox_unavailable" };
   if (!Number.isSafeInteger(jobId) || jobId < 1) return { ok: false, requeued: false, error: "invalid_job_id" };
