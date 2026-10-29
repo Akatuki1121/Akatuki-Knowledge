@@ -149,9 +149,8 @@ async function syncNotes(request, env) {
   if (observations.length > 2000) return json({ error: "too_many_observations" }, 400);
   const observationComplete = body.observationComplete === true;
   const candidateFileIds = new Set(body.notes.map((input) => typeof input?.fileId === "string" ? input.fileId : null).filter(Boolean));
-  const isVaultAuthoritativePath = (path) => path === "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md"
-    || path.startsWith("Notes/設定/")
-    || path.startsWith("Notes/Purge/経緯/");
+  // Fail closed until the four additional owner-approved note paths are enumerated explicitly.
+  const isVaultAuthoritativePath = (path) => path === "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md";
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0;
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
