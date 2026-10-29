@@ -16,7 +16,7 @@ function buildSyncJobInsert(env, entityType, entityId, effectiveOperation, paylo
   const conditions = ["id = ?"];
   const guardBindings = [entityId];
   for (const [column, value] of jobGuard.checks || []) {
-    if (!["deleted_at", "updated_at"].includes(column)) throw new Error("invalid_job_guard");
+    if (!["deleted_at", "updated_at", "path"].includes(column)) throw new Error("invalid_job_guard");
     if (value === null) conditions.push(column + " IS NULL");
     else { conditions.push(column + " = ?"); guardBindings.push(value); }
   }
