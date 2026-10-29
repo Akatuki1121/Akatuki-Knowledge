@@ -107,14 +107,14 @@ var worker_default = {
       if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
       try {
         if (request.method === "GET" && url.pathname === "/api/notes") return listNotes(url, env);
-        if (request.method === "POST" && url.pathname === "/api/notes") { const response = await createNote(request, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
+        if (request.method === "POST" && url.pathname === "/api/notes") { const response = await createNote(request, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "GET" && url.pathname === "/api/sync/manifest") return syncManifest(url, env);
         if (request.method === "POST" && url.pathname === "/api/sync/export") return exportSyncNotes(request, env);
         if (request.method === "GET" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/related")) return listRelatedNotes(url, env);
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/ai-permission")) return setAiPermission(request, url, env);
-        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
-        if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
-        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) { const response = await correctNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3)); return response; }
+        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
+        if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
+        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) { const response = await correctNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "POST" && url.pathname === "/api/sync") return syncNotes(request, env);
         if (request.method === "GET" && url.pathname === "/api/search") return searchNotes(url, env);
         if (request.method === "POST" && url.pathname === "/api/ask") return askQuestion(request, env);
@@ -132,6 +132,91 @@ var worker_default = {
   }
 };
 const { enqueueSyncJob, backfillSyncUuidIndex, drainSyncOutbox } = createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid });
+// Post-write immediate drain, chained. A single drainSyncOutbox call handles
+// at most 20 jobs, so one write that enqueues (or unblocks) more than a batch
+// would otherwise leave the remainder to the scheduled drain. After a write,
+// keep draining while a batch comes back full, but stop after
+// POST_WRITE_DRAIN_MAX_BATCHES batches (20 x 5 = 100 jobs at most) so one
+// request can never loop unbounded inside ctx.waitUntil; the scheduled drain
+// picks up anything left beyond the cap.
+var POST_WRITE_DRAIN_BATCH_SIZE = 20;
+var POST_WRITE_DRAIN_MAX_BATCHES = 5;
+// Post-write pull. When the chained drain above actually delivered at least
+// one job, run one vault pull (apply) so the vault-side state converges into
+// D1 immediately after an AI edit session instead of waiting for the hourly
+// scheduled pull, which stays a safety net. Bursts of writes are coalesced by
+// a cooldown: at most one post-write pull per POST_WRITE_PULL_COOLDOWN_MS,
+// tracked in app_meta under POST_WRITE_PULL_LAST_KEY. The pull keeps the
+// existing per-run caps and conflict guards, and its outcome is recorded in
+// the same vault_pull_latest diagnostics as scheduled and manual pulls. A
+// failed or skipped post-write pull never affects the write that triggered
+// it: everything here runs inside ctx.waitUntil and failures are only logged
+// and recorded.
+var POST_WRITE_PULL_COOLDOWN_MS = 120000;
+var POST_WRITE_PULL_LAST_KEY = "vault_pull_post_write_last";
+async function readPostWritePullLastAt(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(POST_WRITE_PULL_LAST_KEY).first();
+    const parsed = row?.value ? JSON.parse(row.value) : null;
+    const at = parsed && typeof parsed.at === "string" ? Date.parse(parsed.at) : NaN;
+    return Number.isFinite(at) ? at : 0;
+  } catch {
+    return 0;
+  }
+}
+__name(readPostWritePullLastAt, "readPostWritePullLastAt");
+async function claimPostWritePullSlot(env, nowIso) {
+  try {
+    await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .bind(POST_WRITE_PULL_LAST_KEY, JSON.stringify({ at: nowIso }), nowIso).run();
+  } catch {
+    // Cooldown bookkeeping must never break the post-write path.
+  }
+}
+__name(claimPostWritePullSlot, "claimPostWritePullSlot");
+async function pullAfterWrite(env, ctx, origin, sent) {
+  if (!Number.isFinite(sent) || sent < 1) return { triggered: false, reason: "no_delivered_jobs" };
+  if (!env.DB || !ctx || !origin) return { triggered: false, reason: "pull_context_unavailable" };
+  const lastAt = await readPostWritePullLastAt(env);
+  const now = Date.now();
+  if (lastAt > 0 && now - lastAt < POST_WRITE_PULL_COOLDOWN_MS) {
+    return { triggered: false, reason: "cooldown", lastPullAt: new Date(lastAt).toISOString(), cooldownMs: POST_WRITE_PULL_COOLDOWN_MS };
+  }
+  // Claim the cooldown slot before running, so a burst of near-simultaneous
+  // writes cannot all pass the gate and pull at once.
+  await claimPostWritePullSlot(env, new Date(now).toISOString());
+  let result = null;
+  let error = null;
+  try {
+    result = await pullFromVault(env, ctx, origin, true);
+  } catch (caught) {
+    error = caught;
+  }
+  const summary = summarizeVaultPull(result, error, "post_write");
+  await persistVaultPullDiagnostics(env, summary);
+  if (error) {
+    console.log(JSON.stringify({ postWritePull: { ok: false, source: "post_write" }, failure: describeSafeFailure("vault_pull_failed", error) }));
+  } else if (!result.ok) {
+    console.error(JSON.stringify({ pullFailure: { ok: false, source: "post_write", stage: result.stage, errorCode: safeErrorCode(result.error) } }));
+  }
+  return { triggered: true, ...summary };
+}
+__name(pullAfterWrite, "pullAfterWrite");
+async function drainSyncOutboxAfterWrite(env, ctx, origin) {
+  let processed = 0, sent = 0, failed = 0, batches = 0;
+  while (batches < POST_WRITE_DRAIN_MAX_BATCHES) {
+    const result = await drainSyncOutbox(env, POST_WRITE_DRAIN_BATCH_SIZE);
+    batches++;
+    if (!result || !Number.isFinite(result.processed)) break;
+    processed += result.processed;
+    sent += result.sent || 0;
+    failed += result.failed || 0;
+    if (result.processed < POST_WRITE_DRAIN_BATCH_SIZE) break;
+  }
+  const pull = await pullAfterWrite(env, ctx, origin, sent);
+  return { ok: failed === 0, processed, sent, failed, batches, pull };
+}
+__name(drainSyncOutboxAfterWrite, "drainSyncOutboxAfterWrite");
 async function runScheduledMaintenance(env) {
   await drainSyncOutbox(env, 10);
   await backfillSyncUuidIndex(env, 100);
@@ -11402,6 +11487,52 @@ async function persistRecoveryDiagnostics(env, result) {
     .bind(JSON.stringify(summary), now).run();
 }
 __name(persistRecoveryDiagnostics, "persistRecoveryDiagnostics");
+// Vault pull outcome, persisted like the recovery diagnostics above
+// (app_meta, latest value only) so a failed pull stays visible after the run
+// instead of existing only in Workers Logs. Scheduled, post-write, and manual
+// pulls all record here; the summary carries a "source" tag saying which one
+// ran, plus counts, fixed stage/skip codes, and a sanitized error code only:
+// never note content, raw error text, or IDs. GET /sync/status exposes it as
+// the "pull" field.
+function summarizeVaultPull(result, error, source) {
+  const summary = { recordedAt: new Date().toISOString(), ok: false, source: ["scheduled", "post_write", "manual"].includes(source) ? source : "unknown" };
+  if (error) {
+    summary.failure = describeSafeFailure("vault_pull_failed", error);
+    return summary;
+  }
+  if (!result || typeof result !== "object") return summary;
+  summary.ok = result.ok === true;
+  if (result.applied !== void 0) summary.applied = result.applied === true;
+  if (typeof result.stage === "string" && /^[a-z_]{1,40}$/.test(result.stage)) summary.stage = result.stage;
+  if (typeof result.skipped === "string" && /^[a-z_]{1,60}$/.test(result.skipped)) summary.skipped = result.skipped;
+  for (const key of ["vaultFiles", "queued", "created", "updated", "unchanged", "deferred", "needsReview", "identityConflicts"]) {
+    if (Number.isFinite(result[key])) summary[key] = result[key];
+  }
+  if (result.error !== void 0) summary.errorCode = safeErrorCode(result.error);
+  return summary;
+}
+__name(summarizeVaultPull, "summarizeVaultPull");
+async function persistVaultPullDiagnostics(env, summary) {
+  if (!env.DB || !summary) return;
+  try {
+    await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES ('vault_pull_latest', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .bind(JSON.stringify(summary), summary.recordedAt).run();
+  } catch {
+    // Diagnostics must never break the scheduled pull path.
+  }
+}
+__name(persistVaultPullDiagnostics, "persistVaultPullDiagnostics");
+async function readVaultPullDiagnostics(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM app_meta WHERE key = 'vault_pull_latest'").first();
+    if (!row?.value) return { ok: false, skipped: "no_pull_recorded" };
+    const parsed = JSON.parse(row.value);
+    return parsed && typeof parsed === "object" ? parsed : { ok: false, skipped: "invalid_pull_record" };
+  } catch {
+    return { ok: false, skipped: "pull_diagnostics_unavailable" };
+  }
+}
+__name(readVaultPullDiagnostics, "readVaultPullDiagnostics");
 function doFetch(env, action) {
   return env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}`));
 }
@@ -11616,7 +11747,7 @@ var wrapper_default = {
         if (Number(results[0]?.meta?.changes || 0) !== 1 || Number(results[1]?.meta?.changes || 0) !== 1) {
           return Response.json({ ok: false, error: "repair_race_or_enqueue_failed" }, { status: 409, headers: JSON_HEADERS2 });
         }
-        ctx.waitUntil(drainSyncOutbox(env, 3));
+        ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin));
         return Response.json({ ok: true, repaired: true, queued: true, noteId, removedFileId: expectedFileId, contentHash: expectedContentHash }, { status: 200, headers: JSON_HEADERS2 });
       } catch {
         return Response.json({ ok: false, error: "identity_repair_failed" }, { status: 502, headers: JSON_HEADERS2 });
@@ -11726,7 +11857,7 @@ var wrapper_default = {
     if (retryMatch && request.method === "POST") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       const result = await retrySyncOutboxJob(env, Number(retryMatch[1]));
-      if (result.ok && result.requeued) ctx.waitUntil(drainSyncOutbox(env, 3));
+      if (result.ok && result.requeued) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin));
       return Response.json(result, { status: result.ok ? 200 : result.error === "job_not_found" ? 404 : 409, headers: JSON_HEADERS2 });
     }
 
@@ -11743,7 +11874,8 @@ var wrapper_default = {
       } catch {
         // The pending migration has not necessarily been applied in every environment.
       }
-      return Response.json({ ...status, outbox }, { status: response.status, headers: JSON_HEADERS2 });
+      const pull = await readVaultPullDiagnostics(env);
+      return Response.json({ ...status, outbox, pull }, { status: response.status, headers: JSON_HEADERS2 });
     }
     if (url.pathname.startsWith("/sync/")) {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
@@ -11796,7 +11928,14 @@ var wrapper_default = {
         }
       }
       if (url.pathname === "/sync/pull" && request.method === "POST") {
-        const result = await pullFromVault(env, ctx, url.origin, url.searchParams.get("apply") === "1");
+        let result;
+        try {
+          result = await pullFromVault(env, ctx, url.origin, url.searchParams.get("apply") === "1");
+        } catch (error) {
+          await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "manual"));
+          throw error;
+        }
+        await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "manual"));
         return Response.json(result, { status: result.ok ? 200 : 502, headers: JSON_HEADERS2 });
       }
     }
@@ -11818,7 +11957,16 @@ var wrapper_default = {
       try {
         await drainSyncOutbox(env, 10);
         const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
+        // Persist every scheduled pull outcome (success and failure alike) so
+        // GET /sync/status can show the latest pull without reading logs.
+        await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "scheduled"));
         if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, errorCode: safeErrorCode(result.error) } }));
+        if (!result.ok) console.error(JSON.stringify({ pullFailure: { ok: false, stage: result.stage, errorCode: safeErrorCode(result.error) } }));
+      } catch (error) {
+        await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "scheduled"));
+        console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
+      }
+      try {
         const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
         const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
         await persistRecoveryDiagnostics(env, reconcile);
@@ -11826,7 +11974,7 @@ var wrapper_default = {
           console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
         }
       } catch (error) {
-        console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
+        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false }, failure: describeSafeFailure("safe_note_id_recovery_failed", error) }));
       }
       return worker_default.scheduled(event, env, ctx);
     }
