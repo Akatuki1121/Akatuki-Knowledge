@@ -121,6 +121,9 @@ for (const contract of [
   "body.dryRun === true",
   "SELECT file_id, path FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'vault_pull_live_content_conflict'",
   "DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'",
+  "SELECT file_id FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'sync_identity_mapping_conflict'",
+  "SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ?",
+  "DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'sync_identity_mapping_conflict'",
   "identityConflicts, resolvedReviews, observationComplete",
   '"needsReview", "identityConflicts", "resolvedReviews"',
 ]) {
