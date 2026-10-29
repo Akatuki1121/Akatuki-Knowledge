@@ -16,7 +16,7 @@ import {
   toSqliteDateTime
 } from "./background-task-store.mjs";
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
-import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
+import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob, purgeDeadSyncOutboxJobs } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -12032,6 +12032,15 @@ var wrapper_default = {
       const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
       const result = await listSyncOutboxJobs(env, { status, before, limit });
       return Response.json(result, { status: result.ok ? 200 : 503, headers: JSON_HEADERS2 });
+    }
+    if (url.pathname === "/sync/outbox/purge-dead" && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      let body;
+      try { body = await request.json(); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ ok: false, error: "invalid_request" }, { status: 400, headers: JSON_HEADERS2 });
+      const result = await purgeDeadSyncOutboxJobs(env, { dryRun: body.dryRun === true, jobIds: body.jobIds });
+      const status = result.ok ? 200 : result.error === "invalid_job_ids" ? 400 : 503;
+      return Response.json(result, { status, headers: JSON_HEADERS2 });
     }
     const retryMatch = url.pathname.match(new RegExp("^/sync/outbox/([0-9]+)/retry$"));
     if (retryMatch && request.method === "POST") {
