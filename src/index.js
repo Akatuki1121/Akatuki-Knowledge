@@ -11623,6 +11623,7 @@ var wrapper_default = {
     }
 
     if (url.pathname === "/sync/restore-archived-rebind" && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       let body;
       try { body = await readJson(request); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
       const path = typeof body.path === "string" ? body.path : "";
