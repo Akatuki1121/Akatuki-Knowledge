@@ -27,7 +27,8 @@ function validInput(target) {
   };
 }
 
-assert.equal(ARCHIVED_REBIND_TARGETS.length, 8, "the repair scope contains exactly eight paths");
+assert.equal(ARCHIVED_REBIND_TARGETS.length, 7, "only the seven Inbox targets with matching D1 path and vault identity are repairable");
+assert.equal(validateArchivedRebind({ path: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md" }).error, "path_not_allowed", "the history target with a D1/vault path mismatch is excluded");
 for (const target of ARCHIVED_REBIND_TARGETS) {
   const result = validateArchivedRebind(validInput(target));
   assert.equal(result.ok, true, "exact allowlisted target should pass: " + target.path);
@@ -69,6 +70,13 @@ for (const target of ARCHIVED_REBIND_TARGETS) {
   assert.equal(validateArchivedRebind(input).error, "path_not_allowed", "directory membership does not expand the allowlist");
 }
 
+const readNoteStart = source.indexOf('if (action === "read-note") {');
+const readNoteEnd = source.indexOf('if (action === "reconcile-note") {', readNoteStart);
+assert.ok(readNoteStart >= 0 && readNoteEnd > readNoteStart, "actual Durable Object read-note handler must exist");
+const readNoteHandler = source.slice(readNoteStart, readNoteEnd);
+for (const target of ARCHIVED_REBIND_TARGETS) {
+  assert.ok(readNoteHandler.includes(JSON.stringify(target.path)), "Durable Object read-note allowlist must include repair target: " + target.path);
+}
 const repairRouteStart = source.indexOf('if (url.pathname === "/sync/restore-archived-rebind" && request.method === "POST") {');
 const repairRouteAuth = source.indexOf("if (!await isAuthorized(request, env))", repairRouteStart);
 const repairRouteBody = source.indexOf("let body;", repairRouteStart);
