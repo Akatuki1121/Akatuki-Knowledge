@@ -11447,7 +11447,7 @@ async function appendImprovementResult(env, payload, taskId, result) {
   });
   const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
     + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n" + resultText + "\n\x60\x60\x60\n";
-  const route = new URL("/api/notes/" + encodeURIComponent(row.path) + "/correction", "https://internal");
+  const route = new URL("/api/notes/" + encodeURIComponent(row.id) + "/correction", "https://internal");
   const request = new Request(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
   const response = await correctNote(request, route, env);
   if (!response.ok) throw new Error("improvement_result_writeback_failed");
