@@ -266,6 +266,7 @@ const doc = new Y.Doc();
 const idToText = doc.getMap("idToText");
 const meta = doc.getMap("meta");
 const pathToId = doc.getMap("pathToId");
+const sys = doc.getMap("sys");
 const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
   prefix: ${JSON.stringify("/__integration/yaos/vault/sync/" + encodeURIComponent(VAULT_ID))},
   params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
@@ -310,6 +311,7 @@ provider.on("sync", synced => {
   entry.set("device", "integration-test");
   meta.set(${JSON.stringify(fileId)}, entry);
   pathToId.set(${JSON.stringify(path)}, ${JSON.stringify(fileId)});
+  sys.set("initialized", true);
   setTimeout(() => { clearTimeout(timeout); done(0); }, 500);
 });
 void provider.connect();
