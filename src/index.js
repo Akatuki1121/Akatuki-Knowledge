@@ -11285,6 +11285,56 @@ var wrapper_default = {
       }
     }
 
+    if (url.pathname === "/sync/repair-identity-map" && request.method === "POST") {
+      let body;
+      try { body = await readJson(request); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
+      const noteId = typeof body.noteId === "string" ? body.noteId : "";
+      const expectedPath = typeof body.expectedPath === "string" ? body.expectedPath : "";
+      const expectedFileId = typeof body.expectedFileId === "string" ? body.expectedFileId : "";
+      const expectedSyncUuid = typeof body.expectedSyncUuid === "string" ? body.expectedSyncUuid : "";
+      const expectedContentHash = typeof body.expectedContentHash === "string" ? body.expectedContentHash : "";
+      if (!noteId || !expectedPath || !expectedFileId || !isValidSyncUuid(expectedSyncUuid) || !/^[a-f0-9]{64}$/i.test(expectedContentHash) || noteId !== expectedPath) {
+        return Response.json({ ok: false, error: "invalid_repair_request" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      try {
+        const note = await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ?").bind(noteId).first();
+        if (!note || note.deleted_at || note.path !== expectedPath || note.content_hash !== expectedContentHash || note.sync_uuid !== expectedSyncUuid || await sha256(note.content) !== expectedContentHash) {
+          return Response.json({ ok: false, error: "note_precondition_failed" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        const mappings = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ? OR note_id = ? OR sync_uuid = ?").bind(expectedFileId, noteId, expectedSyncUuid).all()).results || [];
+        if (mappings.length !== 1 || mappings[0].file_id !== expectedFileId || mappings[0].note_id !== noteId || mappings[0].sync_uuid !== expectedSyncUuid || mappings[0].last_path !== expectedPath) {
+          return Response.json({ ok: false, error: "identity_mapping_precondition_failed" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        const diffResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/diff"));
+        const diff = await diffResponse.json().catch(() => null);
+        if (!diffResponse.ok || !diff?.ok || diff.initialized !== true || !Array.isArray(diff.observations) || Number(diff.unreadable || 0) !== 0 || diff.observations.length < Number(diff.vaultFiles || 0)) {
+          return Response.json({ ok: false, error: "vault_observation_incomplete" }, { status: 503, headers: JSON_HEADERS2 });
+        }
+        if (diff.observations.some((item) => item && (item.fileId === expectedFileId || item.path === expectedPath))) {
+          return Response.json({ ok: false, error: "vault_identity_still_present" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        const previous = await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(noteId).first();
+        const now = new Date().toISOString();
+        const payload = {
+          id: note.id, path: note.path, title: note.title || "", content: note.content,
+          contentHash: note.content_hash, syncUuid: note.sync_uuid, deletedAt: null,
+          expectedPreviousContent: previous?.content ?? null, allowRestore: false
+        };
+        const results = await env.DB.batch([
+          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND sync_uuid = ? AND note_id = ? AND last_path = ?")
+            .bind(expectedFileId, expectedSyncUuid, noteId, expectedPath),
+          env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) SELECT ?, 'notes', ?, 'upsert', ?, 'pending', 0, ?, ?, ? WHERE changes() = 1")
+            .bind(crypto.randomUUID(), noteId, JSON.stringify(payload), now, now, now)
+        ]);
+        if (Number(results[0]?.meta?.changes || 0) !== 1 || Number(results[1]?.meta?.changes || 0) !== 1) {
+          return Response.json({ ok: false, error: "repair_race_or_enqueue_failed" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        ctx.waitUntil(drainSyncOutbox(env, 3));
+        return Response.json({ ok: true, repaired: true, queued: true, noteId, removedFileId: expectedFileId, contentHash: expectedContentHash }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, error: "identity_repair_failed" }, { status: 502, headers: JSON_HEADERS2 });
+      }
+    }
     if (url.pathname === "/sync/identity-review" && request.method === "GET") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       const classification = url.searchParams.get("classification") || "needs_review";
