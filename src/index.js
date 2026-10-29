@@ -9360,8 +9360,8 @@ var MAX_APPLY_LIMIT = 50;
 var MIN_VAULT_FILES_FOR_WRITE = 50;
 var MAX_LIST = 300;
 var MAX_SMALL_LIST = 30;
-var MAX_PULL_NOTES = 10;
-var MAX_PULL_BYTES = 4e5;
+var MAX_PULL_NOTES = 20;
+var MAX_PULL_BYTES = 6.5e5;
 var DEFAULT_STRIP_LIMIT = 100;
 var MAX_STRIP_LIMIT = 1000;
 var RESERVED_ROOT = "Akatuki Knowledge";
@@ -9634,10 +9634,11 @@ var YjsClientDO = class extends DurableObject {
     let queuedCandidates = 0;
     const queue = (path, fileId, content, contentHash) => {
       queuedCandidates++;
-      if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + content.length > MAX_PULL_BYTES) return;
+      const contentBytes = new TextEncoder().encode(content).byteLength;
+      if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + contentBytes > MAX_PULL_BYTES) return;
       const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
       result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
-      result.collectedBytes += content.length;
+      result.collectedBytes += contentBytes;
     };
     for (const entry of entries) {
       const { path, fileId, deleted } = entry;
