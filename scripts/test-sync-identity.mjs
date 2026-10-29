@@ -435,14 +435,14 @@ for (const path of [
 {
   const content = "# Identity mapping recovered";
   const path = "Notes/Tasks/identity-row.md";
-  const seed = ({ mappingCount = 1, noteDeleted = false, notePath = path, mappingPath = path, observationPath = path, observedContent = content, noteHash = hash(content), pending = false } = {}) => {
+  const seed = ({ mappingCount = 1, noteDeleted = false, notePath = path, mappingPath = path, mappingNoteId = path, mappingUuid = uuidA, observationPath = path, observedContent = content, pending = false } = {}) => {
     const db = makeDb([note(path, notePath, content, uuidA, noteDeleted ? now : null)], Array.from({ length: mappingCount }, (_, index) => ({
-      file_id: "file-identity-row", sync_uuid: uuidA, note_id: path, last_path: mappingPath, created_at: now, updated_at: now,
+      file_id: "file-identity-row", sync_uuid: mappingUuid, note_id: mappingNoteId, last_path: mappingPath, created_at: now, updated_at: now,
       ...(index ? { duplicate: index } : {})
     })));
     db.reviews.push({ file_id: "file-identity-row", path: "Notes/Inbox/old-location.md", content_hash: "historical-hash", classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: now, last_seen_at: now });
     if (pending) db.jobs.push({ entity_id: path, status: "processing" });
-    return { db, observations: [observation("file-identity-row", observationPath, observedContent)] , noteHash };
+    return { db, observations: [observation("file-identity-row", observationPath, observedContent)] };
   };
   const healthy = seed();
   const healthyRes = await syncNotes(request([], healthy.observations, true, true), { DB: healthy.db });
@@ -455,6 +455,8 @@ for (const path of [
     ["deleted note", { noteDeleted: true }],
     ["note path mismatch", { notePath: "Notes/Tasks/other.md" }],
     ["mapping last_path mismatch", { mappingPath: "Notes/Tasks/other.md" }],
+    ["mapping note_id mismatch", { mappingNoteId: "Notes/Tasks/other.md" }],
+    ["mapping sync_uuid mismatch", { mappingUuid: uuidB }],
     ["observation path mismatch", { observationPath: "Notes/Tasks/other.md" }],
     ["content hash mismatch", { observedContent: "# Different Vault content" }],
     ["pending outbox", { pending: true }]
