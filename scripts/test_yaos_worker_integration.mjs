@@ -254,6 +254,72 @@ void provider.connect();
   await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
 }
 
+async function seedYaosNote(path, content, fileId, clientPath) {
+  // Seed the real local YAOS Durable Object with the same Yjs map/text shape
+  // consumed by YjsClientDO.read-note; no fake read response or stub is used.
+  const client = `
+import * as Y from "yjs";
+import YSyncProvider from "y-partyserver/provider";
+import WebSocket from "ws";
+const host = "http://127.0.0.1:8787";
+const doc = new Y.Doc();
+const idToText = doc.getMap("idToText");
+const meta = doc.getMap("meta");
+const pathToId = doc.getMap("pathToId");
+const sys = doc.getMap("sys");
+const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
+  prefix: ${JSON.stringify("/__integration/yaos/vault/sync/" + encodeURIComponent(VAULT_ID))},
+  params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
+  WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
+  connect: false,
+});
+let finished = false;
+function done(code) {
+  if (finished) return;
+  finished = true;
+  provider.destroy();
+  doc.destroy();
+  process.exitCode = code;
+}
+provider.on("connection-error", error => {
+  console.error("YAOS seed client connection error: " + String(error));
+});
+const timeout = setTimeout(() => {
+  console.error("YAOS seed client timed out");
+  done(1);
+}, 10000);
+provider.on("sync", synced => {
+  if (!synced || finished) return;
+  const matches = Array.from(meta.entries()).filter(([, value]) => {
+    const notePath = value instanceof Y.Map
+      ? value.get("path")
+      : value && typeof value === "object" ? value.path : null;
+    return notePath === ${JSON.stringify(path)};
+  });
+  if (matches.length > 0 || meta.has(${JSON.stringify(fileId)})) {
+    console.error("YAOS seed target already exists");
+    clearTimeout(timeout);
+    done(1);
+    return;
+  }
+  const text = new Y.Text();
+  text.insert(0, ${JSON.stringify(content)});
+  idToText.set(${JSON.stringify(fileId)}, text);
+  const entry = new Y.Map();
+  entry.set("path", ${JSON.stringify(path)});
+  entry.set("mtime", Date.now());
+  entry.set("device", "integration-test");
+  meta.set(${JSON.stringify(fileId)}, entry);
+  pathToId.set(${JSON.stringify(path)}, ${JSON.stringify(fileId)});
+  sys.set("initialized", true);
+  setTimeout(() => { clearTimeout(timeout); done(0); }, 500);
+});
+void provider.connect();
+`;
+  await writeFile(clientPath, client);
+  await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
+}
+
 async function importNote(path, content, title, fileId) {
   const contentHash = createHash("sha256").update(content).digest("hex");
   const result = await request("/api/sync", {
@@ -283,6 +349,63 @@ async function seedLocalNote(stateDir, path, content, title) {
   } finally {
     await rm(sqlPath, { force: true });
   }
+}
+
+async function verifyArchivedRebindReadsActualVault(clientPath) {
+  const target = {
+    path: "Notes/Inbox/akatuki-knowledge-triage.md",
+    currentFileId: "xI1hOes1Xznnv9TG",
+    oldFileId: "XrTSfF-A7rQ6qNBE",
+    syncUuid: "737f562f-cdfd-5c5f-b4cf-438a3e1fd9b3",
+  };
+  const content = "# Archived rebind vault-read integration regression\n\nThis note exists only in the isolated local YAOS test vault.\n";
+  const contentHash = createHash("sha256").update(content).digest("hex");
+  await seedYaosNote(target.path, content, target.currentFileId, clientPath);
+  const observation = await waitFor(async () => {
+    const diff = await request("/sync/diff");
+    if (!diff?.ok || !Array.isArray(diff.observations)) return false;
+    return diff.observations.find(item =>
+      item?.path === target.path &&
+      item?.fileId === target.currentFileId &&
+      item?.deleted !== true &&
+      item?.contentHash === contentHash
+    ) || false;
+  }, "real YAOS vault observation for archived-rebind read regression");
+  assert.equal(observation.contentHash, contentHash, "the real YAOS observation contains the seeded note hash");
+  const directResponse = await fetch(HOST + "/__integration/read-note?path=" + encodeURIComponent(target.path));
+  const directPayload = await directResponse.json();
+  assert.equal(directResponse.status, 200, "the internal read-note handler reads the actual YAOS note: " + JSON.stringify(directPayload));
+  assert.equal(directPayload.fileId, target.currentFileId);
+  assert.equal(directPayload.contentHash, contentHash);
+
+  // Exercise the actual Worker -> Durable Object -> YAOS read path. The local
+  // fixture is intentionally active rather than archived, so safety checks
+  // must reject it after the vault body has been read, without applying writes.
+  const response = await fetch(HOST + "/sync/restore-archived-rebind", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      path: target.path,
+      expectedOldFileId: target.oldFileId,
+      expectedCurrentFileId: target.currentFileId,
+      expectedSyncUuid: target.syncUuid,
+      expectedD1Hash: contentHash,
+      expectedVaultHash: observation.contentHash,
+    }),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 409, "real vault read succeeds and the active fixture is rejected by a later safety precondition");
+  assert.equal(payload.ok, false);
+  assert.equal(payload.applied, false);
+  assert.notEqual(payload.error, "vault_note_read_failed", "the former vault-read failure must not recur");
+  assert.ok(
+    ["archived_note_precondition_failed", "content_hash_precondition_failed", "identity_mapping_precondition_failed"].includes(payload.error),
+    "the request must reach guarded D1/identity validation: " + JSON.stringify(payload),
+  );
+  markPhase("実YAOS保管庫を使った archived-rebind read 回帰テスト完了");
 }
 
 async function correctNote(id, content, title) {
@@ -466,6 +589,8 @@ SYNC_TOKEN = "${TOKEN}"
 
     await startWorker();
     markPhase("Knowledge Worker起動完了");
+
+    await verifyArchivedRebindReadsActualVault(clientPath);
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
