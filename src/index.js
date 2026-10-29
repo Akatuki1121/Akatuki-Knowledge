@@ -148,6 +148,16 @@ async function syncNotes(request, env) {
   const observations = Array.isArray(body.observations) ? body.observations : [];
   if (observations.length > 2000) return json({ error: "too_many_observations" }, 400);
   const observationComplete = body.observationComplete === true;
+  const candidateFileIds = new Set(body.notes.map((input) => typeof input?.fileId === "string" ? input.fileId : null).filter(Boolean));
+  // Only these five exact paths are owner-approved to prefer Obsidian over divergent live D1 content.
+  const vaultAuthoritativePaths = new Set([
+    "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md",
+    "Notes/設定/ポリシー/情報の平坦化：思考速度の防衛.md",
+    "Notes/設定/ポリシー/奏星のプロファイル.md",
+    "Notes/設定/テーマ/グラフビュー配色定義.md",
+    "Notes/Purge/経緯/Purge_リリース履歴.md"
+  ]);
+  const isVaultAuthoritativePath = (path) => vaultAuthoritativePaths.has(path);
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0;
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
@@ -184,6 +194,9 @@ async function syncNotes(request, env) {
   // Establish identities for already-known D1 notes before considering any file new.
   for (const observation of observations) {
     if (!observation || typeof observation.fileId !== "string" || !observation.fileId || !safePath(observation.path)) continue;
+    // /sync/pull sends a complete vault observation, but only queued candidate files need identity reconciliation.
+    // Avoid a D1 query/write sequence for every unchanged vault file on each pull.
+    if (!candidateFileIds.has(observation.fileId)) continue;
     const path = stableId(observation.path);
     if (observation.deleted === true) continue;
     const mapped = await mappingsFor(observation.fileId, "", "");
@@ -291,9 +304,19 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", "path_identity_conflict");
       continue;
     }
-    if (previous?.deleted_at) {
+    const restorableArchived = body.vaultPull === true
+      && Boolean(previous?.deleted_at)
+      && previous.path === path
+      && occupied?.id === previous.id
+      && observationComplete;
+    if (previous?.deleted_at && !restorableArchived) {
       await recordReview(fileId, path, contentHash, "needs_review", "archived_note_identity");
       archivedSkipped++;
+      continue;
+    }
+    if (body.vaultPull === true && previous && !previous.deleted_at
+      && previous.content_hash !== contentHash && !isVaultAuthoritativePath(path)) {
+      await recordReview(fileId, path, contentHash, "needs_review", "vault_pull_live_content_conflict");
       continue;
     }
     if (previous && isValidSyncUuid(legacyId) && isValidSyncUuid(previous.sync_uuid) && legacyId !== previous.sync_uuid) {
@@ -333,7 +356,37 @@ async function syncNotes(request, env) {
     const tags = JSON.stringify(extractTags(content, input.tags));
     const moved = Boolean(previous && previous.path !== path);
     try {
-      if (previous && previous.content_hash === contentHash && previous.title === title) {
+      if (restorableArchived) {
+        const archiveEvent = await env.DB.prepare(
+          "SELECT archive_event_id, previous_ai_allowed FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1"
+        ).bind(previous.id).first();
+        const credential = inspectWholeContent(content, env).credentials;
+        const aiAllowed = credential ? 0 : Number(archiveEvent?.previous_ai_allowed || 0);
+        const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+        const restoreStatements = [];
+        if (previous.content !== content) {
+          restoreStatements.push(env.DB.prepare(
+            "INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)"
+          ).bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now));
+        }
+        restoreStatements.push(
+          env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, ai_allowed = ?, review_state = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, deleted_at = NULL WHERE id = ? AND path = ? AND deleted_at IS NOT NULL")
+            .bind(path, syncUuid, title, content, contentHash, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, now, tags, aiAllowed, reviewState, previous.id, path),
+          env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid")
+            .bind(fileId, syncUuid, previous.id, path, now, now),
+          env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE archive_event_id = ? AND restored_at IS NULL").bind(now, archiveEvent?.archive_event_id ?? -1),
+          env.DB.prepare("DELETE FROM agent_memory_suppressions WHERE source = 'obsidian' AND note_id = ?").bind(previous.id),
+          env.DB.prepare("UPDATE agent_memory_metadata SET status = 'unverified', updated_at = ? WHERE source = 'obsidian' AND note_id = ? AND status = 'forgotten'").bind(now, previous.id),
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId)
+        );
+        await env.DB.batch(restoreStatements);
+        const restored = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, deleted_at FROM notes WHERE id = ?").bind(previous.id).first();
+        if (!restored || restored.deleted_at || restored.path !== path || restored.sync_uuid !== syncUuid || restored.content_hash !== contentHash) {
+          await recordReview(fileId, path, contentHash, "needs_review", "archived_note_restore_verification_failed");
+          continue;
+        }
+        updated++;
+      } else if (previous && previous.content_hash === contentHash && previous.title === title) {
         await env.DB.batch([
           env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
           env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid").bind(fileId, syncUuid, previous.id, path, now, now),
@@ -9313,8 +9366,8 @@ var MAX_APPLY_LIMIT = 50;
 var MIN_VAULT_FILES_FOR_WRITE = 50;
 var MAX_LIST = 300;
 var MAX_SMALL_LIST = 30;
-var MAX_PULL_NOTES = 10;
-var MAX_PULL_BYTES = 4e5;
+var MAX_PULL_NOTES = 20;
+var MAX_PULL_BYTES = 6.5e5;
 var DEFAULT_STRIP_LIMIT = 100;
 var MAX_STRIP_LIMIT = 1000;
 var RESERVED_ROOT = "Akatuki Knowledge";
@@ -9587,10 +9640,11 @@ var YjsClientDO = class extends DurableObject {
     let queuedCandidates = 0;
     const queue = (path, fileId, content, contentHash) => {
       queuedCandidates++;
-      if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + content.length > MAX_PULL_BYTES) return;
+      const contentBytes = new TextEncoder().encode(content).byteLength;
+      if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + contentBytes > MAX_PULL_BYTES) return;
       const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
       result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
-      result.collectedBytes += content.length;
+      result.collectedBytes += contentBytes;
     };
     for (const entry of entries) {
       const { path, fileId, deleted } = entry;
@@ -11295,7 +11349,7 @@ async function pullFromVault(env, ctx, origin, apply) {
     new Request(`${origin}/api/sync`, {
       method: "POST",
       headers: { authorization: `Bearer ${env.API_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ notes: data.notes, observations: data.observations, observationComplete: data.observationComplete })
+      body: JSON.stringify({ notes: data.notes, observations: data.observations, observationComplete: data.observationComplete, vaultPull: true })
     }),
     env,
     ctx
