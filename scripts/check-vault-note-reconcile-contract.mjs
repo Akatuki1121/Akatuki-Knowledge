@@ -24,6 +24,9 @@ for (const contract of [
   "vault_hash_precondition_failed",
   "d1_hash_precondition_failed",
   "d1_compare_and_swap_failed",
+  "directionByPath",
+  "direction_mismatch",
+  "verified: true",
   "await sha256Hex(note.content) !== expectedD1Hash",
   'direction === "vault_to_d1"',
   "textValue.delete(0, textValue.length)",
@@ -34,5 +37,6 @@ for (const contract of [
   "path_not_allowed"
 ]) assert.ok(reconcile.includes(contract), "Missing guarded reconciliation contract: " + contract);
 assert.ok(source.includes('await mutate(doc2)'), "vault mutation must await asynchronous hash and D1 precondition checks");
+assert.ok(source.includes('d1: { content: d1.content, contentHash: d1.content_hash }, vault: { content: vault.content, contentHash: vault.contentHash, fileId: vault.fileId }'), "inspection must expose both current bodies and hashes");
 assert.ok(source.includes('if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized"'), "sync routes must require authorization");
 console.log("Guarded vault note reconciliation contract checks passed.");
