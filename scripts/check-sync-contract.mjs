@@ -208,10 +208,10 @@ function buildHandler(name, marker, globals) {
 }
 const jsonResult = (data, status = 200) => ({ data, status, ok: status < 400 });
 const decodeRoute = (url) => {
-  const match = url.pathname.match(/^\\/api\\/notes\\/(.+)$/);
-  return match ? decodeURIComponent(match[1]) : null;
+  const prefix = "/api/notes/";
+  return url.pathname.startsWith(prefix) ? decodeURIComponent(url.pathname.slice(prefix.length)) : null;
 };
-const normalizePath = (value) => value.replace(/\\\\/g, "/").replace(/\\/+/g, "/").replace(/^\\.\\//, "");
+const normalizePath = (value) => value;
 const movedNote = { id: "Notes/Old.md", path: "Notes/New.md", title: "Moved", content: "# Moved", content_hash: "a".repeat(64), sync_uuid: "11111111-1111-4111-8111-111111111111", ai_allowed: 1, review_state: "ready", deleted_at: null };
 function makeDeleteDb(seed) {
   const state = structuredClone(seed);
