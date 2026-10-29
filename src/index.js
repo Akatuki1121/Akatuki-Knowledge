@@ -11884,6 +11884,43 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           },
         });
 
+        const taskRecord = await getAgentTask(this.env.DB, taskId);
+        if (taskRecord?.payload?.improvementRequest === true) {
+          const pending = output.pendingGitHubWrite;
+          let executionResult;
+          if (!pending || pending.status !== "pending" || !pending.plan || typeof pending.planHash !== "string") {
+            executionResult = { status: "stopped", reason: "no_change_plan" };
+          } else {
+            try {
+              const execution = await step.do(
+                "execute-improvement-plan-" + attempt,
+                { retries: { limit: 1, delay: "1 second" } },
+                async () => executeApprovedImprovementPlan({
+                  plan: pending.plan,
+                  expectedPlanHash: pending.planHash,
+                  token: this.env.GITHUB_TOKEN || "",
+                  fetchImpl: fetch
+                })
+              );
+              executionResult = execution.ok
+                ? { status: "completed", pullRequestUrl: execution.pullRequestUrl, autoMergeEnabled: execution.autoMergeEnabled, reason: execution.reason || null }
+                : { status: "stopped", reason: execution.reason || "plan_rejected" };
+            } catch (error) {
+              executionResult = { status: "failed", reason: safeErrorCode(error?.message), error: describeAgentTaskError(error, this.env) };
+            }
+          }
+          await step.do(
+            "write-improvement-result-" + attempt,
+            { retries: { limit: 1, delay: "1 second" } },
+            async () => appendImprovementResult(this.env, taskRecord.payload, taskId, executionResult)
+          );
+          output.reply = executionResult.status === "completed"
+            ? "改善依頼の PR を作成しました: " + executionResult.pullRequestUrl
+              + (executionResult.autoMergeEnabled ? "\\n自動マージ（squash）を有効化しました。CI が成功するまで GitHub 側で待機します。" : "\\n自動マージは有効化できませんでした: " + (executionResult.reason || "unknown"))
+            : "改善依頼を停止しました。理由: " + (executionResult.reason || executionResult.status);
+          output.pendingGitHubWrite = null;
+        }
+
         const noteById = new Map(context.notes.map((note) => [note.id, note]));
         for (const call of output.toolCalls) {
           if (Array.isArray(call.result?.notes)) {
