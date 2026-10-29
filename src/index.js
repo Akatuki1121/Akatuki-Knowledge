@@ -18,6 +18,9 @@ import {
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
+import { callWorkersAi } from "./workers-ai-client.mjs";
+import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey } from "./agent-improvement-policy.mjs";
+import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
   buildAgentMemorySuppressionStatements
@@ -11515,7 +11518,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           const checkpoint = task.checkpoint || {};
           const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 512;
           const maxOutputTokens = Math.max(128, Math.min(1024, requested));
-          const allowWebResearch = task.payload.allowWebResearch === true;
+          const allowWebResearch = false;
           if (checkpoint.stage === "completed" && typeof checkpoint.result === "string") {
             return { resumeCompleted: true, maxOutputTokens };
           }
@@ -11658,7 +11661,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               });
               if (!reserved) throw new Error("ai_token_budget_exhausted");
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
-              const raw = await callGemini(this.env, inspection.text, prepared.maxOutputTokens, {
+              const raw = await callWorkersAi(this.env, inspection.text, prepared.maxOutputTokens, {
                 responseMimeType: "application/json",
                 signal: AbortSignal.timeout(30_000)
               });
