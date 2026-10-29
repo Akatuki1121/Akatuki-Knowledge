@@ -349,7 +349,7 @@ async function seedLocalNote(stateDir, path, content, title) {
   }
 }
 
-async function verifyArchivedRebindReadsActualVault() {
+async function verifyArchivedRebindReadsActualVault(clientPath) {
   const target = {
     path: "Notes/Inbox/akatuki-knowledge-triage.md",
     currentFileId: "xI1hOes1Xznnv9TG",
@@ -583,7 +583,7 @@ SYNC_TOKEN = "${TOKEN}"
     await startWorker();
     markPhase("Knowledge Worker起動完了");
 
-    await verifyArchivedRebindReadsActualVault();
+    await verifyArchivedRebindReadsActualVault(clientPath);
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
