@@ -368,6 +368,22 @@ const observation = (fileId, path, content, deleted = false) => ({
   assert.equal(db.notes[0].content, vaultContent);
 }
 
+for (const path of [
+  "Notes/設定/unapproved-new-note.md",
+  "Notes/Purge/経緯/unapproved-new-note.md"
+]) {
+  const d1Content = "# Preserve live D1 content";
+  const vaultContent = "# Differing vault content";
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-prefix-conflict", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  const res = await syncNotes(request([{ fileId: "file-prefix-conflict", path, content: vaultContent }], [observation("file-prefix-conflict", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.updated, 0, "directory membership alone is not owner approval to overwrite live D1 content");
+  assert.equal(db.notes[0].content, d1Content);
+  assert.equal(db.reviews[0].reason, "vault_pull_live_content_conflict");
+}
+
 {
   const content = "# Pull candidate";
   const unrelated = Array.from({ length: 600 }, (_, i) => observation("unchanged-" + i, "Notes/unchanged-" + i + ".md", "# unchanged"));
