@@ -189,7 +189,11 @@ export async function listSyncOutboxJobs(env, options = {}) {
 }
 
 function outboxErrorCode(value) {
-  const match = typeof value === "string" ? value.match(/^[a-z][a-z0-9_]{0,79}/i) : null;
+  if (typeof value !== "string") return "unknown";
+  // last_error holds String(error), so the stored text starts with the error
+  // name ("Error: <code>: ..."). The code is the first token after that prefix.
+  const message = value.replace(/^[A-Za-z]*Error: /, "");
+  const match = message.match(/^[a-z][a-z0-9_]{0,79}/i);
   return match ? match[0] : "unknown";
 }
 

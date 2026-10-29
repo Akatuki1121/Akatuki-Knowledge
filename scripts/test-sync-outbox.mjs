@@ -271,7 +271,7 @@ console.log("Sync outbox module tests passed.");
 
 {
   const rows = [
-    { job_id: 1, status: "dead", last_error: "vault_content_conflict" },
+    { job_id: 1, status: "dead", last_error: "Error: vault_content_conflict: vault content differs from D1" },
     { job_id: 2, status: "dead", last_error: "sync_identity_mapping_conflict" },
     { job_id: 3, status: "pending", last_error: null },
     { job_id: 4, status: "processing", last_error: null },
