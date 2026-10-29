@@ -69,6 +69,10 @@ for (const target of ARCHIVED_REBIND_TARGETS) {
   assert.equal(validateArchivedRebind(input).error, "path_not_allowed", "directory membership does not expand the allowlist");
 }
 
+const repairRouteStart = source.indexOf('if (url.pathname === "/sync/restore-archived-rebind" && request.method === "POST") {');
+const repairRouteAuth = source.indexOf("if (!await isAuthorized(request, env))", repairRouteStart);
+const repairRouteBody = source.indexOf("let body;", repairRouteStart);
+assert.ok(repairRouteStart >= 0 && repairRouteAuth > repairRouteStart && repairRouteAuth < repairRouteBody, "repair endpoint authenticates before reading or applying the request");
 assert.ok(source.includes('url.pathname === "/sync/restore-archived-rebind"'), "dedicated authenticated endpoint exists");
 assert.ok(source.includes("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) SELECT"), "old D1 content is recorded as a revision");
 assert.ok(source.includes("deleted_at IS NOT NULL AND content_hash = ? AND sync_uuid = ?"), "restore is conditional on the archived D1 row and expected D1 hash");
