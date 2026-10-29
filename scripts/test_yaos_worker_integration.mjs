@@ -370,6 +370,11 @@ async function verifyArchivedRebindReadsActualVault(clientPath) {
     ) || false;
   }, "real YAOS vault observation for archived-rebind read regression");
   assert.equal(observation.contentHash, contentHash, "the real YAOS observation contains the seeded note hash");
+  const directResponse = await fetch(HOST + "/__integration/read-note?path=" + encodeURIComponent(target.path));
+  const directPayload = await directResponse.json();
+  assert.equal(directResponse.status, 200, "the internal read-note handler reads the actual YAOS note: " + JSON.stringify(directPayload));
+  assert.equal(directPayload.fileId, target.currentFileId);
+  assert.equal(directPayload.contentHash, contentHash);
 
   // Exercise the actual Worker -> Durable Object -> YAOS read path. The local
   // fixture is intentionally active rather than archived, so safety checks
