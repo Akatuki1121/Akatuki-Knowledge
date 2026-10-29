@@ -184,7 +184,7 @@ var worker_default = {
     ctx.waitUntil(runScheduledMaintenance(env));
   }
 };
-const { enqueueSyncJob, backfillSyncUuidIndex, drainSyncOutbox } = createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid });
+const { enqueueSyncJob, prepareSyncJob, backfillSyncUuidIndex, drainSyncOutbox } = createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid });
 // Post-write immediate drain, chained. A single drainSyncOutbox call handles
 // at most 20 jobs, so one write that enqueues (or unblocks) more than a batch
 // would otherwise leave the remainder to the scheduled drain. After a write,
@@ -817,10 +817,25 @@ async function deleteNote(url, env) {
   if (!id2) return json({ error: "Invalid note route" }, 400);
   const table = await locateNote(env, id2);
   if (!table) return json({ error: "Note not found" }, 404);
-  const old = await env.DB.prepare(`SELECT ai_allowed, review_state, content_hash FROM ${table} WHERE id = ? AND deleted_at IS NULL`).bind(id2).first();
+  const old = table === "notes"
+    ? await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, ai_allowed, review_state FROM notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first()
+    : await env.DB.prepare("SELECT id, NULL AS path, title, content, content_hash, ai_allowed, review_state FROM telegram_notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first();
   if (!old) return json({ error: "Note not found" }, 404);
   const source = table === "notes" ? "obsidian" : "telegram";
   const now = (/* @__PURE__ */ new Date()).toISOString();
+  const previousRevision = table === "notes"
+    ? await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(id2).first()
+    : await env.DB.prepare("SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(id2).first();
+  // Prepare the tombstone event against the post-delete snapshot before
+  // committing anything: an identity conflict throws here and leaves the note
+  // live, instead of archiving the note with no event left to deliver. The
+  // prepared statements then join the archive batch, and the guarded job
+  // insert lands only when this batch's update is the one that sets
+  // deleted_at, matching the previous changes-check before enqueueing.
+  const prepared = await prepareSyncJob(env, table, id2, "delete", { jobGuard: { checks: [["deleted_at", now]] } }, {
+    row: { ...old, deleted_at: now },
+    previousRevisionContent: previousRevision?.content ?? null
+  });
   const statements = [
     env.DB.prepare("INSERT INTO note_archive_events (note_id, source, previous_ai_allowed, previous_review_state, archived_at) VALUES (?, ?, ?, ?, ?)")
       .bind(id2, source, Number(old.ai_allowed || 0), old.review_state || "ready", now),
@@ -833,9 +848,9 @@ async function deleteNote(url, env) {
       createdAt: now
     })
   ];
+  if (prepared) statements.push(...prepared.statements);
   const batchResults = await env.DB.batch(statements);
   const result = batchResults[1];
-  if (result.meta?.changes) await enqueueSyncJob(env, table, id2, "delete");
   return json({ ok: true, id: id2, deleted: Boolean(result.meta?.changes) });
 }
 __name(deleteNote, "deleteNote");
@@ -843,7 +858,9 @@ async function restoreNote(url, env) {
   const id2 = noteIdFromRoute(url, "restore");
   if (!id2) return json({ error: "Invalid note route" }, 400);
   const table = id2.startsWith("tg:") ? "telegram_notes" : "notes";
-  const archived = await env.DB.prepare(`SELECT id, content, deleted_at FROM ${table} WHERE id = ? AND deleted_at IS NOT NULL`).bind(id2).first();
+  const archived = table === "notes"
+    ? await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ? AND deleted_at IS NOT NULL").bind(id2).first()
+    : await env.DB.prepare("SELECT id, NULL AS path, title, content, content_hash, deleted_at FROM telegram_notes WHERE id = ? AND deleted_at IS NOT NULL").bind(id2).first();
   if (!archived) return json({ error: "Archived note not found" }, 404);
   const event = await env.DB.prepare("SELECT archive_event_id, previous_ai_allowed, previous_review_state FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1").bind(id2).first();
   if (!event) return json({ error: "Archive metadata not found" }, 409);
@@ -852,14 +869,28 @@ async function restoreNote(url, env) {
   const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const source = table === "notes" ? "obsidian" : "telegram";
-  const restoreResults = await env.DB.batch([
+  const previousRevision = table === "notes"
+    ? await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(id2).first()
+    : await env.DB.prepare("SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(id2).first();
+  // Prepare the restore event against the post-restore snapshot before
+  // committing anything: an identity conflict throws here and leaves the note
+  // archived, instead of restoring the note with no event left to deliver.
+  // The prepared statements then join the restore batch, and the guarded job
+  // insert lands only when this batch's update is the one that restored the
+  // row (deleted_at cleared and updated_at stamped with this request's time).
+  const prepared = await prepareSyncJob(env, table, id2, "upsert", { allowRestore: true, jobGuard: { checks: [["deleted_at", null], ["updated_at", now]] } }, {
+    row: { ...archived, deleted_at: null },
+    previousRevisionContent: previousRevision?.content ?? null
+  });
+  const restoreStatements = [
     env.DB.prepare(`UPDATE ${table} SET deleted_at = NULL, ai_allowed = ?, review_state = ?, updated_at = ?, next_retry_at = NULL WHERE id = ? AND deleted_at = ?`).bind(aiAllowed, reviewState, now, id2, archived.deleted_at),
     env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE archive_event_id = ? AND restored_at IS NULL").bind(now, event.archive_event_id),
     env.DB.prepare("DELETE FROM agent_memory_suppressions WHERE source = ? AND note_id = ?").bind(source, id2),
     env.DB.prepare("UPDATE agent_memory_metadata SET status = 'unverified', updated_at = ? WHERE source = ? AND note_id = ? AND status = 'forgotten'").bind(now, source, id2)
-  ]);
+  ];
+  if (prepared) restoreStatements.push(...prepared.statements);
+  const restoreResults = await env.DB.batch(restoreStatements);
   if (!restoreResults[0].meta?.changes) return json({ error: "Archive changed while restoring" }, 409);
-  await enqueueSyncJob(env, table, id2, "upsert", { allowRestore: true });
   return json({ ok: true, id: id2, restored: true, aiAllowed: Boolean(aiAllowed), reviewState });
 }
 __name(restoreNote, "restoreNote");
@@ -898,17 +929,12 @@ async function correctNote(request, url, env) {
   const table = await locateNote(env, id2);
   if (!table) return json({ error: "Note not found" }, 404);
   const old = table === "notes"
-    ? await env.DB.prepare("SELECT id, path, title, content, content_hash, ai_allowed, review_state FROM notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first()
+    ? await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, ai_allowed, review_state FROM notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first()
     : await env.DB.prepare("SELECT id, NULL AS path, title, content, content_hash, ai_allowed, review_state FROM telegram_notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first();
   const contentHash = await sha256(body.content);
   if (old.content_hash === contentHash) return json({ ok: true, unchanged: true, id: id2 });
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 300) : old.title;
-  if (table === "notes") {
-    await env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(id2, old.path, old.title, old.content, old.content_hash, now).run();
-  } else {
-    await env.DB.prepare("INSERT INTO telegram_note_revisions (note_id, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?)").bind(id2, old.title, old.content, old.content_hash, now).run();
-  }
   const inspected = inspectWholeContent(body.content, env);
   const credential = inspected.credentials;
   let aiAllowed = old.ai_allowed;
@@ -916,15 +942,31 @@ async function correctNote(request, url, env) {
   else if (table === "telegram_notes" && old.review_state === "blocked_credentials") aiAllowed = 1;
   const reviewState = credential ? "blocked_credentials" : "ready";
   const tags = JSON.stringify(extractTags(body.content, table === "notes" ? void 0 : []));
-  if (aiAllowed === 0) {
-    await env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = 0, sensitivity = COALESCE(?, sensitivity), review_state = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, credential ? "credentials" : null, reviewState, id2).run();
+  // Prepare the outbox event against the post-correction snapshot before
+  // committing anything: an identity conflict throws here and leaves D1
+  // untouched, instead of updating the note with no event left to deliver.
+  // The revision saved in the batch below holds the pre-correction content,
+  // which is exactly the expectedPreviousContent the event must carry.
+  const prepared = await prepareSyncJob(env, table, id2, "upsert", {}, {
+    row: { id: id2, path: old.path, title, content: body.content, content_hash: contentHash, deleted_at: null, sync_uuid: table === "notes" ? old.sync_uuid ?? null : null },
+    previousRevisionContent: old.content
+  });
+  const statements = [];
+  if (table === "notes") {
+    statements.push(env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(id2, old.path, old.title, old.content, old.content_hash, now));
   } else {
-    await env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = ?, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, aiAllowed, id2).run();
+    statements.push(env.DB.prepare("INSERT INTO telegram_note_revisions (note_id, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?)").bind(id2, old.title, old.content, old.content_hash, now));
   }
-  await env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = ? AND note_id = ? AND content_hash <> ? AND status IN ('active', 'unverified', 'conflicted')")
-    .bind(now, table === "notes" ? "obsidian" : "telegram", id2, contentHash).run();
-  await env.DB.prepare("DELETE FROM note_relations WHERE source_note_id = ? OR target_note_id = ?").bind(id2, id2).run();
-  await enqueueSyncJob(env, table, id2, "upsert");
+  if (aiAllowed === 0) {
+    statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = 0, sensitivity = COALESCE(?, sensitivity), review_state = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, credential ? "credentials" : null, reviewState, id2));
+  } else {
+    statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = ?, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, aiAllowed, id2));
+  }
+  statements.push(env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = ? AND note_id = ? AND content_hash <> ? AND status IN ('active', 'unverified', 'conflicted')")
+    .bind(now, table === "notes" ? "obsidian" : "telegram", id2, contentHash));
+  statements.push(env.DB.prepare("DELETE FROM note_relations WHERE source_note_id = ? OR target_note_id = ?").bind(id2, id2));
+  if (prepared) statements.push(...prepared.statements);
+  await env.DB.batch(statements);
   return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(aiAllowed) });
 }
 __name(correctNote, "correctNote");

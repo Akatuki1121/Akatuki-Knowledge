@@ -26,6 +26,10 @@ The scheduled Vault-to-D1 pull stays hourly (`0 * * * *`): day-to-day synchronis
 5. Transient failures are retried with exponential backoff. After eight attempts they become `dead`; permanent conflicts and unsafe payloads are dead-lettered immediately. Expired processing leases can be reclaimed.
 6. The hourly scheduled run drains pending events before pulling changes from YAOS, then runs the existing Vault-to-D1 pull and scheduled maintenance. This ordering prevents stale Vault content from overwriting queued Akatuki Knowledge edits.
 
+### Atomicity of note writes and outbox events
+
+For API note creation, correction, deletion, and restoration, the D1 note mutation and its outbox event are committed in a single `env.DB.batch`, so the two can never diverge: there is no state where the API reports failure but D1 has moved on without an event, or where a committed mutation has no event to deliver. Each handler prepares the event against a snapshot of the post-mutation row before the batch runs (`prepareSyncJob` in `src/sync-outbox.mjs`); identity resolution and conflict validation happen at that point, so an identity conflict fails the request before any write is committed. For deletion and restoration the job insert is additionally guarded on the row state the mutation must produce (`deleted_at` set by this request, or cleared with this request's `updated_at`), so if a concurrent write wins the race and the mutation changes nothing, no orphan event is recorded.
+
 ## Identity and note paths
 
 ### Authoritative identity (target design)
@@ -65,7 +69,7 @@ The identity-separation implementation is on this dedicated follow-up PR and is 
 1. `notes.sync_uuid` is authoritative for Akatuki-owned notes. The additive `yaos_file_identity_map` table uniquely binds YAOS's stable `fileId`, D1 `sync_uuid`, and D1 note ID. Mapping conflicts fail closed; mapping writes are checked by reading them back.
 2. Outbound sync uses D1 `notes.sync_uuid` first. A conflicting legacy frontmatter ID is rejected rather than silently adopted. Telegram identity behavior is unchanged and out of scope.
 3. Incoming YAOS observations establish mappings for known D1 notes before classifying unmatched files. Creation requires a complete observation and no mapping/path/tombstone/pending-job/UUID conflict. Incomplete observations are `deferred`; complete but ambiguous observations are `needs_review`. Similar content does not merge notes.
-4. Existing revision creation, per-note outbox ordering, tombstone/restore operations, expected-content conflict refusal, and YAOS read-back verification remain in place. The isolated integration test covers create, edit, rename, delete, restore, authenticated outbox diagnostics, and conflict refusal. `scripts/test-sync-outbox.mjs` covers dead-job retry, bounded listing without payload exposure, and preservation of attempt/error evidence.
+4. Existing revision creation, per-note outbox ordering, tombstone/restore operations, expected-content conflict refusal, and YAOS read-back verification remain in place. The isolated integration test covers create, edit, rename, delete, restore, authenticated outbox diagnostics, and conflict refusal. `scripts/test-sync-outbox.mjs` covers dead-job retry, bounded listing without payload exposure, preservation of attempt/error evidence, and statement preparation for atomic mutation batches (snapshot payloads, pre-commit identity conflicts, and guarded job inserts).
 
 Authenticated `GET /sync/identity-map?noteId=...` exposes one note's mapping for diagnostics. `GET /sync/identity-review?classification=deferred|needs_review&limit=...` lists bounded review cases without returning note bodies.
 

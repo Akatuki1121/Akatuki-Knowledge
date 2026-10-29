@@ -2,14 +2,46 @@
 import { describeSafeFailure } from "./log-sanitize.mjs";
 // Dependencies are injected so the queue can be tested independently of the Worker entry point.
 export function createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid }) {
-async function enqueueSyncJob(env, entityType, entityId, operation, options = {}) {
-  if (!env.DB || !["notes", "telegram_notes"].includes(entityType) || !["upsert", "delete"].includes(operation)) return;
+function buildSyncJobInsert(env, entityType, entityId, effectiveOperation, payload, now, jobGuard) {
+  const payloadJson = JSON.stringify(payload);
+  if (!jobGuard) {
+    return env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)").bind(crypto.randomUUID(), entityType, entityId, effectiveOperation, payloadJson, now, now, now);
+  }
+  // Guarded form for callers that fold this insert into the same batch as
+  // their own note mutation: the job is recorded only when the note row has
+  // reached the state that mutation was supposed to produce, so a mutation
+  // that changed nothing (a concurrent write won the race) cannot leave an
+  // orphan event behind. Guard columns are restricted to state timestamps
+  // the caller just wrote; values are always bound, never interpolated.
+  const conditions = ["id = ?"];
+  const guardBindings = [entityId];
+  for (const [column, value] of jobGuard.checks || []) {
+    if (!["deleted_at", "updated_at"].includes(column)) throw new Error("invalid_job_guard");
+    if (value === null) conditions.push(column + " IS NULL");
+    else { conditions.push(column + " = ?"); guardBindings.push(value); }
+  }
+  return env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) SELECT ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ? WHERE EXISTS (SELECT 1 FROM " + entityType + " WHERE " + conditions.join(" AND ") + ")")
+    .bind(crypto.randomUUID(), entityType, entityId, effectiveOperation, payloadJson, now, now, now, ...guardBindings);
+}
+// prepareSyncJob performs every read and validation an enqueue needs and
+// returns the write statements (an optional notes.sync_uuid backfill followed
+// by the yaos_sync_jobs insert) WITHOUT executing them. Callers that mutate
+// the note row themselves fold these statements into the same env.DB.batch
+// as their own writes, so the D1 state change and the outbox event commit or
+// roll back together. Such callers pass a snapshot of the post-mutation row
+// ({ row, previousRevisionContent }) because the row in D1 does not yet
+// reflect the state the event must describe. Identity conflicts throw
+// sync_outbox_enqueue_failed before any statement is executed, so a caller
+// that prepares first fails without having committed its own mutation.
+async function prepareSyncJob(env, entityType, entityId, operation, options = {}, snapshot = null) {
+  if (!env.DB || !["notes", "telegram_notes"].includes(entityType) || !["upsert", "delete"].includes(operation)) return null;
   try {
-    const row = entityType === "notes"
+    const row = snapshot?.row ?? (entityType === "notes"
       ? await env.DB.prepare("SELECT id, path, title, content, content_hash, deleted_at, sync_uuid FROM notes WHERE id = ?").bind(entityId).first()
-      : await env.DB.prepare("SELECT id, title, content, content_hash, deleted_at FROM telegram_notes WHERE id = ?").bind(entityId).first();
-    if (!row) return;
+      : await env.DB.prepare("SELECT id, title, content, content_hash, deleted_at FROM telegram_notes WHERE id = ?").bind(entityId).first());
+    if (!row) return null;
     const now = new Date().toISOString();
+    const statements = [];
     let syncUuid = null;
     if (entityType === "notes") {
       const contentUuid = readUuid(row.content);
@@ -23,21 +55,29 @@ async function enqueueSyncJob(env, entityType, entityId, operation, options = {}
       } else {
         syncUuid = crypto.randomUUID();
       }
-      if (row.sync_uuid !== syncUuid) await env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = ?)").bind(syncUuid, row.id, row.sync_uuid ?? "").run();
+      if (row.sync_uuid !== syncUuid) statements.push(env.DB.prepare("UPDATE notes SET sync_uuid = ? WHERE id = ? AND (sync_uuid IS NULL OR sync_uuid = ?)").bind(syncUuid, row.id, row.sync_uuid ?? ""));
     } else {
       syncUuid = await deterministicUuid(row.id);
     }
-    const previousRevision = entityType === "notes"
-      ? await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(entityId).first()
-      : await env.DB.prepare("SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(entityId).first();
+    const previousRevision = snapshot
+      ? { content: snapshot.previousRevisionContent ?? null }
+      : entityType === "notes"
+        ? await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(entityId).first()
+        : await env.DB.prepare("SELECT content FROM telegram_note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(entityId).first();
     const payload = { id: row.id, path: row.path ?? null, title: row.title ?? "", content: row.content ?? "", contentHash: row.content_hash ?? null, syncUuid, deletedAt: row.deleted_at ?? null, expectedPreviousContent: previousRevision?.content ?? null, allowRestore: options.allowRestore === true };
     // Archive state is authoritative; preserve each event's baseline so updates can be conflict-checked in order.
     const effectiveOperation = row.deleted_at ? "delete" : operation;
-    await env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)").bind(crypto.randomUUID(), entityType, entityId, effectiveOperation, JSON.stringify(payload), now, now, now).run();
+    statements.push(buildSyncJobInsert(env, entityType, entityId, effectiveOperation, payload, now, options.jobGuard));
+    return { statements, payload, syncUuid, effectiveOperation };
   } catch (error) {
     console.error("sync outbox enqueue failed", JSON.stringify(describeSafeFailure("sync_outbox_enqueue_failed", error)));
     throw new Error("sync_outbox_enqueue_failed");
   }
+}
+async function enqueueSyncJob(env, entityType, entityId, operation, options = {}) {
+  const prepared = await prepareSyncJob(env, entityType, entityId, operation, options);
+  if (!prepared) return;
+  for (const statement of prepared.statements) await statement.run();
 }
 async function backfillSyncUuidIndex(env, limit = 100) {
   if (!env.DB) return { ok: false, skipped: "missing_binding" };
@@ -120,7 +160,7 @@ async function drainSyncOutbox(env, limit = 5) {
   return { ok: failed === 0, processed: jobs.length, sent, failed };
 }
 
-  return { enqueueSyncJob, backfillSyncUuidIndex, drainSyncOutbox };
+  return { enqueueSyncJob, prepareSyncJob, backfillSyncUuidIndex, drainSyncOutbox };
 }
 export async function listSyncOutboxJobs(env, options = {}) {
   if (!env?.DB) return { ok: false, error: "outbox_unavailable", jobs: [] };
