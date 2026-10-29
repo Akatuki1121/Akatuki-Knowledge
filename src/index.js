@@ -17,6 +17,7 @@ import {
 } from "./background-task-store.mjs";
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
+import { getArchivedRebindTarget, validateArchivedRebind } from "./archived-rebind-policy.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -11552,6 +11553,83 @@ var wrapper_default = {
         return Response.json({ ok: true, repaired: true, queued: true, noteId, removedFileId: expectedFileId, contentHash: expectedContentHash }, { status: 200, headers: JSON_HEADERS2 });
       } catch {
         return Response.json({ ok: false, error: "identity_repair_failed" }, { status: 502, headers: JSON_HEADERS2 });
+      }
+    }
+    if (url.pathname === "/sync/restore-archived-rebind" && request.method === "POST") {
+      let body;
+      try { body = await readJson(request); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
+      const path = typeof body.path === "string" ? body.path : "";
+      const expectedOldFileId = typeof body.expectedOldFileId === "string" ? body.expectedOldFileId : "";
+      const expectedCurrentFileId = typeof body.expectedCurrentFileId === "string" ? body.expectedCurrentFileId : "";
+      const expectedSyncUuid = typeof body.expectedSyncUuid === "string" ? body.expectedSyncUuid : "";
+      const expectedD1Hash = typeof body.expectedD1Hash === "string" ? body.expectedD1Hash : "";
+      const expectedVaultHash = typeof body.expectedVaultHash === "string" ? body.expectedVaultHash : "";
+      const target = getArchivedRebindTarget(path);
+      if (!target || expectedOldFileId !== target.oldFileId || expectedCurrentFileId !== target.currentFileId
+        || expectedSyncUuid !== target.syncUuid || !/^[a-f0-9]{64}$/i.test(expectedD1Hash)
+        || !/^[a-f0-9]{64}$/i.test(expectedVaultHash)) {
+        return Response.json({ ok: false, applied: false, error: target ? "invalid_repair_preconditions" : "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      try {
+        const diffResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/diff"));
+        const diff = await diffResponse.json().catch(() => null);
+        if (!diffResponse.ok || !diff?.ok || diff.initialized !== true || !Array.isArray(diff.observations)
+          || Number(diff.unreadable || 0) !== 0 || diff.observations.length < Number(diff.vaultFiles || 0)) {
+          return Response.json({ ok: false, applied: false, error: "vault_observation_incomplete" }, { status: 503, headers: JSON_HEADERS2 });
+        }
+        const observation = diff.observations.find((item) => item?.path === path && item?.fileId === target.currentFileId);
+        if (!observation || observation.deleted === true || observation.contentHash !== expectedVaultHash) {
+          return Response.json({ ok: false, applied: false, error: "vault_observation_precondition_failed" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        const vaultResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/read-note?path=" + encodeURIComponent(path)));
+        const vault = await vaultResponse.json().catch(() => null);
+        if (!vaultResponse.ok || !vault?.ok || typeof vault.content !== "string") {
+          return Response.json({ ok: false, applied: false, error: "vault_note_read_failed" }, { status: 503, headers: JSON_HEADERS2 });
+        }
+        const note = await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE path = ?").bind(path).first();
+        const mappings = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id IN (?, ?) OR note_id = ? OR sync_uuid = ?")
+          .bind(target.oldFileId, target.currentFileId, path, target.syncUuid).all()).results || [];
+        const validation = validateArchivedRebind({
+          path, expectedOldFileId, expectedCurrentFileId, expectedSyncUuid, expectedD1Hash, expectedVaultHash,
+          actualD1Hash: note ? await sha256(note.content) : "",
+          actualVaultHash: await sha256(vault.content),
+          observationComplete: true, note, mappings, observation, vault: { ...vault, path }
+        });
+        if (!validation.ok) return Response.json({ ok: false, applied: false, error: validation.error }, { status: 409, headers: JSON_HEADERS2 });
+        const archiveEvent = await env.DB.prepare("SELECT archive_event_id, previous_ai_allowed FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1").bind(note.id).first();
+        const credential = inspectWholeContent(vault.content, env).credentials;
+        const aiAllowed = credential ? 0 : Number(archiveEvent?.previous_ai_allowed || 0);
+        const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+        const now = new Date().toISOString();
+        const title = titleFrom(path);
+        const tags = JSON.stringify(extractTags(vault.content));
+        const results = await env.DB.batch([
+          env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) SELECT id, path, title, content, content_hash, ? FROM notes WHERE id = ? AND path = ? AND deleted_at IS NOT NULL AND content_hash = ? AND sync_uuid = ?")
+            .bind(now, path, path, expectedD1Hash, expectedSyncUuid),
+          env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, title = ?, content = ?, content_hash = ?, source_modified_at = ?, imported_at = ?, updated_at = ?, tags_json = ?, ai_allowed = ?, review_state = ?, summary = NULL, ai_tags_json = '[]', related_json = '[]', organized_hash = NULL, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL, deleted_at = NULL WHERE id = ? AND path = ? AND deleted_at IS NOT NULL AND content_hash = ? AND sync_uuid = ?")
+            .bind(path, expectedSyncUuid, title, vault.content, expectedVaultHash, typeof vault.modifiedAt === "string" ? vault.modifiedAt.slice(0, 64) : null, now, now, tags, aiAllowed, reviewState, path, path, expectedD1Hash, expectedSyncUuid),
+          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND sync_uuid = ? AND note_id = ? AND last_path = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL AND content_hash = ?)")
+            .bind(expectedOldFileId, expectedSyncUuid, path, path, path, path, expectedVaultHash),
+          env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL AND content_hash = ?) AND NOT EXISTS (SELECT 1 FROM yaos_file_identity_map WHERE file_id = ?)")
+            .bind(expectedCurrentFileId, expectedSyncUuid, path, path, now, now, path, path, expectedVaultHash, expectedCurrentFileId),
+          env.DB.prepare("UPDATE note_archive_events SET restored_at = ? WHERE archive_event_id = ? AND restored_at IS NULL").bind(now, archiveEvent?.archive_event_id ?? -1),
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(expectedOldFileId, expectedCurrentFileId),
+          env.DB.prepare("DELETE FROM agent_memory_suppressions WHERE source = 'obsidian' AND note_id = ?").bind(path),
+          env.DB.prepare("UPDATE agent_memory_metadata SET status = 'unverified', updated_at = ? WHERE source = 'obsidian' AND note_id = ? AND status = 'forgotten'").bind(now, path)
+        ]);
+        if (Number(results[0]?.meta?.changes || 0) !== 1 || Number(results[1]?.meta?.changes || 0) !== 1
+          || Number(results[2]?.meta?.changes || 0) !== 1 || Number(results[3]?.meta?.changes || 0) !== 1) {
+          return Response.json({ ok: false, applied: false, error: "repair_race_or_write_failed" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        const restored = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, deleted_at FROM notes WHERE id = ?").bind(path).first();
+        const mapping = await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ?").bind(expectedCurrentFileId).first();
+        if (!restored || restored.deleted_at || restored.path !== path || restored.sync_uuid !== expectedSyncUuid
+          || restored.content_hash !== expectedVaultHash || !mapping || mapping.note_id !== path || mapping.sync_uuid !== expectedSyncUuid) {
+          return Response.json({ ok: false, applied: false, error: "restore_verification_failed" }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        return Response.json({ ok: true, applied: true, path, fileId: expectedCurrentFileId, oldFileId: expectedOldFileId, syncUuid: expectedSyncUuid, d1Hash: expectedD1Hash, vaultHash: expectedVaultHash, revisionSaved: true }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, applied: false, error: "archived_rebind_failed" }, { status: 502, headers: JSON_HEADERS2 });
       }
     }
     if (url.pathname === "/sync/identity-review" && request.method === "GET") {
