@@ -82,6 +82,18 @@ for (const contract of [
   "ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin))",
   'await enqueueSyncJob(env, table, id2, "delete")',
   'await enqueueSyncJob(env, table, id2, "upsert")',
+  'const VAULT_FOSSIL_TARGETS = Object.freeze([',
+  "function validateVaultFossilRemoval(input)",
+  "function getVaultFossilTarget(path)",
+  "async removeVaultFossilEntry(input)",
+  'action === "remove-vault-fossil"',
+  'url.pathname === "/sync/remove-vault-fossil" && request.method === "POST"',
+  'error: "vault_fossil_hash_mismatch"',
+  'error: "vault_fossil_not_found"',
+  'error: "archived_note_precondition_failed"',
+  "DELETE FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)",
+  "DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)",
+  "body.dryRun === true",
 ]) {
   assert.ok(source.includes(contract), "Missing source contract: " + contract);
 }

@@ -92,6 +92,59 @@ function getArchivedRebindTarget(path) {
   return TARGETS_BY_PATH.get(path) ?? null;
 }
 
+// Path-mismatch fossil removal. Exactly one vault entry is allowlisted: a
+// YAOS conflict file whose live vault entry sits at the history path while
+// the D1 row is archived under the same id (history path) with its path
+// column pointing at the Inbox path, so the archived-rebind repair above
+// (which requires id === path) can never apply. The identity map still binds
+// the note under a conflicting mapping, which is why a normal outbox delete
+// also dead-ends in sync_identity_mapping_conflict. This repair only
+// tombstones that single vault entry after proving the archived D1 row
+// preserves identical content, then clears the identity map and identity
+// review residue for the note. The archived D1 row itself is never modified.
+const VAULT_FOSSIL_TARGETS = Object.freeze([
+  {
+    vaultPath: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
+    fileId: "WlGQsLovflZyZU_s",
+    tombstonePath: "Notes/Inbox/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
+    tombstoneFileId: "I33EQMDJSKHBGwu0",
+    noteId: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
+    notePath: "Notes/Inbox/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
+    expectedContentHash: "c316fc50cd2d106594e70485578a51c1b976b4999a9320931487a9e138d5f4f8"
+  }
+]);
+const FOSSIL_TARGETS_BY_PATH = new Map(VAULT_FOSSIL_TARGETS.map((target) => [target.vaultPath, target]));
+function validateVaultFossilRemoval(input) {
+  const target = FOSSIL_TARGETS_BY_PATH.get(input?.path);
+  if (!target) return { ok: false, error: "path_not_allowed" };
+  if (input.fileId !== target.fileId || input.expectedContentHash !== target.expectedContentHash) {
+    return { ok: false, error: "identity_precondition_failed" };
+  }
+  const note = input.note;
+  if (!note || note.id !== target.noteId || note.path !== target.notePath || !note.deleted_at) {
+    return { ok: false, error: "archived_note_precondition_failed" };
+  }
+  if (!/^[a-f0-9]{64}$/i.test(input.expectedContentHash) || note.content_hash !== target.expectedContentHash
+    || input.actualD1Hash !== target.expectedContentHash) {
+    return { ok: false, error: "content_hash_precondition_failed" };
+  }
+  if (!input.observationComplete) return { ok: false, error: "vault_observation_precondition_failed" };
+  const observation = input.observation;
+  if (!observation) return { ok: false, error: "vault_fossil_not_found" };
+  if (observation.path !== target.vaultPath || observation.fileId !== target.fileId
+    || observation.contentHash !== target.expectedContentHash) {
+    return { ok: false, error: "vault_observation_precondition_failed" };
+  }
+  const tombstone = input.tombstoneObservation;
+  if (tombstone && (tombstone.path !== target.tombstonePath || tombstone.fileId !== target.tombstoneFileId || tombstone.deleted !== true)) {
+    return { ok: false, error: "vault_observation_precondition_failed" };
+  }
+  return { ok: true, target, alreadyDeleted: observation.deleted === true };
+}
+function getVaultFossilTarget(path) {
+  return FOSSIL_TARGETS_BY_PATH.get(path) ?? null;
+}
+
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 var MAX_BODY_BYTES = 1024 * 1024;
 var MAX_NOTES_PER_SYNC = 20;
@@ -10693,6 +10746,50 @@ var YjsClientDO = class extends DurableObject {
       error: equal && d1Verified ? undefined : "post_reconcile_verification_failed"
     };
   }
+  async removeVaultFossilEntry(input) {
+    const target = getVaultFossilTarget(typeof input?.path === "string" ? input.path : "");
+    if (!target || input.fileId !== target.fileId || input.expectedContentHash !== target.expectedContentHash) {
+      return { ok: false, applied: false, verified: false, error: "path_not_allowed" };
+    }
+    let outcome = { ok: false, applied: false, error: "vault_fossil_not_found" };
+    await this.pullVault(async (doc) => {
+      const meta = doc.getMap("meta"), idToText = doc.getMap("idToText"), pathToId = doc.getMap("pathToId");
+      const entry = meta.get(target.fileId);
+      if (!entry) { outcome = { ok: false, applied: false, error: "vault_fossil_not_found" }; return 0; }
+      const entryPath = entry instanceof YMap ? entry.get("path") : entry?.path;
+      const deleted = entry instanceof YMap ? entry.get("deletedAt") !== void 0 || entry.get("deleted") === true : entry?.deletedAt !== void 0 || entry?.deleted === true;
+      if (typeof entryPath !== "string" || norm(entryPath) !== norm(target.vaultPath)) {
+        outcome = { ok: false, applied: false, error: "vault_fossil_path_mismatch" };
+        return 0;
+      }
+      const textValue = idToText.get(target.fileId);
+      if (!(textValue instanceof YText)) { outcome = { ok: false, applied: false, error: "vault_fossil_unreadable" }; return 0; }
+      const contentHash = await sha256Hex(textValue.toString());
+      if (contentHash !== target.expectedContentHash) {
+        outcome = { ok: false, applied: false, error: "vault_fossil_hash_mismatch" };
+        return 0;
+      }
+      if (deleted) {
+        outcome = { ok: true, applied: false, alreadyDeleted: true, path: target.vaultPath, fileId: target.fileId, contentHash };
+        return 0;
+      }
+      const now = Date.now();
+      if (entry instanceof YMap) {
+        entry.set("deletedAt", now); entry.set("deleted", true); entry.set("mtime", now); entry.set("device", WORKER_DEVICE);
+      } else meta.set(target.fileId, { ...entry, deletedAt: now, deleted: true, mtime: now, device: WORKER_DEVICE });
+      if (pathToId.get(target.vaultPath) === target.fileId) pathToId.delete(target.vaultPath);
+      outcome = { ok: true, applied: true, alreadyDeleted: false, path: target.vaultPath, fileId: target.fileId, contentHash };
+      return 1;
+    });
+    if (!outcome.ok) return { ...outcome, verified: false };
+    const verifyDoc = await this.pullVault();
+    const verifyEntry = verifyDoc.getMap("meta").get(target.fileId);
+    const verifiedDeleted = !verifyEntry || (verifyEntry instanceof YMap
+      ? verifyEntry.get("deletedAt") !== void 0 || verifyEntry.get("deleted") === true
+      : verifyEntry?.deletedAt !== void 0 || verifyEntry?.deleted === true);
+    if (!verifiedDeleted) return { ...outcome, ok: false, verified: false, error: "vault_fossil_verification_failed" };
+    return { ...outcome, verified: true };
+  }
   async applyKnowledgeSyncJob(job) {
     if (!job || !["notes", "telegram_notes"].includes(job.entityType) || !["upsert", "delete"].includes(job.operation)) return { ok: false, verified: false, error: "invalid_job" };
     const payload = job.payload;
@@ -10889,6 +10986,16 @@ var YjsClientDO = class extends DurableObject {
         return Response.json(result, { status: result.ok ? 200 : result.error === "vault_note_not_found" ? 404 : 409 });
       } catch {
         return Response.json({ ok: false, applied: false, error: "guarded_note_reconcile_failed" }, { status: 502 });
+      }
+    }
+    if (action === "remove-vault-fossil") {
+      try {
+        const body = await request.json();
+        const result = await this.removeVaultFossilEntry(body);
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, applied: false, verified: false, error: "vault_fossil_removal_failed" }, { status: 502 });
       }
     }
     if (action === "knowledge-sync") {
@@ -11843,6 +11950,79 @@ var wrapper_default = {
         return Response.json({ ok: true, applied: true, path, fileId: expectedCurrentFileId, oldFileId: expectedOldFileId, syncUuid: expectedSyncUuid, d1Hash: expectedD1Hash, vaultHash: expectedVaultHash, revisionSaved: true }, { status: 200, headers: JSON_HEADERS2 });
       } catch {
         return Response.json({ ok: false, applied: false, error: "archived_rebind_failed" }, { status: 502, headers: JSON_HEADERS2 });
+      }
+    }
+    if (url.pathname === "/sync/remove-vault-fossil" && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      let body;
+      try { body = await readJson(request); } catch { return Response.json({ ok: false, applied: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
+      const path = typeof body.path === "string" ? body.path : "";
+      const fileId = typeof body.fileId === "string" ? body.fileId : "";
+      const expectedContentHash = typeof body.expectedContentHash === "string" ? body.expectedContentHash : "";
+      const dryRun = body.dryRun === true;
+      const target = getVaultFossilTarget(path);
+      if (!target || fileId !== target.fileId || expectedContentHash !== target.expectedContentHash) {
+        return Response.json({ ok: false, applied: false, dryRun, error: target ? "invalid_repair_preconditions" : "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      try {
+        const note = await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ?").bind(target.noteId).first();
+        const mapRows = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId).all()).results || [];
+        const reviewRows = (await env.DB.prepare("SELECT file_id, path, classification, reason FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId).all()).results || [];
+        const diffResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/diff"));
+        const diff = await diffResponse.json().catch(() => null);
+        if (!diffResponse.ok || !diff?.ok || diff.initialized !== true || !Array.isArray(diff.observations)
+          || Number(diff.unreadable || 0) !== 0 || diff.observations.length < Number(diff.vaultFiles || 0)) {
+          return Response.json({ ok: false, applied: false, dryRun, error: "vault_observation_incomplete" }, { status: 503, headers: JSON_HEADERS2 });
+        }
+        const observation = diff.observations.find((item) => item?.fileId === target.fileId) || null;
+        const tombstoneObservation = diff.observations.find((item) => item?.fileId === target.tombstoneFileId) || null;
+        const checks = {
+          vaultEntryFound: Boolean(observation),
+          vaultHashMatches: observation?.contentHash === target.expectedContentHash,
+          vaultEntryDeleted: observation?.deleted === true,
+          vaultTombstonePresent: Boolean(tombstoneObservation && tombstoneObservation.deleted === true && tombstoneObservation.path === target.tombstonePath),
+          d1NoteFound: Boolean(note),
+          d1Archived: Boolean(note?.deleted_at),
+          d1PathMismatch: Boolean(note && note.id !== note.path),
+          d1HashMatches: Boolean(note && note.content_hash === target.expectedContentHash),
+          identityMapRows: mapRows.length,
+          identityReviewRows: reviewRows.length
+        };
+        const validation = validateVaultFossilRemoval({
+          path, fileId, expectedContentHash, observationComplete: true, observation, tombstoneObservation,
+          note, actualD1Hash: note ? await sha256(note.content) : ""
+        });
+        if (!validation.ok) return Response.json({ ok: false, applied: false, dryRun, error: validation.error, checks }, { status: 409, headers: JSON_HEADERS2 });
+        if (dryRun) {
+          return Response.json({ ok: true, dryRun: true, applied: false, alreadyDeleted: validation.alreadyDeleted, path: target.vaultPath, fileId: target.fileId, contentHash: target.expectedContentHash, checks }, { status: 200, headers: JSON_HEADERS2 });
+        }
+        const doResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/remove-vault-fossil", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: target.vaultPath, fileId: target.fileId, expectedContentHash: target.expectedContentHash })
+        }));
+        const removal = await doResponse.json().catch(() => null);
+        if (!doResponse.ok || !removal?.ok || removal.verified !== true) {
+          return Response.json({ ok: false, applied: Boolean(removal?.applied), dryRun: false, error: removal?.error || "vault_fossil_removal_failed", checks }, { status: 502, headers: JSON_HEADERS2 });
+        }
+        const results = await env.DB.batch([
+          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId),
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId)
+        ]);
+        const removedIdentityMapRows = Number(results[0]?.meta?.changes || 0);
+        const removedIdentityReviewRows = Number(results[1]?.meta?.changes || 0);
+        const verifyDiffResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/diff"));
+        const verifyDiff = await verifyDiffResponse.json().catch(() => null);
+        const after = Array.isArray(verifyDiff?.observations) ? verifyDiff.observations.find((item) => item?.fileId === target.fileId) || null : null;
+        const remainingMap = await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId).first();
+        const remainingReview = await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId).first();
+        const verified = Boolean(verifyDiffResponse.ok && verifyDiff?.ok && (!after || after.deleted === true)
+          && Number(remainingMap?.count || 0) === 0 && Number(remainingReview?.count || 0) === 0);
+        if (!verified) {
+          return Response.json({ ok: false, applied: removal.applied, dryRun: false, verified: false, error: "fossil_removal_verification_failed", path: target.vaultPath, fileId: target.fileId, removedIdentityMapRows, removedIdentityReviewRows, checks }, { status: 409, headers: JSON_HEADERS2 });
+        }
+        return Response.json({ ok: true, dryRun: false, applied: removal.applied, alreadyDeleted: removal.alreadyDeleted === true, verified: true, path: target.vaultPath, fileId: target.fileId, contentHash: target.expectedContentHash, removedIdentityMapRows, removedIdentityReviewRows, checks }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, applied: false, dryRun, error: "vault_fossil_removal_failed" }, { status: 502, headers: JSON_HEADERS2 });
       }
     }
     if (url.pathname === "/sync/outbox" && request.method === "GET") {
