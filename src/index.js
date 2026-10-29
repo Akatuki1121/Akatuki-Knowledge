@@ -503,6 +503,28 @@ async function syncNotes(request, env) {
     }
   }
 
+  // Mapping conflicts are resolvable only from current identity evidence, not
+  // the historical path/hash stored on the review row.
+  if (body.vaultPull === true && observationComplete) {
+    const staleMappingReviews = await env.DB.prepare("SELECT file_id FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'sync_identity_mapping_conflict'").all();
+    for (const review of staleMappingReviews.results || []) {
+      const observation = observedByFileId.get(review.file_id);
+      if (!observation || observation.deleted === true || typeof observation.contentHash !== "string" || !observation.contentHash) continue;
+      const path = stableId(observation.path || "");
+      const mappings = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ?").bind(review.file_id).all()).results || [];
+      if (mappings.length !== 1) continue;
+      const mapping = mappings[0];
+      if (mapping.file_id !== review.file_id || mapping.last_path !== path) continue;
+      const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, deleted_at FROM notes WHERE id = ?").bind(mapping.note_id).first();
+      if (!row || row.deleted_at || row.id !== mapping.note_id || row.sync_uuid !== mapping.sync_uuid
+        || row.path !== path || row.content_hash !== observation.contentHash) continue;
+      const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(row.id).first();
+      if (pending) continue;
+      await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'sync_identity_mapping_conflict'").bind(review.file_id).run();
+      resolvedReviews++;
+    }
+  }
+
   for (const input of body.notes) {
     if (!input || typeof input.path !== "string" || !input.path.trim() || typeof input.content !== "string") continue;
     const path = stableId(input.path.trim());
