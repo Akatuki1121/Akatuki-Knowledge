@@ -252,7 +252,7 @@ function makeDeleteDb(seed) {
   };
   return db;
 }
-const deleteHandler = buildHandler("deleteNote", '__name(deleteNote, "deleteNote");', {
+const deleteBehavior = buildHandler("deleteNote", '__name(deleteNote, "deleteNote");', {
   json: jsonResult,
   noteIdFromRoute: decodeRoute,
   stableId: normalizePath,
@@ -262,22 +262,22 @@ const deleteHandler = buildHandler("deleteNote", '__name(deleteNote, "deleteNote
 });
 for (const reference of ["Notes%2FNew.md", "Notes%2FOld.md"]) {
   const db = makeDeleteDb({ notes: [structuredClone(movedNote)] });
-  const response = await deleteHandler(new URL(`https://worker.test/api/notes/${reference}`), { DB: db });
+  const response = await deleteBehavior(new URL(`https://worker.test/api/notes/${reference}`), { DB: db });
   assert.equal(response.data.deleted, true, `DELETE by ${reference} should delete the moved note`);
   assert.ok(db.state.notes[0].deleted_at, "the addressed note should be archived");
 }
-const readHandler = buildHandler("getNoteByPath", '__name(getNoteByPath, "getNoteByPath");', {
+const readBehavior = buildHandler("getNoteByPath", '__name(getNoteByPath, "getNoteByPath");', {
   json: jsonResult,
   noteIdFromRoute: decodeRoute,
   stableId: normalizePath,
   RESERVED_ROOT: "System"
 });
-const readResponse = await readHandler(new URL("https://worker.test/api/notes/Notes%2FNew.md"), {
+const readResponse = await readBehavior(new URL("https://worker.test/api/notes/Notes%2FNew.md"), {
   DB: { prepare() { return { bind() { return this; }, async first() { return { id: movedNote.id, path: movedNote.path, title: movedNote.title, content: movedNote.content, contentHash: movedNote.content_hash, syncUuid: movedNote.sync_uuid, aiAllowed: 1, tagsJson: '["example"]' }; } }; } }
 });
 assert.equal(readResponse.data.note.content, movedNote.content, "path read returns the note body");
 assert.equal(readResponse.data.note.contentHash, movedNote.content_hash, "path read returns the content hash");
-const manifestHandler = buildHandler("syncManifest", '__name(syncManifest, "syncManifest");', { json: jsonResult });
+const manifestBehavior = buildHandler("syncManifest", '__name(syncManifest, "syncManifest");', { json: jsonResult });
 const manifestRows = Array.from({ length: 614 }, (_, index) => ({ id: `note-${String(index).padStart(4, "0")}`, source: "obsidian" }));
 const manifestDb = { prepare(sql) { let values = []; return {
   bind(...args) { values = args; return this; },
@@ -288,7 +288,7 @@ const gathered = [];
 let cursor = "";
 let totalCount = 0;
 do {
-  const page = await manifestHandler(new URL(`https://worker.test/api/sync/manifest?limit=500&cursor=${encodeURIComponent(cursor)}`), { DB: manifestDb });
+  const page = await manifestBehavior(new URL(`https://worker.test/api/sync/manifest?limit=500&cursor=${encodeURIComponent(cursor)}`), { DB: manifestDb });
   gathered.push(...page.data.notes);
   cursor = page.data.nextCursor || "";
   totalCount = page.data.totalCount;
