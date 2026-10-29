@@ -1,0 +1,52 @@
+export const IMPROVEMENT_AUTOMATION_LIMITS = Object.freeze({
+  maxTasksPerDay: 3,
+  maxModelCallsPerTask: 5,
+});
+
+const ALLOWED_SOURCE_ROOTS = Object.freeze(["src/", "scripts/", "docs/"]);
+const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "create_pull_request"]);
+
+export function validateImprovementPlan(plan) {
+  if (!plan || !Array.isArray(plan.operations) || plan.operations.length < 3) {
+    return { ok: false, reason: "plan_shape_not_allowed" };
+  }
+  if (plan.operations.some((operation) => !ALLOWED_OPERATION_TYPES.has(operation?.type))) {
+    return { ok: false, reason: "operation_type_not_allowed" };
+  }
+  const fileOperations = plan.operations.filter((operation) =>
+    operation.type === "create_file" || operation.type === "update_file");
+  if (fileOperations.length === 0) return { ok: false, reason: "no_file_changes" };
+  for (const operation of fileOperations) {
+    const path = operation.path;
+    if (typeof path !== "string"
+      || !ALLOWED_SOURCE_ROOTS.some((root) => path.startsWith(root))
+      || path.startsWith(".github/")
+      || path.startsWith("migrations/")
+      || path.split("/").some((part) => part === ".." || part === "." || part === "")) {
+      return { ok: false, reason: "changed_path_out_of_scope" };
+    }
+  }
+  const branches = plan.operations.filter((operation) => operation.type === "create_branch");
+  const pullRequests = plan.operations.filter((operation) => operation.type === "create_pull_request");
+  if (branches.length !== 1 || pullRequests.length !== 1
+    || plan.operations[0]?.type !== "create_branch"
+    || plan.operations.at(-1)?.type !== "create_pull_request") {
+    return { ok: false, reason: "branch_and_pull_request_required" };
+  }
+  const branch = branches[0].branch;
+  if (fileOperations.some((operation) => operation.branch !== branch)
+    || pullRequests[0].head !== branch || pullRequests[0].draft !== false) {
+    return { ok: false, reason: "branch_mismatch_or_draft_pr" };
+  }
+  return { ok: true };
+}
+
+export async function improvementIdempotencyKey(syncUuid, contentHash) {
+  if (typeof syncUuid !== "string" || !syncUuid || typeof contentHash !== "string" || !/^[a-f0-9]{64}$/iu.test(contentHash)) {
+    throw new TypeError("invalid_improvement_identity");
+  }
+  const input = new TextEncoder().encode(syncUuid + ":" + contentHash);
+  const digest = await crypto.subtle.digest("SHA-256", input);
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return "improvement:" + hash;
+}
