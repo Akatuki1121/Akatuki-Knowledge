@@ -6,6 +6,7 @@ Obsidian のノートを検索し、AI で整理するための個人用ナレ�
 
 - **ノート同期**: Obsidian Vault と D1 のノートを、YAOS 経由のイベント同期でそろえます。定期実行の照合は、取りこぼしを直す安全網です。同期 outbox の dead 履歴は、認証済み `POST /sync/outbox/purge-dead` で dry-run 確認後に削除できます。
 - **ノート作成 API**: `POST /api/notes`（Bearer 認証）で指定パスに新規ノートを作成します。既存パスは上書きせず `409` を返し、作成と同期 outbox 登録を同一 D1 batch で行います。YAOS の実ファイル ID は最初の upsert 応答から保存し、Akatuki 側で捏造しません。認証情報を検出した本文は保存できますが、AI 送信を禁止します。
+- **同一性を保ったノート移動 API**: `POST /api/notes/<URLエンコードした現在のパス>/move`（Bearer 認証）で `newPath` を指定します。`notes.id`、`sync_uuid`、本文、contentHash、リビジョンは維持し、`notes.path`・同一性マップの `last_path`・同期 outbox を同一 D1 batch で更新します。移動先のノートや別 fileId の同一性マップが存在する場合は拒否します。必要に応じて `expectedContentHash` で楽観的ロックを指定できます。
 - **バックグラウンドタスク**: `POST /api/agent-tasks` で、ナレッジベースを検索して要約するタスクを非同期に実行します。結果は `GET /api/agent-tasks` で取得します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
 - **長期記憶メタデータ**: 既存ノートに由来・信頼度・有効期限などのメタデータを付けて扱います。D1 マイグレーション `0013_agent_memory_metadata.sql` は 2026-10-22 に本番へ適用・台帳記録済みで、`migrations/` に配置されています。
 
