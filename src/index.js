@@ -99,9 +99,9 @@ function getArchivedRebindTarget(path) {
 // (which requires id === path) can never apply. The identity map still binds
 // the note under a conflicting mapping, which is why a normal outbox delete
 // also dead-ends in sync_identity_mapping_conflict. This repair only
-// tombstones that single vault entry after proving the archived D1 row
-// preserves identical content, then clears the identity map and identity
-// review residue for the note. The archived D1 row itself is never modified.
+// tombstones only the frozen entries below. The archived-history target
+// preserves its D1 content; the conflict-copy target instead requires its
+// body (minus one exact frontmatter ID line) to equal the current live note.
 const VAULT_FOSSIL_TARGETS = Object.freeze([
   {
     vaultPath: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
@@ -111,21 +111,36 @@ const VAULT_FOSSIL_TARGETS = Object.freeze([
     noteId: "Notes/履歴/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
     notePath: "Notes/Inbox/履歴 (YAOS conflict - disk from device-mv9dhgcw 2026-10-16T04-53-31Z).md",
     expectedContentHash: "c316fc50cd2d106594e70485578a51c1b976b4999a9320931487a9e138d5f4f8"
+  },
+  {
+    vaultPath: "Notes/AI論/思考/AI とエコーチャンバー (YAOS conflict - disk from device-mv9dhgcw 2026-10-25T16-12-41Z).md",
+    fileId: "FWadoGzyKLOx0QZP",
+    expectedContentHash: "dea439798a8075d0f23710fc9f4f827529111d91e7685596d92628d521617206",
+    comparisonPath: "Notes/AI論/思考/AI とエコーチャンバー.md",
+    removableFrontmatterId: "89fbc6d9-3a74-52ab-89c8-7d682e16b736"
   }
 ]);
 const FOSSIL_TARGETS_BY_PATH = new Map(VAULT_FOSSIL_TARGETS.map((target) => [target.vaultPath, target]));
+function stripVaultFrontmatterId(content, expectedId) {
+  const text = String(content ?? "");
+  const match = /^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/.exec(text);
+  if (!match) return null;
+  const newline = match[1].endsWith("\r\n") ? "\r\n" : "\n";
+  const lines = match[2].split(/\r?\n/);
+  const matchingIds = lines.filter((line) => /^id:\s*["']?([^"'\s]+)["']?\s*$/i.test(line)
+    && line.match(/^id:\s*["']?([^"'\s]+)["']?\s*$/i)?.[1] === expectedId);
+  if (matchingIds.length !== 1) return null;
+  const stripped = lines.filter((line) => !(/^id:\s*["']?([^"'\s]+)["']?\s*$/i.test(line)
+    && line.match(/^id:\s*["']?([^"'\s]+)["']?\s*$/i)?.[1] === expectedId));
+  return match[1] + stripped.join(newline) + match[3] + text.slice(match[0].length);
+}
 function validateVaultFossilRemoval(input) {
   const target = FOSSIL_TARGETS_BY_PATH.get(input?.path);
   if (!target) return { ok: false, error: "path_not_allowed" };
   if (input.fileId !== target.fileId || input.expectedContentHash !== target.expectedContentHash) {
     return { ok: false, error: "identity_precondition_failed" };
   }
-  const note = input.note;
-  if (!note || note.id !== target.noteId || note.path !== target.notePath || !note.deleted_at) {
-    return { ok: false, error: "archived_note_precondition_failed" };
-  }
-  if (!/^[a-f0-9]{64}$/i.test(input.expectedContentHash) || note.content_hash !== target.expectedContentHash
-    || input.actualD1Hash !== target.expectedContentHash) {
+  if (!/^[a-f0-9]{64}$/i.test(input.expectedContentHash)) {
     return { ok: false, error: "content_hash_precondition_failed" };
   }
   if (!input.observationComplete) return { ok: false, error: "vault_observation_precondition_failed" };
@@ -135,9 +150,23 @@ function validateVaultFossilRemoval(input) {
     || observation.contentHash !== target.expectedContentHash) {
     return { ok: false, error: "vault_observation_precondition_failed" };
   }
-  const tombstone = input.tombstoneObservation;
-  if (tombstone && (tombstone.path !== target.tombstonePath || tombstone.fileId !== target.tombstoneFileId || tombstone.deleted !== true)) {
-    return { ok: false, error: "vault_observation_precondition_failed" };
+  if (target.comparisonPath) {
+    const strippedCopy = stripVaultFrontmatterId(input.vaultContent, target.removableFrontmatterId);
+    if (typeof input.comparisonContent !== "string" || strippedCopy === null || strippedCopy !== input.comparisonContent) {
+      return { ok: false, error: "vault_fossil_content_mismatch" };
+    }
+  } else {
+    const note = input.note;
+    if (!note || note.id !== target.noteId || note.path !== target.notePath || !note.deleted_at) {
+      return { ok: false, error: "archived_note_precondition_failed" };
+    }
+    if (note.content_hash !== target.expectedContentHash || input.actualD1Hash !== target.expectedContentHash) {
+      return { ok: false, error: "content_hash_precondition_failed" };
+    }
+    const tombstone = input.tombstoneObservation;
+    if (tombstone && (tombstone.path !== target.tombstonePath || tombstone.fileId !== target.tombstoneFileId || tombstone.deleted !== true)) {
+      return { ok: false, error: "vault_observation_precondition_failed" };
+    }
   }
   return { ok: true, target, alreadyDeleted: observation.deleted === true };
 }
@@ -10864,6 +10893,24 @@ var YjsClientDO = class extends DurableObject {
         outcome = { ok: false, applied: false, error: "vault_fossil_hash_mismatch" };
         return 0;
       }
+      if (target.comparisonPath) {
+        const canonicalEntries = [];
+        meta.forEach((value, fileId) => {
+          const path = value instanceof YMap ? value.get("path") : value?.path;
+          const isDeleted = value instanceof YMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+          if (typeof path === "string" && norm(path) === norm(target.comparisonPath) && !isDeleted) canonicalEntries.push(fileId);
+        });
+        if (canonicalEntries.length !== 1) {
+          outcome = { ok: false, applied: false, error: "vault_fossil_comparison_note_unavailable" };
+          return 0;
+        }
+        const canonicalText = idToText.get(canonicalEntries[0]);
+        if (!(canonicalText instanceof YText)
+          || stripVaultFrontmatterId(textValue.toString(), target.removableFrontmatterId) !== canonicalText.toString()) {
+          outcome = { ok: false, applied: false, error: "vault_fossil_content_mismatch" };
+          return 0;
+        }
+      }
       if (deleted) {
         outcome = { ok: true, applied: false, alreadyDeleted: true, path: target.vaultPath, fileId: target.fileId, contentHash };
         return 0;
@@ -12066,9 +12113,15 @@ var wrapper_default = {
         return Response.json({ ok: false, applied: false, dryRun, error: target ? "invalid_repair_preconditions" : "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
       }
       try {
-        const note = await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ?").bind(target.noteId).first();
-        const mapRows = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId).all()).results || [];
-        const reviewRows = (await env.DB.prepare("SELECT file_id, path, classification, reason FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId).all()).results || [];
+        const note = target.noteId
+          ? await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ?").bind(target.noteId).first()
+          : null;
+        const mapRows = target.noteId
+          ? ((await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId).all()).results || [])
+          : ((await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ?").bind(target.fileId).all()).results || []);
+        const reviewRows = target.tombstoneFileId
+          ? ((await env.DB.prepare("SELECT file_id, path, classification, reason FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId).all()).results || [])
+          : ((await env.DB.prepare("SELECT file_id, path, classification, reason FROM yaos_sync_identity_review WHERE file_id = ?").bind(target.fileId).all()).results || []);
         const diffResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/diff"));
         const diff = await diffResponse.json().catch(() => null);
         if (!diffResponse.ok || !diff?.ok || diff.initialized !== true || !Array.isArray(diff.observations)
@@ -12076,22 +12129,42 @@ var wrapper_default = {
           return Response.json({ ok: false, applied: false, dryRun, error: "vault_observation_incomplete" }, { status: 503, headers: JSON_HEADERS2 });
         }
         const observation = diff.observations.find((item) => item?.fileId === target.fileId) || null;
-        const tombstoneObservation = diff.observations.find((item) => item?.fileId === target.tombstoneFileId) || null;
+        const tombstoneObservation = target.tombstoneFileId
+          ? diff.observations.find((item) => item?.fileId === target.tombstoneFileId) || null
+          : null;
+        let vaultContent = null, comparisonContent = null;
+        if (target.comparisonPath) {
+          const readVaultPath = async (targetPath) => {
+            const response = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/read-note?path=" + encodeURIComponent(targetPath)));
+            const value = await response.json().catch(() => null);
+            return response.ok && value?.ok && value.path === targetPath && typeof value.content === "string" ? value : null;
+          };
+          const [copy, comparison] = await Promise.all([readVaultPath(target.vaultPath), readVaultPath(target.comparisonPath)]);
+          if (!copy || !comparison || copy.fileId !== target.fileId || copy.contentHash !== target.expectedContentHash) {
+            return Response.json({ ok: false, applied: false, dryRun, error: "vault_fossil_content_unavailable" }, { status: 409, headers: JSON_HEADERS2 });
+          }
+          vaultContent = copy.content;
+          comparisonContent = comparison.content;
+        }
         const checks = {
           vaultEntryFound: Boolean(observation),
           vaultHashMatches: observation?.contentHash === target.expectedContentHash,
           vaultEntryDeleted: observation?.deleted === true,
-          vaultTombstonePresent: Boolean(tombstoneObservation && tombstoneObservation.deleted === true && tombstoneObservation.path === target.tombstonePath),
+          comparisonContentMatches: target.comparisonPath
+            ? stripVaultFrontmatterId(vaultContent, target.removableFrontmatterId) === comparisonContent
+            : undefined,
+          vaultTombstonePresent: target.tombstoneFileId ? Boolean(tombstoneObservation && tombstoneObservation.deleted === true && tombstoneObservation.path === target.tombstonePath) : undefined,
           d1NoteFound: Boolean(note),
           d1Archived: Boolean(note?.deleted_at),
           d1PathMismatch: Boolean(note && note.id !== note.path),
-          d1HashMatches: Boolean(note && note.content_hash === target.expectedContentHash),
+          d1HashMatches: target.noteId ? Boolean(note && note.content_hash === target.expectedContentHash) : undefined,
           identityMapRows: mapRows.length,
           identityReviewRows: reviewRows.length
         };
         const validation = validateVaultFossilRemoval({
           path, fileId, expectedContentHash, observationComplete: true, observation, tombstoneObservation,
-          note, actualD1Hash: note ? await sha256(note.content) : ""
+          note, actualD1Hash: note ? await sha256(note.content) : "",
+          vaultContent, comparisonContent
         });
         if (!validation.ok) return Response.json({ ok: false, applied: false, dryRun, error: validation.error, checks }, { status: 409, headers: JSON_HEADERS2 });
         if (dryRun) {
@@ -12105,17 +12178,24 @@ var wrapper_default = {
         if (!doResponse.ok || !removal?.ok || removal.verified !== true) {
           return Response.json({ ok: false, applied: Boolean(removal?.applied), dryRun: false, error: removal?.error || "vault_fossil_removal_failed", checks }, { status: 502, headers: JSON_HEADERS2 });
         }
-        const results = await env.DB.batch([
-          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId),
-          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId)
-        ]);
+        const mapDelete = target.noteId
+          ? env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId)
+          : env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE file_id = ?").bind(target.fileId);
+        const reviewDelete = target.tombstoneFileId
+          ? env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId)
+          : env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(target.fileId);
+        const results = await env.DB.batch([mapDelete, reviewDelete]);
         const removedIdentityMapRows = Number(results[0]?.meta?.changes || 0);
         const removedIdentityReviewRows = Number(results[1]?.meta?.changes || 0);
         const verifyDiffResponse = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/diff"));
         const verifyDiff = await verifyDiffResponse.json().catch(() => null);
         const after = Array.isArray(verifyDiff?.observations) ? verifyDiff.observations.find((item) => item?.fileId === target.fileId) || null : null;
-        const remainingMap = await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId).first();
-        const remainingReview = await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId).first();
+        const remainingMap = target.noteId
+          ? await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)").bind(target.noteId, target.fileId, target.tombstoneFileId).first()
+          : await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_file_identity_map WHERE file_id = ?").bind(target.fileId).first();
+        const remainingReview = target.tombstoneFileId
+          ? await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_sync_identity_review WHERE file_id IN (?, ?)").bind(target.fileId, target.tombstoneFileId).first()
+          : await env.DB.prepare("SELECT COUNT(*) AS count FROM yaos_sync_identity_review WHERE file_id = ?").bind(target.fileId).first();
         const verified = Boolean(verifyDiffResponse.ok && verifyDiff?.ok && (!after || after.deleted === true)
           && Number(remainingMap?.count || 0) === 0 && Number(remainingReview?.count || 0) === 0);
         if (!verified) {
