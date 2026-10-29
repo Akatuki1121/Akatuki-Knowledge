@@ -133,7 +133,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run check:core
+      - name: Run the full npm run check suite
+        run: npm run check
 
   agent-domain-tests:
     needs: changed-files
