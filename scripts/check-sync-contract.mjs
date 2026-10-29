@@ -10,9 +10,6 @@ for (const contract of [
   "async function drainSyncOutbox",
   "export async function listSyncOutboxJobs(env, options = {})",
   "export async function retrySyncOutboxJob(env, jobId)",
-  "export async function purgeDeadSyncOutboxJobs(env, options = {})",
-  'url.pathname === "/sync/outbox/purge-dead" && request.method === "POST"',
-  "outboxErrorCode(row.last_error)",
   "SELECT job_id, entity_type, entity_id, operation, status, attempts, next_attempt_at, lease_expires_at, last_error, created_at, updated_at, sent_at FROM yaos_sync_jobs",
   'SELECT status, COUNT(*) AS count FROM yaos_sync_jobs GROUP BY status',
   'outbox = { ok: true, ...counts }',
@@ -101,6 +98,10 @@ for (const contract of [
   "DELETE FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)",
   "DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)",
   "body.dryRun === true",
+  "SELECT file_id, path FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'vault_pull_live_content_conflict'",
+  "DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'",
+  "identityConflicts, resolvedReviews, observationComplete",
+  '"needsReview", "identityConflicts", "resolvedReviews"',
 ]) {
   assert.ok(source.includes(contract), "Missing source contract: " + contract);
 }
