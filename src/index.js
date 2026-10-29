@@ -11414,6 +11414,106 @@ async function ensureAgentTaskWorkflow(env, taskId, options = {}) {
 __name(ensureAgentTaskWorkflow, "ensureAgentTaskWorkflow");
 
 
+async function improvementSeenKey(syncUuid, contentHash) {
+  return "agent_improvement_seen:" + await improvementIdempotencyKey(syncUuid, contentHash);
+}
+async function markImprovementSeen(env, syncUuid, contentHash) {
+  const key = await improvementSeenKey(syncUuid, contentHash);
+  const now = new Date().toISOString();
+  await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at").bind(key, now).run();
+}
+async function reserveImprovementTaskSlot(env, day) {
+  const key = "agent_improvement_daily:" + day;
+  const now = new Date().toISOString();
+  return env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1, updated_at = excluded.updated_at WHERE CAST(value AS INTEGER) < ? RETURNING value")
+    .bind(key, now, IMPROVEMENT_AUTOMATION_LIMITS.maxTasksPerDay).first();
+}
+async function appendImprovementResult(env, payload, taskId, result) {
+  if (payload?.improvementRequest !== true || typeof payload.improvementNotePath !== "string"
+    || typeof payload.sourceSyncUuid !== "string") return false;
+  const row = await env.DB.prepare("SELECT id, path, sync_uuid, content, content_hash FROM notes WHERE path = ? AND deleted_at IS NULL")
+    .bind(payload.improvementNotePath).first();
+  if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
+  const marker = "<!-- akatuki-improvement-result:" + taskId + " -->";
+  if (row.content.includes(marker)) return true;
+  const resultText = JSON.stringify({
+    taskId,
+    status: result.status,
+    pullRequestUrl: result.pullRequestUrl || null,
+    autoMergeEnabled: result.autoMergeEnabled === true,
+    reason: result.reason || null,
+    error: result.error || null,
+    recordedAt: new Date().toISOString()
+  });
+  const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
+    + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n" + resultText + "\n\x60\x60\x60\n";
+  const route = new URL("/api/notes/" + encodeURIComponent(row.path) + "/correction", "https://internal");
+  const request = new Request(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
+  const response = await correctNote(request, route, env);
+  if (!response.ok) throw new Error("improvement_result_writeback_failed");
+  const updated = await env.DB.prepare("SELECT sync_uuid, content_hash FROM notes WHERE id = ? AND deleted_at IS NULL").bind(row.id).first();
+  if (updated?.sync_uuid === payload.sourceSyncUuid && updated.content_hash) {
+    await markImprovementSeen(env, updated.sync_uuid, updated.content_hash);
+  }
+  return true;
+}
+async function runImprovementInbox(env) {
+  if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
+  const rows = (await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE path LIKE 'Notes/改善/%' AND path <> 'Notes/改善/このフォルダについて.md' AND deleted_at IS NULL ORDER BY updated_at ASC LIMIT 30").all()).results || [];
+  let queued = 0, scanned = 0;
+  const day = new Date().toISOString().slice(0, 10);
+  for (const note of rows) {
+    scanned++;
+    if (typeof note.sync_uuid !== "string" || !note.sync_uuid
+      || typeof note.content_hash !== "string" || !/^[a-f0-9]{64}$/i.test(note.content_hash)) continue;
+    const idempotencyKey = await improvementIdempotencyKey(note.sync_uuid, note.content_hash);
+    const seenKey = await improvementSeenKey(note.sync_uuid, note.content_hash);
+    if (await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first()) continue;
+    if (note.content.length > 8000 || !note.content.trim()) {
+      await appendImprovementResult(env, {
+        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
+      }, "rejected-" + idempotencyKey, { status: "stopped", reason: note.content.length > 8000 ? "request_too_large" : "empty_request" });
+      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+      continue;
+    }
+    const slot = await reserveImprovementTaskSlot(env, day);
+    if (!slot) return { scanned, queued, skipped: "daily_automation_limit" };
+    try {
+      const admitted = await enqueueAgentTask(env.DB, {
+        taskId: crypto.randomUUID(),
+        taskType: "github_query",
+        idempotencyKey: "improvement:" + idempotencyKey,
+        maxAttempts: 1,
+        maxAiCalls: IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask,
+        maxAiTokens: 12000,
+        payload: {
+          prompt: note.content,
+          maxOutputTokens: 1024,
+          allowGitHubRead: true,
+          allowGitHubWrite: true,
+          allowWebResearch: false,
+          improvementRequest: true,
+          improvementNotePath: note.path,
+          sourceSyncUuid: note.sync_uuid,
+          sourceContentHash: note.content_hash
+        },
+        nowMs: Date.now()
+      });
+      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+      const task = admitted.task;
+      if (task?.budget_reserved === 1 && task.status === "queued") {
+        await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
+      }
+      queued++;
+    } catch (error) {
+      await appendImprovementResult(env, {
+        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
+      }, "enqueue-" + idempotencyKey, { status: "failed", reason: "task_enqueue_failed", error: safeErrorCode(error?.message) });
+      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+    }
+  }
+  return { scanned, queued };
+}
 async function recoverAgentTaskWorkflows(env, limit = 5) {
   const nowMs = Date.now();
   const now = toSqliteDateTime(nowMs);
