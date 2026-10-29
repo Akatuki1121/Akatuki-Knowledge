@@ -10691,13 +10691,36 @@ var YjsClientDO = class extends DurableObject {
       "Notes/Inbox/Meta社のMuseとは何か.md",
       "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
       "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
-      "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+      "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md",
+      "Notes/思想/知識/哲学的剃刀10選.md",
+      "Notes/思想/知識/デジタル・ミニマリズム.md",
+      "Notes/思想/思考/ローカルメモへの回帰理由.md",
+      "Notes/思想/思考/2026-06-14_選択疲労と意思決定の本質.md",
+      "Notes/AI論/思考/AI とエコーチャンバー.md"
     ]);
     const directionByPath = new Map([
       ["Notes/Inbox/Meta社のMuseとは何か.md", "d1_to_vault"],
       ["Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md", "vault_to_d1"],
       ["Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md", "d1_to_vault"],
-      ["Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md", "d1_to_vault"]
+      ["Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md", "d1_to_vault"],
+      ["Notes/思想/知識/哲学的剃刀10選.md", "vault_to_d1"],
+      ["Notes/思想/知識/デジタル・ミニマリズム.md", "vault_to_d1"],
+      ["Notes/思想/思考/ローカルメモへの回帰理由.md", "vault_to_d1"],
+      ["Notes/思想/思考/2026-06-14_選択疲労と意思決定の本質.md", "vault_to_d1"],
+      ["Notes/AI論/思考/AI とエコーチャンバー.md", "vault_to_d1"]
+    ]);
+    // The five vault_to_d1 notes added for the 2026-10-29 live-conflict
+    // intake were audited to have had no D1-side change since the
+    // 2026-10-25 pull froze their updated_at at this value. Reconciling
+    // one of them is refused unless D1 still shows exactly that value,
+    // so a D1 write that lands after the audit cannot be overwritten.
+    const frozenD1UpdatedAt = "2026-10-25T16:07:55.999Z";
+    const frozenD1UpdatedAtPaths = new Set([
+      "Notes/思想/知識/哲学的剃刀10選.md",
+      "Notes/思想/知識/デジタル・ミニマリズム.md",
+      "Notes/思想/思考/ローカルメモへの回帰理由.md",
+      "Notes/思想/思考/2026-06-14_選択疲労と意思決定の本質.md",
+      "Notes/AI論/思考/AI とエコーチャンバー.md"
     ]);
     const path = typeof body.path === "string" ? norm(body.path) : "";
     const direction = body.direction;
@@ -10747,11 +10770,15 @@ var YjsClientDO = class extends DurableObject {
         return 0;
       }
       const note = await this.env.DB.prepare(
-        "SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE id = ? AND path = ?"
+        "SELECT id, path, title, content, content_hash, sync_uuid, deleted_at, updated_at FROM notes WHERE id = ? AND path = ?"
       ).bind(path, path).first();
       if (!note || note.deleted_at || note.path !== path ||
           note.content_hash !== expectedD1Hash || await sha256Hex(note.content) !== expectedD1Hash) {
         outcome = { ok: false, applied: false, error: "d1_hash_precondition_failed" };
+        return 0;
+      }
+      if (frozenD1UpdatedAtPaths.has(path) && note.updated_at !== frozenD1UpdatedAt) {
+        outcome = { ok: false, applied: false, error: "d1_updated_at_precondition_failed", currentD1UpdatedAt: note.updated_at ?? null };
         return 0;
       }
       if (direction === "vault_to_d1") {
@@ -11016,6 +11043,11 @@ var YjsClientDO = class extends DurableObject {
           "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
           "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
           "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md",
+          "Notes/思想/知識/哲学的剃刀10選.md",
+          "Notes/思想/知識/デジタル・ミニマリズム.md",
+          "Notes/思想/思考/ローカルメモへの回帰理由.md",
+          "Notes/思想/思考/2026-06-14_選択疲労と意思決定の本質.md",
+          "Notes/AI論/思考/AI とエコーチャンバー.md",
           "Notes/Inbox/スマホを置いて走れる。Xiaomiの「Smart Band 10 Pro」が過去最安8千円台  ライフハッカー・ジャパン.md",
           "Notes/Inbox/How to be more ambitious A tutorial for humans with models.md",
           "Notes/Inbox/無題のファイル.md",
@@ -11026,7 +11058,8 @@ var YjsClientDO = class extends DurableObject {
           "Notes/Inbox/ようこそ.md",
           "Notes/Inbox/connection-test.md",
           "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - crdt from device-mv9d29rh 2026-10-17T15-33-06Z).md",
-          "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - disk from device-mv9d29rh 2026-10-17T15-33-06Z).md"
+          "Notes/日常/思考/2026-06-27_早めにやること (YAOS conflict - disk from device-mv9d29rh 2026-10-17T15-33-06Z).md",
+          "Notes/AI論/思考/AI とエコーチャンバー (YAOS conflict - disk from device-mv9dhgcw 2026-10-25T16-12-41Z).md"
         ]);
         if (!allowedPaths.has(norm(path))) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400 });
         const doc = await this.pullVault();
@@ -12131,15 +12164,33 @@ var wrapper_default = {
         "Notes/Inbox/Meta社のMuseとは何か.md",
         "Notes/Inbox/Akatuki-Knowledge縮小完了の記録.md",
         "Notes/アル丸スマッシュ/参考/閉じていいIssueの検討.md",
-        "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md"
+        "Notes/電子工作/知識/M5Stamp-C3 Mate GPIO 注意点・検証メモ.md",
+        "Notes/思想/知識/哲学的剃刀10選.md",
+        "Notes/思想/知識/デジタル・ミニマリズム.md",
+        "Notes/思想/思考/ローカルメモへの回帰理由.md",
+        "Notes/思想/思考/2026-06-14_選択疲労と意思決定の本質.md",
+        "Notes/AI論/思考/AI とエコーチャンバー.md"
+      ]);
+      // Inspection-only paths sit outside reconcilePaths on purpose: they
+      // may be read through /sync/vault-note for content comparison, but
+      // /sync/reconcile-note keeps rejecting them because they are not in
+      // reconcilePaths (and the Durable Object allowlist agrees).
+      const vaultNoteReadOnlyPaths = new Set([
+        "Notes/AI論/思考/AI とエコーチャンバー (YAOS conflict - disk from device-mv9dhgcw 2026-10-25T16-12-41Z).md"
       ]);
       if (url.pathname === "/sync/vault-note" && request.method === "GET") {
         const path = url.searchParams.get("path") || "";
-        if (!reconcilePaths.has(path)) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
+        const readOnly = vaultNoteReadOnlyPaths.has(path);
+        if (!readOnly && !reconcilePaths.has(path)) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
         const res = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/read-note?path=" + encodeURIComponent(path)));
         const vault = await res.json().catch(() => null);
         if (!res.ok || !vault?.ok) return Response.json(vault || { ok: false, error: "vault_note_read_failed" }, { status: res.status, headers: JSON_HEADERS2 });
         const d1 = await env.DB.prepare("SELECT content, content_hash FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL").bind(path, path).first();
+        if (!d1 && readOnly) {
+          // A read-only target can be a vault-only entry with no D1
+          // counterpart; return the vault body alone for comparison.
+          return Response.json({ ok: true, path, d1: null, vault: { content: vault.content, contentHash: vault.contentHash, fileId: vault.fileId } }, { status: 200, headers: JSON_HEADERS2 });
+        }
         if (!d1 || await sha256(d1.content) !== d1.content_hash) return Response.json({ ok: false, error: "d1_note_unavailable_or_hash_mismatch" }, { status: 409, headers: JSON_HEADERS2 });
         return Response.json({ ok: true, path, d1: { content: d1.content, contentHash: d1.content_hash }, vault: { content: vault.content, contentHash: vault.contentHash, fileId: vault.fileId } }, { status: 200, headers: JSON_HEADERS2 });
       }
