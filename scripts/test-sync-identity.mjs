@@ -433,16 +433,47 @@ for (const path of [
 }
 
 {
-  const content = "# Identical content, unresolved identity";
+  const content = "# Identity mapping recovered";
   const path = "Notes/Tasks/identity-row.md";
-  const db = makeDb([note(path, path, content, uuidA)], [{
-    file_id: "file-identity-row", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
-  }]);
-  db.reviews.push({ file_id: "file-identity-row", path, content_hash: hash(content), classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: now, last_seen_at: now });
-  const res = await syncNotes(request([], [observation("file-identity-row", path, content)], true, true), { DB: db });
-  assert.equal((await res.json()).resolvedReviews, 0, "identical content never resolves an identity review row");
-  assert.equal(db.reviews.length, 1);
-  assert.equal(db.reviews[0].reason, "sync_identity_mapping_conflict");
+  const seed = ({ mappingCount = 1, noteDeleted = false, notePath = path, mappingPath = path, observationPath = path, observedContent = content, noteHash = hash(content), pending = false } = {}) => {
+    const db = makeDb([note(path, notePath, content, uuidA, noteDeleted ? now : null)], Array.from({ length: mappingCount }, (_, index) => ({
+      file_id: "file-identity-row", sync_uuid: uuidA, note_id: path, last_path: mappingPath, created_at: now, updated_at: now,
+      ...(index ? { duplicate: index } : {})
+    })));
+    db.reviews.push({ file_id: "file-identity-row", path: "Notes/Inbox/old-location.md", content_hash: "historical-hash", classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: now, last_seen_at: now });
+    if (pending) db.jobs.push({ entity_id: path, status: "processing" });
+    return { db, observations: [observation("file-identity-row", observationPath, observedContent)] , noteHash };
+  };
+  const healthy = seed();
+  const healthyRes = await syncNotes(request([], healthy.observations, true, true), { DB: healthy.db });
+  assert.equal((await healthyRes.json()).resolvedReviews, 1, "a current, unique mapping with matching live note, path, hash, and no pending job resolves the row even when its historical path/hash are stale");
+  assert.equal(healthy.db.reviews.length, 0);
+
+  const cases = [
+    ["zero mappings", { mappingCount: 0 }],
+    ["duplicate mappings", { mappingCount: 2 }],
+    ["deleted note", { noteDeleted: true }],
+    ["note path mismatch", { notePath: "Notes/Tasks/other.md" }],
+    ["mapping last_path mismatch", { mappingPath: "Notes/Tasks/other.md" }],
+    ["observation path mismatch", { observationPath: "Notes/Tasks/other.md" }],
+    ["content hash mismatch", { observedContent: "# Different Vault content" }],
+    ["pending outbox", { pending: true }]
+  ];
+  for (const [label, options] of cases) {
+    const test = seed(options);
+    const response = await syncNotes(request([], test.observations, true, true), { DB: test.db });
+    assert.equal((await response.json()).resolvedReviews, 0, label + " must retain the mapping-conflict review");
+    assert.equal(test.db.reviews.length, 1, label + " must not delete the review row");
+  }
+
+  const partial = seed();
+  const partialRes = await syncNotes(request([], partial.observations, false, true), { DB: partial.db });
+  assert.equal((await partialRes.json()).resolvedReviews, 0, "incomplete observations never resolve mapping reviews");
+  assert.equal(partial.db.reviews.length, 1);
+  const nonPull = seed();
+  const nonPullRes = await syncNotes(request([], nonPull.observations, true, false), { DB: nonPull.db });
+  assert.equal((await nonPullRes.json()).resolvedReviews, 0, "non-pull sync never resolves mapping reviews");
+  assert.equal(nonPull.db.reviews.length, 1);
 }
 
 {
@@ -494,4 +525,4 @@ for (const path of [
     "600 unrelated vault observations must not fan out into hundreds of D1 queries/writes");
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content and identity-mapping review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
