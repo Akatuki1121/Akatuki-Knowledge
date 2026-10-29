@@ -1,0 +1,344 @@
+# =============================================================================
+# 構造レビュー待ちの案 — 未適用 (PROPOSAL — NOT ACTIVE)
+#
+# このファイルは .github/workflows/ の外に置かれた提案であり、このままでは
+# GitHub Actions として実行されない。ジョブ構成の構造変更を含むため、別途
+# 実施される構造レビューの結果が出るまで check.yml 本体には反映しない。
+#
+# 本体 (check.yml) との差分は次の3点のみ (それ以外は本体の安全な改善と同一):
+#   1. syntax-and-contract が全量 `npm run check` の代わりに core グループ
+#      (`npm run check:core`) を実行する。
+#   2. agent-domain-tests の発動条件を、全量スイートと同じ
+#      `checks == 'true'` に統一する (現在は部分条件)。
+#   3. sync-unit-tests を classify-yaos-integration から切り離し、発動条件を
+#      `checks == 'true'` に統一する (現在は classify 結果に依存する複合条件)。
+#
+# カバレッジ: core / sync / agent の3グループの和集合は全43検査であり、
+# そのことは core グループで常時実行される check-group-coverage 検査
+# (scripts/test-check-groups.mjs) が保証する。今日、全量スイートが
+# checks == 'true' のときに全43件を実行しているのと等価になる。
+# deploy-production の needs と前提条件はジョブ ID が不変のため無変更でよい。
+#
+# 見込み: 律速は yaos-worker-integration (統合テスト実測 約76秒) であり、
+# 本案では変わらない。本案の効果は (a) sync-unit-tests が classify の完了を
+# 待たなくなること (GitHub 上でジョブ1個分の待ち、概ね15〜30秒の短縮)、
+# (b) 部分集合の二重実行の解消、(c) 検査実行部分が3ランナーに分散すること
+# (ローカル実測では全量 逐次合計5.5秒 → 最大グループ core 2.4秒)。
+# 統合テスト自体の短縮は本案の対象外 (テスト内容の構造判断が必要)。
+# =============================================================================
+
+name: Check recovered Worker and YAOS event sync
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Feature branches are tested by pull_request only. Avoid running the same
+# commit once for push and again for pull_request.
+concurrency:
+  group: check-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Tool versions are defined once here and referenced by every job, so a
+# version bump touches a single line.
+env:
+  NODE_VERSION: "22"
+  WRANGLER_VERSION: "4.69.0"
+
+jobs:
+  changed-files:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      checks: ${{ steps.filter.outputs.checks }}
+      worker_build: ${{ steps.filter.outputs.worker_build }}
+      integration: ${{ steps.filter.outputs.integration }}
+      source: ${{ steps.filter.outputs.source }}
+      classifier: ${{ steps.filter.outputs.classifier }}
+      agent_tests: ${{ steps.filter.outputs.agent_tests }}
+      sync_tests: ${{ steps.filter.outputs.sync_tests }}
+      migration_checks: ${{ steps.filter.outputs.migration_checks }}
+      test_harness: ${{ steps.filter.outputs.test_harness }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      # One full checkout serves both events: pull-request filtering uses
+      # the GitHub API, while push filtering diffs against the previous
+      # commit and needs the history. The repository is small, so keeping
+      # the history costs little.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            checks:
+              - 'src/**'
+              - 'scripts/**'
+              - 'tests/**'
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            worker_build:
+              - 'src/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+            integration:
+              - 'src/sync-outbox.mjs'
+              - 'scripts/test_yaos_worker_integration.mjs'
+              - 'scripts/test_reconstructed_baseline.py'
+              - 'scripts/test_worker_sql_compatibility.py'
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+            source:
+              - 'src/**'
+            classifier:
+              - 'scripts/classify_yaos_integration.mjs'
+              - '.github/workflows/check.yml'
+            agent_tests:
+              - 'src/index.js'
+              - 'src/reply-text.mjs'
+              - 'src/note-search-text.mjs'
+              - 'src/bot-alerts.mjs'
+              - 'src/background-task-policy.mjs'
+              - 'scripts/test_agent_*.mjs'
+              - 'scripts/test_agent_*.py'
+              - 'scripts/check-agent-*.mjs'
+              - 'scripts/check-background-task-*.mjs'
+              - 'scripts/test-background-task-*.mjs'
+              - 'src/agent/**'
+            sync_tests:
+              - 'src/sync-outbox.mjs'
+              - 'scripts/check-sync-contract.mjs'
+              - 'scripts/classify_yaos_integration.mjs'
+              - 'scripts/test-sync-*.mjs'
+              - 'scripts/test_classify_yaos_integration.mjs'
+            test_harness:
+              - 'scripts/run-parallel-checks.mjs'
+              - 'scripts/check-groups.mjs'
+              - 'scripts/test-check-groups.mjs'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/check.yml'
+            migration_checks:
+              - 'migrations/**'
+              - 'schema-snapshots/**'
+              - 'scripts/test_pending_migration.py'
+              - 'scripts/test_recovered_migration_chain.py'
+              - 'scripts/test_reconstructed_baseline.py'
+              - 'scripts/test_worker_sql_compatibility.py'
+            deploy:
+              - 'src/index.js'
+              - 'src/reply-text.mjs'
+              - 'src/note-search-text.mjs'
+              - 'src/bot-alerts.mjs'
+              - 'src/background-task-policy.mjs'
+              - 'wrangler.toml'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy.yml'
+
+  # The check jobs install nothing: package.json declares no dependencies
+  # and every check runs on the Node.js / Python standard libraries alone,
+  # so there is no npm ci step and no npm cache to restore.
+  syntax-and-contract:
+    needs: changed-files
+    if: needs.changed-files.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Run the core check group
+        run: npm run check:core
+
+  agent-domain-tests:
+    needs: changed-files
+    if: needs.changed-files.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm run check:agent
+
+  sync-unit-tests:
+    needs: changed-files
+    if: needs.changed-files.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm run check:sync
+
+  migration-validation:
+    needs: changed-files
+    if: needs.changed-files.outputs.migration_checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate pending migrations
+        run: python3 scripts/test_pending_migration.py
+      - name: Validate recovered migration chain and full schema shape
+        run: python3 scripts/test_recovered_migration_chain.py
+      - name: Validate reconstructed baseline in empty SQLite database
+        run: python3 scripts/test_reconstructed_baseline.py
+      - name: Compile Worker SQL against captured D1 schema
+        run: python3 scripts/test_worker_sql_compatibility.py
+
+  classify-yaos-integration:
+    needs: changed-files
+    if: needs.changed-files.outputs.source == 'true' || needs.changed-files.outputs.classifier == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      required: ${{ steps.classify.outputs.required }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Fetch base commit for a shallow diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+      - name: Classify sync-sensitive source changes
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SOURCE_CHANGED: ${{ needs.changed-files.outputs.source }}
+        run: node scripts/classify_yaos_integration.mjs
+
+  worker-build:
+    needs: changed-files
+    if: needs.changed-files.outputs.worker_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The npm cache is kept in this job only: it also covers the npx
+      # download cache, so repeated runs do not re-download Wrangler.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Validate Wrangler config and build without deploying
+        run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
+
+  yaos-worker-integration:
+    # Run the end-to-end test for explicitly sync-related files or source diffs
+    # classified as sync-sensitive. The classifier fails closed on errors.
+    needs:
+      - changed-files
+      - classify-yaos-integration
+    if: >-
+      always() &&
+      (needs.changed-files.outputs.integration == 'true' ||
+       needs.changed-files.outputs.test_harness == 'true' ||
+       ((needs.classify-yaos-integration.result == 'success' &&
+         needs.classify-yaos-integration.outputs.required == 'true') ||
+        (needs.classify-yaos-integration.result != 'success' &&
+         needs.changed-files.outputs.source == 'true')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kavinsood/yaos
+          ref: 2174eb89538ce7e213e9e33a0e75ecaf1a3f1f58
+          path: yaos
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: yaos/server/package-lock.json
+      - name: Install YAOS Worker dependencies
+        working-directory: yaos/server
+        run: npm ci
+      - name: Exercise isolated local D1 and both Workers
+        env:
+          YAOS_REPO_PATH: ${{ github.workspace }}/yaos
+        run: timeout --signal=TERM --kill-after=5s 3m node scripts/test_yaos_worker_integration.mjs
+
+
+  deploy-production:
+    needs:
+      - changed-files
+      - syntax-and-contract
+      - worker-build
+      - yaos-worker-integration
+      - agent-domain-tests
+      - sync-unit-tests
+      - migration-validation
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changed-files.outputs.deploy == 'true' &&
+      (needs.syntax-and-contract.result == 'success' || needs.syntax-and-contract.result == 'skipped') &&
+      (needs.agent-domain-tests.result == 'success' || needs.agent-domain-tests.result == 'skipped') &&
+      (needs.sync-unit-tests.result == 'success' || needs.sync-unit-tests.result == 'skipped') &&
+      (needs.migration-validation.result == 'success' || needs.migration-validation.result == 'skipped') &&
+      (needs.worker-build.result == 'success' || needs.worker-build.result == 'skipped') &&
+      (needs.yaos-worker-integration.result == 'success' || needs.yaos-worker-integration.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # All applicable CI checks have passed before this job can start.
+      # Keep the migration gate ahead of any setup or deployment step.
+      - name: Gate deployment on pending D1 migrations
+        id: migration_gate
+        run: |
+          pending="$(find migrations/pending -maxdepth 1 -type f -name '*.sql' -print -quit 2>/dev/null || true)"
+          if [ -n "$pending" ]; then
+            echo "::notice::Production deployment skipped: pending migration $pending requires a separately reviewed rollout."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.migration_gate.outputs.allowed == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Require Cloudflare deployment credential
+        if: steps.migration_gate.outputs.allowed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Repository Actions secret CLOUDFLARE_API_TOKEN is required for production deployment."
+            exit 1
+          fi
+      - name: Deploy production Worker
+        if: steps.migration_gate.outputs.allowed == 'true'
+        run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --config wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ea03cba73884bef04c37d1e21535e101
