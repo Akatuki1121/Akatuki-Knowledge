@@ -844,7 +844,7 @@ async function moveNote(request, url, env) {
   if (!sourcePath) return json({ error: "invalid_note_path" }, 400);
   let body;
   try { body = await readJson(request); } catch { return json({ error: "invalid_json" }, 400); }
-  if (typeof body.newPath !== "string" || !body.newPath.trim()) return json({ error: "invalid_destination_path" }, 400);
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.newPath !== "string" || !body.newPath.trim()) return json({ error: "invalid_destination_path" }, 400);
   const currentPath = stableId(sourcePath);
   const newPath = stableId(body.newPath.trim());
   const isSafePath = (path) => path.length <= 1000 && !path.startsWith("/") && /\.md$/i.test(path)
