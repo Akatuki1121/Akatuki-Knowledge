@@ -11608,6 +11608,20 @@ var wrapper_default = {
         return Response.json({ ok: false, error: "identity_repair_failed" }, { status: 502, headers: JSON_HEADERS2 });
       }
     }
+    if (url.pathname === "/sync/identity-review" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      const classification = url.searchParams.get("classification") || "needs_review";
+      if (!["deferred", "needs_review"].includes(classification)) return Response.json({ ok: false, error: "invalid_classification", items: [] }, { status: 400, headers: JSON_HEADERS2 });
+      const limitValue = Number(url.searchParams.get("limit") || 50);
+      const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(100, Math.floor(limitValue))) : 50;
+      try {
+        const result = await env.DB.prepare("SELECT file_id, path, content_hash, classification, reason, first_seen_at, last_seen_at FROM yaos_sync_identity_review WHERE classification = ? ORDER BY last_seen_at DESC LIMIT ?").bind(classification, limit).all();
+        return Response.json({ ok: true, classification, items: result.results || [] }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, error: "identity_review_unavailable", items: [] }, { status: 503, headers: JSON_HEADERS2 });
+      }
+    }
+
     if (url.pathname === "/sync/restore-archived-rebind" && request.method === "POST") {
       let body;
       try { body = await readJson(request); } catch { return Response.json({ ok: false, error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 }); }
@@ -11685,20 +11699,6 @@ var wrapper_default = {
         return Response.json({ ok: false, applied: false, error: "archived_rebind_failed" }, { status: 502, headers: JSON_HEADERS2 });
       }
     }
-    if (url.pathname === "/sync/identity-review" && request.method === "GET") {
-      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
-      const classification = url.searchParams.get("classification") || "needs_review";
-      if (!["deferred", "needs_review"].includes(classification)) return Response.json({ ok: false, error: "invalid_classification", items: [] }, { status: 400, headers: JSON_HEADERS2 });
-      const limitValue = Number(url.searchParams.get("limit") || 50);
-      const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(100, Math.floor(limitValue))) : 50;
-      try {
-        const result = await env.DB.prepare("SELECT file_id, path, content_hash, classification, reason, first_seen_at, last_seen_at FROM yaos_sync_identity_review WHERE classification = ? ORDER BY last_seen_at DESC LIMIT ?").bind(classification, limit).all();
-        return Response.json({ ok: true, classification, items: result.results || [] }, { status: 200, headers: JSON_HEADERS2 });
-      } catch {
-        return Response.json({ ok: false, error: "identity_review_unavailable", items: [] }, { status: 503, headers: JSON_HEADERS2 });
-      }
-    }
-
     if (url.pathname === "/sync/outbox" && request.method === "GET") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       const status = url.searchParams.get("status") || undefined;
