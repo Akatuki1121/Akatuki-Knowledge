@@ -197,6 +197,7 @@ var worker_default = {
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) { const response = await correctNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
+        if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/move")) { const response = await moveNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "POST" && url.pathname === "/api/sync") return syncNotes(request, env);
         if (request.method === "GET" && url.pathname === "/api/search") return searchNotes(url, env);
         if (request.method === "POST" && url.pathname === "/api/ask") return askQuestion(request, env);
@@ -867,6 +868,66 @@ async function locateNote(env, id2) {
   return obsidian ? "notes" : null;
 }
 __name(locateNote, "locateNote");
+async function moveNote(request, url, env) {
+  const sourcePath = noteIdFromRoute(url, "move");
+  if (!sourcePath) return json({ error: "invalid_note_path" }, 400);
+  let body;
+  try { body = await readJson(request); } catch { return json({ error: "invalid_json" }, 400); }
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.newPath !== "string" || !body.newPath.trim()) return json({ error: "invalid_destination_path" }, 400);
+  const currentPath = stableId(sourcePath);
+  const newPath = stableId(body.newPath.trim());
+  const isSafePath = (path) => path.length <= 1000 && !path.startsWith("/") && /\.md$/i.test(path)
+    && !path.split("/").some((part) => !part || part === ".." || part.startsWith("."))
+    && !path.startsWith(RESERVED_ROOT + "/");
+  if (!isSafePath(currentPath) || !isSafePath(newPath)) return json({ error: "unsafe_note_path" }, 400);
+  if (newPath === currentPath) return json({ error: "same_note_path" }, 409);
+  if (body.expectedContentHash !== undefined && (typeof body.expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(body.expectedContentHash))) {
+    return json({ error: "invalid_expected_content_hash" }, 400);
+  }
+
+  const note = await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE path = ? AND deleted_at IS NULL").bind(currentPath).first();
+  if (!note) return json({ error: "live_note_not_found" }, 404);
+  if (body.expectedContentHash !== undefined && note.content_hash !== body.expectedContentHash) {
+    return json({ error: "content_hash_precondition_failed" }, 409);
+  }
+
+  const occupied = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(newPath, note.id).first();
+  if (occupied) return json({ error: "destination_note_exists" }, 409);
+  const mappings = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(note.id, note.sync_uuid).all()).results || [];
+  if (mappings.length !== 1 || mappings[0].note_id !== note.id || mappings[0].sync_uuid !== note.sync_uuid) {
+    return json({ error: "sync_identity_mapping_conflict" }, 409);
+  }
+  const mapping = mappings[0];
+  if (mapping.last_path !== currentPath) return json({ error: "sync_identity_mapping_path_mismatch" }, 409);
+  const destinationMapping = await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map WHERE last_path = ? AND file_id <> ? LIMIT 1").bind(newPath, mapping.file_id).first();
+  if (destinationMapping) return json({ error: "destination_identity_mapping_conflict" }, 409);
+
+  const now = new Date().toISOString();
+  const previousRevision = await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1").bind(note.id).first();
+  const prepared = await prepareSyncJob(env, "notes", note.id, "upsert", {
+    jobGuard: { checks: [["path", newPath], ["deleted_at", null]] }
+  }, {
+    row: { ...note, path: newPath, deleted_at: null },
+    previousRevisionContent: previousRevision?.content ?? null
+  });
+  if (!prepared) return json({ error: "sync_outbox_enqueue_failed" }, 503);
+
+  const results = await env.DB.batch([
+    env.DB.prepare("UPDATE notes SET path = ? WHERE id = ? AND path = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ?)")
+      .bind(newPath, note.id, currentPath, mapping.file_id, note.id, note.sync_uuid, currentPath),
+    env.DB.prepare("UPDATE yaos_file_identity_map SET last_path = ?, updated_at = ? WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL)")
+      .bind(newPath, now, mapping.file_id, note.id, note.sync_uuid, currentPath, note.id, newPath),
+    ...prepared.statements
+  ]);
+  if (!results[0]?.meta?.changes || !results[1]?.meta?.changes) {
+    return json({ error: "note_move_precondition_failed" }, 409);
+  }
+  return json({
+    ok: true, id: note.id, oldPath: currentPath, path: newPath,
+    syncUuid: note.sync_uuid, contentHash: note.content_hash, queued: true
+  });
+}
+__name(moveNote, "moveNote");
 async function deleteNote(url, env) {
   const id2 = noteIdFromRoute(url);
   if (!id2) return json({ error: "Invalid note route" }, 400);

@@ -8,6 +8,23 @@ const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.ur
 for (const contract of [
   "async function enqueueSyncJob",
   "async function drainSyncOutbox",
+  "async function moveNote(request, url, env)",
+  'url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/move")',
+  'error: "same_note_path"',
+  'error: "destination_note_exists"',
+  'error: "content_hash_precondition_failed"',
+  'error: "live_note_not_found"',
+  'error: "sync_identity_mapping_conflict"',
+  'body.expectedContentHash !== undefined',
+  'url.pathname.endsWith("/move")',
+  'SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE path = ? AND deleted_at IS NULL',
+  'SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?',
+  'UPDATE notes SET path = ? WHERE id = ? AND path = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM yaos_file_identity_map',
+  'UPDATE yaos_file_identity_map SET last_path = ?, updated_at = ? WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ? AND EXISTS (SELECT 1 FROM notes',
+  'jobGuard: { checks: [["path", newPath], ["deleted_at", null]] }',
+  'error: "destination_identity_mapping_conflict"',
+  'error: "sync_identity_mapping_path_mismatch"',
+  'if (!["deleted_at", "updated_at", "path"].includes(column)) throw new Error("invalid_job_guard")',
   "export async function listSyncOutboxJobs(env, options = {})",
   "export async function retrySyncOutboxJob(env, jobId)",
   "SELECT job_id, entity_type, entity_id, operation, status, attempts, next_attempt_at, lease_expires_at, last_error, created_at, updated_at, sent_at FROM yaos_sync_jobs",
@@ -130,7 +147,8 @@ function handlerSlice(name, endMarker) {
 for (const [name, endMarker, batchCall] of [
   ["deleteNote", '__name(deleteNote, "deleteNote");', "await env.DB.batch(statements)"],
   ["restoreNote", '__name(restoreNote, "restoreNote");', "await env.DB.batch(restoreStatements)"],
-  ["correctNote", '__name(correctNote, "correctNote");', "await env.DB.batch(statements)"]
+  ["correctNote", '__name(correctNote, "correctNote");', "await env.DB.batch(statements)"],
+  ["moveNote", '__name(moveNote, "moveNote");', "await env.DB.batch(["]
 ]) {
   const handler = handlerSlice(name, endMarker);
   const prepareAt = handler.indexOf("await prepareSyncJob(");
@@ -157,5 +175,7 @@ for (const contract of [
 }
 
 assert.ok(docs.includes("YAOS Worker and its Durable Object protocol unchanged"));
+assert.ok(docs.includes("Identity-preserving note move API"));
+assert.ok(docs.includes("notes.updated_at"));
 assert.ok(docs.includes("migrations/0008_folders_schema_reconstructed.sql"));
 console.log("Sync contract checks passed.");
