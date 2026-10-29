@@ -11548,7 +11548,11 @@ var wrapper_default = {
         const path = url.searchParams.get("path") || "";
         if (!reconcilePaths.has(path)) return Response.json({ ok: false, error: "path_not_allowed" }, { status: 400, headers: JSON_HEADERS2 });
         const res = await env.YJS_CLIENT.getByName("default").fetch(new Request("https://internal/read-note?path=" + encodeURIComponent(path)));
-        return new Response(res.body, { status: res.status, headers: JSON_HEADERS2 });
+        const vault = await res.json().catch(() => null);
+        if (!res.ok || !vault?.ok) return Response.json(vault || { ok: false, error: "vault_note_read_failed" }, { status: res.status, headers: JSON_HEADERS2 });
+        const d1 = await env.DB.prepare("SELECT content, content_hash FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL").bind(path, path).first();
+        if (!d1 || await sha256(d1.content) !== d1.content_hash) return Response.json({ ok: false, error: "d1_note_unavailable_or_hash_mismatch" }, { status: 409, headers: JSON_HEADERS2 });
+        return Response.json({ ok: true, path, d1: { content: d1.content, contentHash: d1.content_hash }, vault: { content: vault.content, contentHash: vault.contentHash, fileId: vault.fileId } }, { status: 200, headers: JSON_HEADERS2 });
       }
       if (url.pathname === "/sync/reconcile-note" && request.method === "POST") {
         let body;
