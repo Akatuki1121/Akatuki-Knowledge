@@ -11976,6 +11976,18 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         const current = await getAgentTask(this.env.DB, taskId);
         return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
       } catch (error) {
+        try {
+          const failedTask = await getAgentTask(this.env.DB, taskId);
+          if (failedTask?.payload?.improvementRequest === true) {
+            await appendImprovementResult(this.env, failedTask.payload, taskId, {
+              status: "failed",
+              reason: safeErrorCode(error?.message),
+              error: describeAgentTaskError(error, this.env)
+            });
+          }
+        } catch (writebackError) {
+          console.log(JSON.stringify({ improvementResultWriteback: { ok: false }, failure: describeSafeFailure("improvement_result_writeback_failed", writebackError) }));
+        }
         const errorClass = classifyAgentTaskError(error);
         const errorDetail = describeAgentTaskError(error, this.env);
         const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted"].includes(errorClass);
