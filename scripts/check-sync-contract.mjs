@@ -157,6 +157,16 @@ function handlerSlice(name, endMarker) {
   assert.ok(start >= 0 && end > start, name + " handler must exist");
   return source.slice(start, end);
 }
+const deleteHandler = handlerSlice("deleteNote", '__name(deleteNote, "deleteNote");');
+assert.ok(deleteHandler.indexOf("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL") < deleteHandler.indexOf("await locateNote(env, reference)"), "delete resolves current path before legacy ID");
+assert.ok(deleteHandler.includes("ambiguous_note_reference"), "ambiguous path/ID references must fail closed");
+const readHandler = handlerSlice("getNoteByPath", '__name(getNoteByPath, "getNoteByPath");');
+assert.ok(readHandler.includes("FROM notes WHERE path = ? AND deleted_at IS NULL"), "note read is addressed by current path and excludes archived rows");
+assert.ok(readHandler.includes("contentHash") && readHandler.includes("syncUuid") && readHandler.includes("content"), "note read returns body and manifest-style identity metadata");
+const manifestHandler = handlerSlice("syncManifest", '__name(syncManifest, "syncManifest");');
+assert.ok(manifestHandler.includes("totalCount") && manifestHandler.includes("nextCursor"), "manifest exposes total count and pagination cursor");
+assert.ok(manifestHandler.includes("LIMIT ?") && manifestHandler.includes("limit + 1"), "manifest uses bounded keyset pagination");
+
 for (const [name, endMarker, batchCall] of [
   ["deleteNote", '__name(deleteNote, "deleteNote");', "await env.DB.batch(statements)"],
   ["restoreNote", '__name(restoreNote, "restoreNote");', "await env.DB.batch(restoreStatements)"],
