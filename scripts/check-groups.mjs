@@ -4,6 +4,7 @@ export const checks = [
   ["sync-module-syntax", process.execPath, ["--check", "src/sync-outbox.mjs"]],
   ["notes-create-contract", process.execPath, ["scripts/check-notes-create-contract.mjs"]],
   ["sync-identity-repair-contract", process.execPath, ["scripts/check-identity-map-repair-contract.mjs"]],
+  ["sync-note-reconcile-contract", process.execPath, ["scripts/check-vault-note-reconcile-contract.mjs"]],
   ["ai-send-guard-syntax", process.execPath, ["--check", "src/ai-send-guard.mjs"]],
   ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/log-sanitize.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/bot-alerts.test.js"]],
   ["log-sanitize-syntax", process.execPath, ["--check", "src/log-sanitize.mjs"]],
@@ -47,6 +48,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-"))
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "notes-create-contract", "sync-identity-repair-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "notes-create-contract", "sync-identity-repair-contract", "sync-note-reconcile-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
 }
