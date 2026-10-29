@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "../src/sync-outbox.mjs";
+import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob, purgeDeadSyncOutboxJobs } from "../src/sync-outbox.mjs";
 
 const uuid = "123e4567-e89b-42d3-a456-426614174000";
 const uuidB = "123e4567-e89b-42d3-a456-426614174001";
@@ -144,4 +144,51 @@ console.log("Sync outbox module tests passed.");
   assert.match(retrySql, /WHERE job_id = \? AND status = 'dead'/, "Only dead jobs may be retried");
   assert.doesNotMatch(retrySql, /attempts\s*=|last_error\s*=/, "Retry preserves attempt count and error evidence");
   assert.equal((await retrySyncOutboxJob({ DB: db }, 0)).error, "invalid_job_id");
+}
+
+{
+  const rows = [
+    { job_id: 1, status: "dead", last_error: "vault_content_conflict" },
+    { job_id: 2, status: "dead", last_error: "sync_identity_mapping_conflict" },
+    { job_id: 3, status: "pending", last_error: null },
+    { job_id: 4, status: "processing", last_error: null },
+    { job_id: 5, status: "sent", last_error: null }
+  ];
+  const deleted = [];
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async all() {
+          assert.match(sql, /SELECT job_id, status, last_error FROM yaos_sync_jobs/);
+          const selected = sql.includes("WHERE status = 'dead'") ? rows.filter(row => row.status === "dead") : rows.filter(row => values.includes(row.job_id));
+          return { results: selected };
+        },
+        async run() {
+          assert.match(sql, /DELETE FROM yaos_sync_jobs WHERE job_id = \? AND status = 'dead'/);
+          const id = values[0];
+          const index = rows.findIndex(row => row.job_id === id && row.status === "dead");
+          if (index >= 0) { deleted.push(id); rows.splice(index, 1); return { meta: { changes: 1 } }; }
+          return { meta: { changes: 0 } };
+        }
+      };
+    }
+  };
+  const preview = await purgeDeadSyncOutboxJobs({ DB: db }, { dryRun: true });
+  assert.deepEqual(preview.targetIds, [1, 2]);
+  assert.deepEqual(preview.errorCounts, { vault_content_conflict: 1, sync_identity_mapping_conflict: 1 });
+  assert.deepEqual(deleted, [], "dryRun must never delete rows");
+  const targeted = await purgeDeadSyncOutboxJobs({ DB: db }, { jobIds: [1, 3, 4, 5, 99] });
+  assert.deepEqual(targeted.deletedIds, [1]);
+  assert.deepEqual(targeted.skipped, [
+    { jobId: 3, reason: "job_not_dead", status: "pending" },
+    { jobId: 4, reason: "job_not_dead", status: "processing" },
+    { jobId: 5, reason: "job_not_dead", status: "sent" },
+    { jobId: 99, reason: "job_not_found" }
+  ]);
+  const empty = await purgeDeadSyncOutboxJobs({ DB: db }, { jobIds: [1] });
+  assert.deepEqual(empty.deletedIds, []);
+  assert.equal(empty.deletedCount, 0, "purging an already-removed job is idempotent");
+  assert.equal((await purgeDeadSyncOutboxJobs({ DB: db }, { jobIds: [0] })).error, "invalid_job_ids");
 }
