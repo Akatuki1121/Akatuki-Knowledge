@@ -25,6 +25,12 @@ The operation is limited to live Obsidian notes and fails closed when the source
 
 This API is repository-only until reviewed, merged, and deployed. No YAOS-side protocol change or migration is required.
 
+## Note addressing and complete manifest (repository change, not yet deployed)
+
+- `GET /api/notes/<URL-encoded-path>` returns one live Obsidian note by its current `notes.path`, including `content`, `contentHash`, `syncUuid`, timestamps, and note metadata. Archived notes and unknown paths return 404. The route uses the existing API Bearer authentication.
+- `DELETE /api/notes/<reference>` resolves a live `notes.path` first. If no live path matches, it falls back to the existing ID lookup, preserving callers that still use the creation-time `notes.id` or a Telegram ID. If path and ID interpretations identify different live notes, or multiple live notes share the path, it returns `409 ambiguous_note_reference` without deleting anything. The deletion response shape and atomic archive/outbox flow remain unchanged.
+- `GET /api/sync/manifest` retains the `notes` and `nextCursor` fields and adds `totalCount`, counting both `notes` and `telegram_notes` (including archived records, as the manifest already does). Follow `nextCursor` until it is `null`; each page uses the existing bounded `limit` and stable ID ordering. No migration or YAOS-side change is required.
+
 ## Event path
 
 1. A Telegram note is created or appended, or an Obsidian note is moved, corrected, deleted, or restored through the API.

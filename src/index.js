@@ -193,6 +193,7 @@ var worker_default = {
         if (request.method === "GET" && url.pathname === "/api/sync/manifest") return syncManifest(url, env);
         if (request.method === "POST" && url.pathname === "/api/sync/export") return exportSyncNotes(request, env);
         if (request.method === "GET" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/related")) return listRelatedNotes(url, env);
+        if (request.method === "GET" && url.pathname.startsWith("/api/notes/")) return getNoteByPath(url, env);
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/ai-permission")) return setAiPermission(request, url, env);
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
@@ -697,17 +698,20 @@ __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
   const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 500)));
   const cursor = (url.searchParams.get("cursor") || "").slice(0, 1e3);
-  const { results } = await env.DB.prepare(`
-    SELECT id, path, title, content_hash AS contentHash, updated_at AS updatedAt, knowledge_type AS knowledgeType, knowledge_scope AS knowledgeScope, deleted_at AS archivedAt, 'obsidian' AS source
-      FROM notes WHERE id > ?
-    UNION ALL
-    SELECT id, NULL AS path, title, content_hash AS contentHash, updated_at AS updatedAt, knowledge_type AS knowledgeType, knowledge_scope AS knowledgeScope, deleted_at AS archivedAt, 'telegram' AS source
-      FROM telegram_notes WHERE id > ?
-    ORDER BY id LIMIT ?
-  `).bind(cursor, cursor, limit + 1).all();
+  const [{ results }, count] = await Promise.all([
+    env.DB.prepare(`
+      SELECT id, path, title, content_hash AS contentHash, updated_at AS updatedAt, knowledge_type AS knowledgeType, knowledge_scope AS knowledgeScope, deleted_at AS archivedAt, 'obsidian' AS source
+        FROM notes WHERE id > ?
+      UNION ALL
+      SELECT id, NULL AS path, title, content_hash AS contentHash, updated_at AS updatedAt, knowledge_type AS knowledgeType, knowledge_scope AS knowledgeScope, deleted_at AS archivedAt, 'telegram' AS source
+        FROM telegram_notes WHERE id > ?
+      ORDER BY id LIMIT ?
+    `).bind(cursor, cursor, limit + 1).all(),
+    env.DB.prepare("SELECT (SELECT COUNT(*) FROM notes) + (SELECT COUNT(*) FROM telegram_notes) AS totalCount").first()
+  ]);
   const hasMore = results.length > limit;
   if (hasMore) results.pop();
-  return json({ notes: results, nextCursor: hasMore ? results.at(-1)?.id || null : null });
+  return json({ notes: results, nextCursor: hasMore ? results.at(-1)?.id || null : null, totalCount: Number(count?.totalCount || 0) });
 }
 __name(syncManifest, "syncManifest");
 async function exportSyncNotes(request, env) {
@@ -795,6 +799,33 @@ function publicNote(note) {
   return { id: note.id, path: note.path || null, source: note.source || "obsidian", reviewState: note.review_state || "ready", title: note.title, tags, aiTags, relatedIds, summary: note.summary || null, knowledgeType: note.knowledge_type || "unknown", knowledgeScope: note.knowledge_scope || "project", sourceModifiedAt: note.source_modified_at, updatedAt: note.updated_at, aiAllowed: note.ai_allowed === 1, sensitivity: note.sensitivity || "unknown" };
 }
 __name(publicNote, "publicNote");
+
+async function getNoteByPath(url, env) {
+  let path;
+  try {
+    path = stableId(noteIdFromRoute(url) || "");
+  } catch {
+    return json({ error: "invalid_note_path" }, 400);
+  }
+  if (!path || path.length > 1000 || path.startsWith("/") || !/\.md$/i.test(path)
+    || path.split("/").some((part) => !part || part === ".." || part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) {
+    return json({ error: "unsafe_note_path" }, 400);
+  }
+  const note = await env.DB.prepare(`
+    SELECT id, path, title, content, content_hash AS contentHash, sync_uuid AS syncUuid,
+      source_modified_at AS sourceModifiedAt, imported_at AS importedAt, updated_at AS updatedAt,
+      knowledge_type AS knowledgeType, knowledge_scope AS knowledgeScope, deleted_at AS archivedAt,
+      tags_json AS tagsJson, summary, ai_allowed AS aiAllowed, sensitivity, review_state AS reviewState,
+      'obsidian' AS source
+    FROM notes WHERE path = ? AND deleted_at IS NULL
+  `).bind(path).first();
+  if (!note) return json({ error: "Note not found" }, 404);
+  let tags = [];
+  try { tags = JSON.parse(note.tagsJson || "[]"); } catch {}
+  return json({ note: { ...note, tags, aiAllowed: note.aiAllowed === 1 } });
+}
+__name(getNoteByPath, "getNoteByPath");
+
 async function listRelatedNotes(url, env) {
   const id2 = noteIdFromRoute(url, "related");
   if (!id2) return json({ error: "Invalid note route" }, 400);
@@ -951,9 +982,16 @@ async function moveNote(request, url, env) {
 }
 __name(moveNote, "moveNote");
 async function deleteNote(url, env) {
-  const id2 = noteIdFromRoute(url);
-  if (!id2) return json({ error: "Invalid note route" }, 400);
-  const table = await locateNote(env, id2);
+  const reference = noteIdFromRoute(url);
+  if (!reference) return json({ error: "Invalid note route" }, 400);
+  const pathMatches = (await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL LIMIT 2").bind(stableId(reference)).all()).results || [];
+  if (pathMatches.length > 1) return json({ error: "ambiguous_note_reference" }, 409);
+  const legacyTable = await locateNote(env, reference);
+  if (pathMatches.length === 1 && legacyTable && pathMatches[0].id !== reference) {
+    return json({ error: "ambiguous_note_reference" }, 409);
+  }
+  const id2 = pathMatches.length === 1 ? pathMatches[0].id : reference;
+  const table = pathMatches.length === 1 ? "notes" : legacyTable;
   if (!table) return json({ error: "Note not found" }, 404);
   const old = table === "notes"
     ? await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, ai_allowed, review_state FROM notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first()
