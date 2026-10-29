@@ -254,6 +254,70 @@ void provider.connect();
   await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
 }
 
+async function seedYaosNote(path, content, fileId, clientPath) {
+  // Seed the real local YAOS Durable Object with the same Yjs map/text shape
+  // consumed by YjsClientDO.read-note; no fake read response or stub is used.
+  const client = `
+import * as Y from "yjs";
+import YSyncProvider from "y-partyserver/provider";
+import WebSocket from "ws";
+const host = "http://127.0.0.1:8787";
+const doc = new Y.Doc();
+const idToText = doc.getMap("idToText");
+const meta = doc.getMap("meta");
+const pathToId = doc.getMap("pathToId");
+const provider = new YSyncProvider(host, ${JSON.stringify(VAULT_ID)}, doc, {
+  prefix: ${JSON.stringify("/__integration/yaos/vault/sync/" + encodeURIComponent(VAULT_ID))},
+  params: { token: ${JSON.stringify(TOKEN)}, schemaVersion: "3" },
+  WebSocketPolyfill: globalThis.WebSocket ?? WebSocket,
+  connect: false,
+});
+let finished = false;
+function done(code) {
+  if (finished) return;
+  finished = true;
+  provider.destroy();
+  doc.destroy();
+  process.exitCode = code;
+}
+provider.on("connection-error", error => {
+  console.error("YAOS seed client connection error: " + String(error));
+});
+const timeout = setTimeout(() => {
+  console.error("YAOS seed client timed out");
+  done(1);
+}, 10000);
+provider.on("sync", synced => {
+  if (!synced || finished) return;
+  const matches = Array.from(meta.entries()).filter(([, value]) => {
+    const notePath = value instanceof Y.Map
+      ? value.get("path")
+      : value && typeof value === "object" ? value.path : null;
+    return notePath === ${JSON.stringify(path)};
+  });
+  if (matches.length > 0 || meta.has(${JSON.stringify(fileId)})) {
+    console.error("YAOS seed target already exists");
+    clearTimeout(timeout);
+    done(1);
+    return;
+  }
+  const text = new Y.Text();
+  text.insert(0, ${JSON.stringify(content)});
+  idToText.set(${JSON.stringify(fileId)}, text);
+  const entry = new Y.Map();
+  entry.set("path", ${JSON.stringify(path)});
+  entry.set("mtime", Date.now());
+  entry.set("device", "integration-test");
+  meta.set(${JSON.stringify(fileId)}, entry);
+  pathToId.set(${JSON.stringify(path)}, ${JSON.stringify(fileId)});
+  setTimeout(() => { clearTimeout(timeout); done(0); }, 500);
+});
+void provider.connect();
+`;
+  await writeFile(clientPath, client);
+  await run(process.execPath, [clientPath], { cwd: YAOS_SERVER });
+}
+
 async function importNote(path, content, title, fileId) {
   const contentHash = createHash("sha256").update(content).digest("hex");
   const result = await request("/api/sync", {
@@ -294,7 +358,7 @@ async function verifyArchivedRebindReadsActualVault() {
   };
   const content = "# Archived rebind vault-read integration regression\n\nThis note exists only in the isolated local YAOS test vault.\n";
   const contentHash = createHash("sha256").update(content).digest("hex");
-  await importNote(target.path, content, "Archived rebind vault-read regression", target.currentFileId);
+  await seedYaosNote(target.path, content, target.currentFileId, clientPath);
   const observation = await waitFor(async () => {
     const diff = await request("/sync/diff");
     if (!diff?.ok || !Array.isArray(diff.observations)) return false;
