@@ -95,3 +95,14 @@ Telegram-originated tasks persist their notification target and delivery state i
 ## Discovering unfinished work
 
 Authenticated `GET /api/agent-tasks?status=active` lists queued, running, and waiting tasks without returning their original prompts. Use `status=terminal` or `status=all` for a bounded audit of task state. Telegram `/tasks` lists the current chat's unfinished tasks, so task IDs and checkpoint stages remain discoverable even if the original conversation is no longer available. Send `/cancel` to stop the latest active task in that chat, or `/cancel <task_id>` to target a specific task. Individual results remain available through `/task_status <id>` or `GET /api/agent-tasks/{id}`.
+
+
+## 改善フォルダからの自動 GitHub 作業
+
+毎時の定期処理は、Vault pull が成功した後に `Notes/改善/` 配下の生存 D1 ノートを走査します。`このフォルダについて.md` は対象外です。起票の冪等キーはノートの `sync_uuid` と `content_hash` から生成し、処理済みハッシュは `app_meta` に記録します。結果追記後に変わったハッシュも処理済みとして記録するため、エージェント自身の結果追記で再起票されません。依頼本文が変われば新しいハッシュとして再評価されます。
+
+Workers AI のモデルは `@cf/meta/llama-3.1-8b-instruct` です。出力上限は 1024 tokens、既存の tool loop は最大 5 モデル呼び出し/タスク、改善依頼は最大 3 タスク/日です。Workers AI の無料枠はアカウントや時点で変わりうるため、この上限は無制限利用を防ぐ運用上のガードであり、無料利用を保証するものではありません。
+
+自動実行は計画ハッシュを再計算し、保存された計画と一致する場合だけ許可します。操作はブランチ作成、`src/`・`scripts/`・`docs/` 内のファイル作成/更新、最後の PR 作成に限定されます。`.github/workflows/`、`migrations/`、その他のパス、Issue・コメント、削除、権限変更、リリース、デプロイは対象外です。範囲外の計画は PR 作成前に停止し、理由を元ノートへ追記します。範囲内の PR は squash 自動マージを要求し、GitHub の必須チェックが成功するまでマージを待機します。
+
+処理結果（PR URL、自動マージの有効化状態、停止理由、失敗コード）は元ノートへ通常の correction API と同期 outbox 経由で追記されます。Web 調査は本経路では利用できず、一般の `POST /api/agent-tasks` からの Web 調査指定も拒否します。
