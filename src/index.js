@@ -149,8 +149,15 @@ async function syncNotes(request, env) {
   if (observations.length > 2000) return json({ error: "too_many_observations" }, 400);
   const observationComplete = body.observationComplete === true;
   const candidateFileIds = new Set(body.notes.map((input) => typeof input?.fileId === "string" ? input.fileId : null).filter(Boolean));
-  // Fail closed until the four additional owner-approved note paths are enumerated explicitly.
-  const isVaultAuthoritativePath = (path) => path === "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md";
+  // Only these five exact paths are owner-approved to prefer Obsidian over divergent live D1 content.
+  const vaultAuthoritativePaths = new Set([
+    "Notes/電子工作/知識/16x2キャラクターLCDモジュール.md",
+    "Notes/設定/ポリシー/情報の平坦化：思考速度の防衛.md",
+    "Notes/設定/ポリシー/奏星のプロファイル.md",
+    "Notes/設定/テーマ/グラフビュー配色定義.md",
+    "Notes/Purge/経緯/Purge_リリース履歴.md"
+  ]);
+  const isVaultAuthoritativePath = (path) => vaultAuthoritativePaths.has(path);
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0;
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
