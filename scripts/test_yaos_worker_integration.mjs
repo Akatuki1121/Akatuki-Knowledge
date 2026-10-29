@@ -285,6 +285,58 @@ async function seedLocalNote(stateDir, path, content, title) {
   }
 }
 
+async function verifyArchivedRebindReadsActualVault() {
+  const target = {
+    path: "Notes/Inbox/akatuki-knowledge-triage.md",
+    currentFileId: "xI1hOes1Xznnv9TG",
+    oldFileId: "XrTSfF-A7rQ6qNBE",
+    syncUuid: "737f562f-cdfd-5c5f-b4cf-438a3e1fd9b3",
+  };
+  const content = "# Archived rebind vault-read integration regression\n\nThis note exists only in the isolated local YAOS test vault.\n";
+  const contentHash = createHash("sha256").update(content).digest("hex");
+  await importNote(target.path, content, "Archived rebind vault-read regression", target.currentFileId);
+  const observation = await waitFor(async () => {
+    const diff = await request("/sync/diff");
+    if (!diff?.ok || !Array.isArray(diff.observations)) return false;
+    return diff.observations.find(item =>
+      item?.path === target.path &&
+      item?.fileId === target.currentFileId &&
+      item?.deleted !== true &&
+      item?.contentHash === contentHash
+    ) || false;
+  }, "real YAOS vault observation for archived-rebind read regression");
+  assert.equal(observation.contentHash, contentHash, "the real YAOS observation contains the seeded note hash");
+
+  // Exercise the actual Worker -> Durable Object -> YAOS read path. The local
+  // fixture is intentionally active rather than archived, so safety checks
+  // must reject it after the vault body has been read, without applying writes.
+  const response = await fetch(HOST + "/sync/restore-archived-rebind", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      path: target.path,
+      expectedOldFileId: target.oldFileId,
+      expectedCurrentFileId: target.currentFileId,
+      expectedSyncUuid: target.syncUuid,
+      expectedD1Hash: contentHash,
+      expectedVaultHash: observation.contentHash,
+    }),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 409, "real vault read succeeds and the active fixture is rejected by a later safety precondition");
+  assert.equal(payload.ok, false);
+  assert.equal(payload.applied, false);
+  assert.notEqual(payload.error, "vault_note_read_failed", "the former vault-read failure must not recur");
+  assert.ok(
+    ["archived_note_precondition_failed", "content_hash_precondition_failed", "identity_mapping_precondition_failed"].includes(payload.error),
+    "the request must reach guarded D1/identity validation: " + JSON.stringify(payload),
+  );
+  markPhase("実YAOS保管庫を使った archived-rebind read 回帰テスト完了");
+}
+
 async function correctNote(id, content, title) {
   const result = await request("/api/notes/" + encodeURIComponent(id) + "/correction", {
     method: "POST",
@@ -466,6 +518,8 @@ SYNC_TOKEN = "${TOKEN}"
 
     await startWorker();
     markPhase("Knowledge Worker起動完了");
+
+    await verifyArchivedRebindReadsActualVault();
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
