@@ -22,5 +22,6 @@ for (const contract of [
   assert.ok(handler.includes(contract), "Missing note-creation contract: " + contract);
 }
 assert.doesNotMatch(handler, /deterministicUuid|file_id\s*=/, "Akatuki must not derive sync identity from a path or invent a YAOS file ID");
-assert.ok(source.includes('if (response.ok) ctx.waitUntil(drainSyncOutbox(env, 3))'), "Successful creation must trigger outbox draining");
+assert.ok(source.includes('if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin))'), "Successful creation must trigger the chained post-write outbox drain");
+assert.ok(!source.includes('drainSyncOutbox(env, 3)'), "Post-write triggers must not use the old single-shot 3-job drain");
 console.log("Notes-create contract checks passed.");

@@ -63,6 +63,23 @@ for (const contract of [
   'pathToId.delete(current.path)',
   'current.deleted || pathChanged || indexChanged ? 1 : 0',
   'var PULL_CRON = "0 * * * *";',
+  'var TASK_RECOVERY_CRON = "*/15 * * * *";',
+  "function summarizeVaultPull(result, error, source)",
+  "async function persistVaultPullDiagnostics(env, summary)",
+  "async function readVaultPullDiagnostics(env)",
+  "'vault_pull_latest'",
+  'summarizeVaultPull(result, null, "scheduled")',
+  'summarizeVaultPull(result, null, "manual")',
+  'summarizeVaultPull(result, error, "post_write")',
+  "var POST_WRITE_DRAIN_BATCH_SIZE = 20;",
+  "var POST_WRITE_DRAIN_MAX_BATCHES = 5;",
+  "var POST_WRITE_PULL_COOLDOWN_MS = 120000;",
+  '"vault_pull_post_write_last"',
+  "async function pullAfterWrite(env, ctx, origin, sent)",
+  "async function drainSyncOutboxAfterWrite(env, ctx, origin)",
+  "await drainSyncOutbox(env, POST_WRITE_DRAIN_BATCH_SIZE)",
+  "await pullAfterWrite(env, ctx, origin, sent)",
+  "ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin))",
   'await enqueueSyncJob(env, table, id2, "delete")',
   'await enqueueSyncJob(env, table, id2, "upsert")',
 ]) {
@@ -70,6 +87,8 @@ for (const contract of [
 }
 
 assert.ok(!source.includes('SELECT id, path, title, content, deleted_at FROM " + entityType'), "Telegram notes do not have a path column");
+assert.ok(!source.includes("isHourlyCronTick"), "The hourly gate from the reverted 15-minute cron change must not return");
+assert.ok(!source.includes('var PULL_CRON = "*/15 * * * *"'), "The scheduled pull stays hourly; prompt convergence comes from the post-write pull, not a faster cron");
 
 for (const contract of [
   "CREATE TABLE yaos_sync_jobs",
