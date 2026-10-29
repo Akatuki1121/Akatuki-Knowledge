@@ -7,6 +7,13 @@ const YAOS_PROXY_PREFIX = "/__integration/yaos/";
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/__integration/read-note") {
+      if (env.INTEGRATION_TEST !== "true") return new Response("Not found", { status: 404 });
+      const path = url.searchParams.get("path") || "";
+      return env.YJS_CLIENT.getByName("default").fetch(
+        new Request("https://internal/read-note?path=" + encodeURIComponent(path)),
+      );
+    }
     if (url.pathname.startsWith(YAOS_PROXY_PREFIX)) {
       if (env.INTEGRATION_TEST !== "true") return new Response("Not found", { status: 404 });
 
