@@ -45,14 +45,9 @@ enqueue_statements = [
     for match in re.finditer(r"db\.prepare\(\s*`([\s\S]*?)`\s*\)", batch_source)
 ]
 assert len(enqueue_statements) == 7, f"Expected all seven admission-batch statements, found {len(enqueue_statements)}"
-def assert_budget_cap_rejects_task(day, task_cap, step_cap):
-    connection.execute(
-        "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, ?, ?, ?)",
-        (day, task_cap, step_cap, day + " 00:00:00"),
-    )
+def enqueue(day, task_id):
     now = day + " 12:00:00"
     deadline = "2099-01-01 00:00:00"
-    task_id = "over-cap-" + day + "-" + str(task_cap) + "-" + str(step_cap)
     params = [
         (task_id, None, "test", "{}", 4, 20, 40000, now, now, deadline, now, None, None, now),
         (day, now),
@@ -64,25 +59,36 @@ def assert_budget_cap_rejects_task(day, task_cap, step_cap):
     ]
     for statement, bindings in zip(enqueue_statements, params):
         connection.execute(statement, bindings)
-    connection.execute("""
-        UPDATE agent_tasks SET status = 'failed',
-            stop_reason = 'daily_workflow_budget_exhausted',
-            completed_at = ?, updated_at = ?
-        WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
-    """, (now, now, task_id))
-    row = connection.execute(
+    return connection.execute(
         "SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = ?", (task_id,)
     ).fetchone()
-    assert row == ("failed", 0, "daily_workflow_budget_exhausted"), f"Task at daily cap must fail closed: {row}"
-    reservation = connection.execute(
-        "SELECT counted FROM agent_task_budget_reservations WHERE task_id = ?", (task_id,)
-    ).fetchone()
-    assert reservation is None, f"Capacity rejection must not create a reservation: {reservation}"
-    counters = connection.execute(
-        "SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?",
-        (day,),
-    ).fetchone()
-    assert counters == (task_cap, step_cap), f"Rejected task must not increase daily counters: {counters}"
 
-assert_budget_cap_rejects_task("2026-10-21", 60, 1920)
-assert_budget_cap_rejects_task("2026-10-22", 59, 1984)
+# A former 60-task count must no longer reject work while Cloudflare step capacity remains.
+connection.execute(
+    "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, ?, ?, ?)",
+    ("2026-10-21", 60, 1920, "2026-10-21 00:00:00"),
+)
+assert enqueue("2026-10-21", "over-former-task-cap") == ("queued", 1, None)
+counters = connection.execute(
+    "SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?",
+    ("2026-10-21",),
+).fetchone()
+assert counters == (61, 1952), f"Former task-count cap must not block admission: {counters}"
+
+# 2,700 reserved steps leaves 300 of Cloudflare's 3,000 daily Free steps unallocated.
+connection.execute(
+    "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, ?, ?, ?)",
+    ("2026-10-22", 84, 2688, "2026-10-22 00:00:00"),
+)
+assert enqueue("2026-10-22", "over-step-budget") == ("failed", 0, "daily_workflow_budget_exhausted")
+reservation = connection.execute(
+    "SELECT counted FROM agent_task_budget_reservations WHERE task_id = ?", ("over-step-budget",)
+).fetchone()
+assert reservation is None, f"Capacity rejection must not create a reservation: {reservation}"
+counters = connection.execute(
+    "SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?",
+    ("2026-10-22",),
+).fetchone()
+assert counters == (84, 2688), f"Rejected task must not increase daily counters: {counters}"
+
+print("Background task store SQL compilation and Cloudflare Free step-budget admission tests passed.")
