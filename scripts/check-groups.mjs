@@ -26,7 +26,7 @@ export const checks = [
   ["safe-note-id-recovery", process.execPath, ["scripts/test-safe-note-id-recovery.mjs"]],
   ["sync-strip-frontmatter-ids", process.execPath, ["scripts/test-sync-strip-frontmatter-ids.mjs"]],
   ["sync-cleanup-measurement-notes", process.execPath, ["scripts/test-sync-cleanup-measurement-notes.mjs"]],
-  ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
+  ["budget-self-audit-syntax", process.execPath, ["--check", "src/budget-self-audit.mjs"]],\n  ["budget-self-audit", process.execPath, ["scripts/test_budget_self_audit.mjs"]],\n  ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
   ["workers-ai-budget-syntax", process.execPath, ["--check", "src/workers-ai-budget.mjs"]],
   ["workers-ai-budget", process.execPath, ["scripts/test_workers_ai_budget.mjs"]],
   ["agent-improvement-policy-syntax", process.execPath, ["--check", "src/agent-improvement-policy.mjs"]],
@@ -56,7 +56,7 @@ export function selectChecks(args = []) {
   return args.includes("--sync-only")
   ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name === "sync-contract" || name === "yaos-integration-classifier" || name === "sync-module-syntax")
   : args.includes("--agent-only")
-    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-"))
+    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
     : args.includes("--core-only")
       ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "notes-create-contract", "sync-identity-repair-contract", "sync-note-reconcile-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;
