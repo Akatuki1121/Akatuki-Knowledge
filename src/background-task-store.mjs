@@ -279,10 +279,8 @@ export async function enqueueAgentTask(db, input) {
         : await sha256Hex(safeJson(existingPayload, "payload"));
       if (existingInputHash !== inputHash) throw new Error("idempotency_key_conflict");
       if (existing.status === "failed" && existing.stop_reason === "daily_workflow_budget_exhausted") {
-        const currentDate = new Date(nowMs);
-        const nextResetMs = Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth(), currentDate.getUTCDate() + 1, 0, 1, 0);
-        const retryAt = toSqliteDateTime(nextResetMs);
-        const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
+        const retryAt = now;
+        const deadline = toSqliteDateTime(nowMs + TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs);
         await db.prepare(`
           UPDATE agent_tasks
           SET status = 'queued', budget_reserved = 0, stop_reason = NULL, completed_at = NULL,
@@ -452,10 +450,8 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
  */
 export async function requeueAgentTaskAfterBudgetWait(db, taskId, nowMs = Date.now()) {
   const now = toSqliteDateTime(nowMs);
-  const current = new Date(nowMs);
-  const nextResetMs = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
-  const retryAt = toSqliteDateTime(nextResetMs);
-  const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
+  const retryAt = now;
+  const deadline = toSqliteDateTime(nowMs + TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs);
   const result = await db.prepare(`
     UPDATE agent_tasks
     SET status = 'queued', budget_reserved = 0, stop_reason = NULL, completed_at = NULL,
