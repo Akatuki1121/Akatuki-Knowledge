@@ -500,6 +500,29 @@ for (const malformedPlan of malformedBranchPlans) {
 
 // A model that never fixes the plan exhausts the model-call budget and the task fails
 // with the reason-coded error, not the bare invalid_input that hid the failure point.
+let historyCompactionCalls = 0;
+let compactedPrompt = "";
+const longHistory = await runAgentToolLoop({
+  initialPrompt: "Investigate a repository using several independent note searches",
+  callModel: async ({ modelCall, prompt }) => {
+    historyCompactionCalls++;
+    if (modelCall === 8) {
+      compactedPrompt = prompt;
+      return final("Investigation complete.", ["note-1", "note-7"]);
+    }
+    return action("search_notes", { query: "distinct query " + modelCall });
+  },
+  executeTool: async (_tool, args) => ({
+    notes: [{ id: "note-" + args.query.split(" ").at(-1), title: "Finding " + args.query, path: "Notes/Finding.md", excerpt: "evidence " + args.query }],
+  }),
+  saveCheckpoint: async () => true,
+});
+assert.equal(longHistory.modelCalls, 8);
+assert.equal(longHistory.toolCalls.length, 7);
+assert.match(compactedPrompt, /history_summary/);
+assert.match(compactedPrompt, /note-1/);
+assert.match(compactedPrompt, /note-7/);
+
 let stubbornModelCalls = 0;
 let stubbornExecutions = 0;
 await assert.rejects(runAgentToolLoop({
