@@ -182,6 +182,9 @@ export async function enqueueAgentTask(db, input) {
   // Cloudflare Workers Free includes 3,000 Workflow steps/day. Reserve at most
   // 2,700 here, leaving 300 steps for other account workloads and variance.
   // Each admitted task reserves 32 steps; there is no separate task-count cap.
+  // Cloudflare Workers Free includes 3,000 Workflow steps/day. Reserve at most
+  // 2,700 here, leaving 300 steps for other account workloads and variance.
+  // Each admitted task reserves 32 steps; there is no separate task-count cap.
   const budgetDay = now.slice(0, 10);
 
   // D1 batch is transactional. The reservation ledger's unique task_id makes
