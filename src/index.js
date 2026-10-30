@@ -11699,7 +11699,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
     if (!taskId) throw new Error("invalid_input");
     const leaseToken = await step.do("create-lease-token", { retries: { limit: 1, delay: "1 second" } }, async () => crypto.randomUUID());
 
-    for (let attempt = 1; attempt <= 4; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       const claim = await step.do("claim-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
         const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: 120 });
         return task ? { claimed: true, attempts: task.attempts } : { claimed: false };
@@ -12108,7 +12108,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         }
         const errorClass = classifyAgentTaskError(error);
         const errorDetail = describeAgentTaskError(error, this.env);
-        const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted"].includes(errorClass);
+        const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted", "workers_ai_daily_quota_exhausted"].includes(errorClass);
         const failure = await step.do("record-failure-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
           return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, errorDetail, retryable, nowMs: Date.now() });
         });
