@@ -1,7 +1,7 @@
 name: Deploy Akatuki Knowledge Worker
 
 on:
-  workflow_dispatch:
+  # 通常の main 更新では即時に反映する。
   push:
     branches:
       - main
@@ -12,9 +12,15 @@ on:
       - "package-lock.json"
       - "migrations/**"
       - ".github/workflows/deploy.yml"
+  # GITHUB_TOKEN による自動マージで push 起点の workflow が抑制されても、
+  # main と本番反映済みコミットの差を定期的に検出して追いつかせる。
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: akatuki-knowledge-production-deploy
@@ -23,33 +29,98 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      # Check this before installing dependencies or running validation. If a
-      # reviewed D1 rollout is pending, this run cannot deploy and should exit
-      # without spending time on checks that cannot authorize deployment.
-      - name: Gate deployment on pending D1 migrations
-        id: migration_gate
+      - name: main の最新コミットを取得
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: デプロイ対象コミットを確定
+        id: target
         run: |
+          set -euo pipefail
+          target_sha="$(git rev-parse HEAD)"
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 本番デプロイ対象"
+            echo
+            echo "- ブランチ: main"
+            echo "- コミット: `$target_sha`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 対象コミットの本番反映状況を確認
+        id: already
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "production-deploy")][0].state // ""')"
+          if [ "$state" = "success" ]; then
+            echo "deployed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::コミット $TARGET_SHA は既に本番反映成功として記録されています。"
+            {
+              echo
+              echo "既に同じコミットの本番反映成功記録があるため、デプロイを省略しました。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            echo "前回の本番反映状態: ${state:-記録なし}。デプロイを試みます。"
+          fi
+
+      - name: 未適用 D1 マイグレーションによるデプロイ保留判定
+        id: migration_gate
+        if: steps.already.outputs.deployed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
           pending="$(find migrations/pending -maxdepth 1 -type f -name '*.sql' -print -quit 2>/dev/null || true)"
           if [ -n "$pending" ]; then
-            echo "::notice::Production deployment skipped: pending migration $pending requires a separately reviewed rollout."
+            description="未適用 D1 マイグレーションのため本番デプロイ保留"
+            target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+              -f state=pending \
+              -f context=production-deploy \
+              -f description="$description" \
+              -f target_url="$target_url"
             echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::本番デプロイを保留しました。未適用マイグレーション: $pending"
+            {
+              echo
+              echo "## デプロイ保留"
+              echo
+              echo "- 対象コミット: `$TARGET_SHA`"
+              echo "- 理由: `$pending` が migrations/pending に存在します。"
+              echo "- コミット Status: `production-deploy: pending`"
+              echo
+              echo "安全ゲートを維持するため、デプロイは実行していません。次回の定期確認で再試行します。"
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v4
-        if: steps.migration_gate.outputs.allowed == 'true'
+
+      - name: Node.js をセットアップ
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-        if: steps.migration_gate.outputs.allowed == 'true'
-      - run: npm run check
-        if: steps.migration_gate.outputs.allowed == 'true'
-      - name: Require Cloudflare deployment credential
-        if: steps.migration_gate.outputs.allowed == 'true'
+
+      - name: 依存関係をインストール
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        run: npm ci
+
+      - name: チェックを実行
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        run: npm run check
+
+      - name: Cloudflare デプロイ認証情報を確認
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -57,9 +128,44 @@ jobs:
             echo "::error::Repository Actions secret CLOUDFLARE_API_TOKEN is required for production deployment."
             exit 1
           fi
-      - name: Deploy production Worker
-        if: steps.migration_gate.outputs.allowed == 'true'
-        run: npx --yes wrangler@4.69.0 deploy --config wrangler.toml
+
+      - name: 対象コミットを本番 Worker へデプロイ
+        id: deploy_worker
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ea03cba73884bef04c37d1e21535e101
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.69.0 deploy --config wrangler.toml --message "GitHub commit $TARGET_SHA"
+
+      - name: 対象コミットに本番デプロイ結果を記録
+        if: always() && steps.target.outputs.sha != '' && steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ "$JOB_RESULT" = "success" ]; then
+            state=success
+            description="本番 Worker へのデプロイ成功"
+          else
+            state=failure
+            description="本番デプロイ失敗。Actions 実行ログを確認してください"
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f "state=$state" \
+            -f context=production-deploy \
+            -f "description=$description" \
+            -f "target_url=$target_url"
+          {
+            echo
+            echo "## 本番デプロイ結果"
+            echo
+            echo "- 対象コミット: `$TARGET_SHA`"
+            echo "- 結果: `$state`"
+            echo "- 実行ログ: $target_url"
+          } >> "$GITHUB_STEP_SUMMARY"
