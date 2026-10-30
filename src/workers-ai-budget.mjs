@@ -54,8 +54,14 @@ export async function reserveWorkersAiBudget(db, input) {
   const nowMs = Number.isFinite(input.nowMs) ? input.nowMs : Date.now();
   const now = new Date(nowMs).toISOString();
   const day = now.slice(0, 10);
-  const neurons = estimateWorkersAiNeurons(input);
   if (!db || typeof db.prepare !== "function") {
+    return { tracked: false, day, model: input.model, reservedNeurons: 0 };
+  }
+  let neurons;
+  try {
+    neurons = estimateWorkersAiNeurons(input);
+  } catch {
+    // Unknown or newly introduced model pricing must not block inference.
     return { tracked: false, day, model: input.model, reservedNeurons: 0 };
   }
   try {
@@ -81,7 +87,12 @@ export async function settleWorkersAiBudget(db, reservation, usage, nowMs = Date
     return { settled: false, reason: "invalid_reservation" };
   }
   if (reservation.tracked === false) return { settled: false, reason: "usage_ledger_unavailable" };
-  const actualNeurons = calculateWorkersAiNeurons(reservation.model, usage);
+  let actualNeurons;
+  try {
+    actualNeurons = calculateWorkersAiNeurons(reservation.model, usage);
+  } catch {
+    return { settled: false, reason: "model_pricing_unavailable" };
+  }
   if (actualNeurons === null) return { settled: false, reason: "usage_unavailable" };
   const now = new Date(nowMs).toISOString();
   try {
@@ -113,10 +124,15 @@ export async function settleWorkersAiBudgetFailure(db, reservation, inputTokens,
     return { settled: false, reason: "invalid_reservation" };
   }
   if (reservation.tracked === false) return { settled: false, reason: "usage_ledger_unavailable" };
-  const actualNeurons = calculateWorkersAiNeurons(reservation.model, {
-    prompt_tokens: inputTokens,
-    completion_tokens: 0,
-  });
+  let actualNeurons;
+  try {
+    actualNeurons = calculateWorkersAiNeurons(reservation.model, {
+      prompt_tokens: inputTokens,
+      completion_tokens: 0,
+    });
+  } catch {
+    return { settled: false, reason: "model_pricing_unavailable" };
+  }
   if (actualNeurons === null) return { settled: false, reason: "invalid_usage" };
   const now = new Date(nowMs).toISOString();
   try {
