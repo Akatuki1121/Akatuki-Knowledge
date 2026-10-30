@@ -1,4 +1,5 @@
-export const WORKERS_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+// GLM-4.7-Flash remains available on Workers Free and supports multilingual tool-calling.
+export const WORKERS_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
 export const WORKERS_AI_MAX_OUTPUT_TOKENS = 1024;
 
 // 元エラーのサニタイズ規則。src/log-sanitize.mjs と同じ考え方で、
