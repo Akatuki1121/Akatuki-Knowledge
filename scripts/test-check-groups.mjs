@@ -7,6 +7,14 @@ const core = new Set(selectChecks(["--core-only"]).map(([name]) => name));
 const agent = new Set(selectChecks(["--agent-only"]).map(([name]) => name));
 const sync = new Set(selectChecks(["--sync-only"]).map(([name]) => name));
 const all = new Set(selectChecks([]).map(([name]) => name));
+for (const [leftName, left] of [["core", core], ["agent", agent], ["sync", sync]]) {
+  for (const [rightName, right] of [["core", core], ["agent", agent], ["sync", sync]]) {
+    if (leftName >= rightName) continue;
+    for (const name of left) {
+      assert.ok(!right.has(name), `Check runs in both ${leftName} and ${rightName}: ${name}`);
+    }
+  }
+}
 assert.equal(all.size, names.length, "the full suite includes every check");
 assert.ok(!core.has("sync-outbox"), "sync-only checks stay out of core");
 assert.ok(!core.has("agent-tool-loop"), "agent checks stay out of core");
