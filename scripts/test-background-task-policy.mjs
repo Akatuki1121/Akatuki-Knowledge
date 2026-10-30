@@ -7,10 +7,6 @@ const base = {
   deadlineAtMs: 3_600_000,
   attempts: 1,
   maxAttempts: 4,
-  aiCallsUsed: 1,
-  maxAiCalls: 20,
-  aiTokensUsed: 100,
-  maxAiTokens: 40_000,
   errorClass: "network_error",
   retryable: true,
 };
@@ -121,7 +117,6 @@ for (const fixed of [
   "web_research_sources_missing",
   "web_research_invalid_response",
   "web_research_provider_error",
-  "model_call_budget_exhausted",
   "tool_output_too_large",
   "workers_ai_daily_quota_exhausted",
 ]) {
@@ -131,7 +126,7 @@ for (const fixed of [
 // position inside the message) decides between multiple fixed classes.
 assert.equal(classifyAgentTaskError(new Error("credentials_detected (HTTP 429)")), "credentials_detected");
 assert.equal(
-  classifyAgentTaskError(new Error("ai_token_budget_exhausted then credentials_detected")),
+  classifyAgentTaskError(new Error("rate_limited then credentials_detected")),
   "credentials_detected",
 );
 // Regex classes, in evaluation order.
@@ -168,8 +163,6 @@ const GUIDANCE = {
   retry_would_exceed_task_deadline: ["処理時間の上限に到達するため再試行できない", "依頼を小さく分け、新しい /task として依頼してください。"],
   attempt_budget_exhausted: ["再試行回数の上限に到達", "依頼内容を絞り、新しい /task として依頼してください。"],
   workers_ai_daily_quota_exhausted: ["Workers AI の日次無料枠に到達", "Cloudflare の日次リセット（UTC 00:00）後に自動再開します。"],
-  ai_call_budget_exhausted: ["AI 呼び出し上限に到達", "質問を一つに絞り、新しい /task として依頼してください。"],
-  ai_token_budget_exhausted: ["AI 利用量の上限に到達", "依頼文を短くし、対象範囲を絞って新しい /task として依頼してください。"],
   daily_workflow_budget_exhausted: ["本日の背景タスク上限に到達", "翌日以降に、必要な内容を絞って再依頼してください。"],
   credentials_detected: ["認証情報を検出", "認証情報を依頼文から削除してから再依頼してください。"],
   pii_masking_failed: ["個人情報を安全にマスキングできない", "個人を特定できる情報を除いてから再依頼してください。"],
