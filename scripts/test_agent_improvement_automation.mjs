@@ -143,9 +143,9 @@ test("rejected plan and hash mismatch make no GitHub calls", async () => {
 });
 
 test("improvement result blocks are removed before retrying the original request", () => {
-  const original = "## 困っていること\\n\\n確認してほしい。";
-  const withResult = original + "\\n\\n<!-- akatuki-improvement-result:task-1 -->\\n### 改善エージェント実行結果\\n\\n\\x60\\x60\\x60json\\n{\\"status\\":\\"failed\\"}\\n\\x60\\x60\\x60\\n";
-  const withTwoResults = withResult + "\\n<!-- akatuki-improvement-result:task-2 -->\\n### 改善エージェント実行結果\\n\\n\\x60\\x60\\x60json\\n{\\"status\\":\\"failed\\"}\\n\\x60\\x60\\x60\\n";
+  const original = "## 困っていること\n\n確認してほしい。";
+  const withResult = original + "\n\n<!-- akatuki-improvement-result:task-1 -->\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n{\"status\":\"failed\"}\n\x60\x60\x60\n";
+  const withTwoResults = withResult + "\n<!-- akatuki-improvement-result:task-2 -->\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n{\"status\":\"failed\"}\n\x60\x60\x60\n";
   assert.equal(stripImprovementResults(withResult), original);
   assert.equal(stripImprovementResults(withTwoResults), original);
   assert.equal(stripImprovementResults(original), original);
@@ -163,7 +163,7 @@ test("failed improvement tasks remain eligible and retries are idempotent per da
   assert.ok(inbox.includes('["failed", "cancelled"].includes(previous?.status)'));
   assert.ok(inbox.includes('":retry:" + day'));
   assert.ok(inbox.includes('["queued", "running", "waiting"].includes(previous.status)'));
-  assert.ok(!/await markImprovementSeen\\(env, note\\.sync_uuid, note\\.content_hash\\);\\s*const task = admitted\\.task/u.test(inbox),
+  assert.ok(!inbox.includes("await markImprovementSeen(env, note.sync_uuid, note.content_hash);\n      const task = admitted.task;"),
     "Queue admission must not mark an improvement request as seen");
   assert.ok(inbox.includes("Leave the note un-seen. A later scheduled scan can try again."));
 });
