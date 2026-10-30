@@ -11451,7 +11451,7 @@ async function markImprovementSeen(env, syncUuid, contentHash) {
 }
 function stripImprovementResults(content) {
   let cleaned = String(content ?? "");
-  const resultBlock = /(?:\\r?\\n){2}<!-- akatuki-improvement-result:[^>]+ -->\\r?\\n### 改善エージェント実行結果\\r?\\n\\r?\\n\\x60\\x60\\x60json\\r?\\n[\\s\\S]*?\\r?\\n\\x60\\x60\\x60\\s*$/u;
+  const resultBlock = /(?:\r?\n){2}<!-- akatuki-improvement-result:[^>]+ -->\r?\n### 改善エージェント実行結果\r?\n\r?\n\x60\x60\x60json\r?\n[\s\S]*?\r?\n\x60\x60\x60\s*$/u;
   while (resultBlock.test(cleaned)) cleaned = cleaned.replace(resultBlock, "");
   return cleaned.trimEnd();
 }
@@ -11482,8 +11482,8 @@ async function appendImprovementResult(env, payload, taskId, result) {
     error: recordedError,
     recordedAt: new Date().toISOString()
   });
-  const content = row.content.replace(/\\s*$/, "") + "\\n\\n" + marker
-    + "\\n### 改善エージェント実行結果\\n\\n\\x60\\x60\\x60json\\n" + resultText + "\\n\\x60\\x60\\x60\\n";
+  const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
+    + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n" + resultText + "\n\x60\x60\x60\n";
   const route = new URL("/api/notes/" + encodeURIComponent(row.id) + "/correction", "https://internal");
   const request = new Request(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
   const response = await correctNote(request, route, env);
