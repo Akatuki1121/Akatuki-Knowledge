@@ -246,3 +246,31 @@ test("manual and scheduled pulls share the same post-pull automation", async () 
   assert.ok(scheduled.includes("runPostPullAutomation(env, improvementPullReady)"));
   assert.equal((source.match(/await runPostPullAutomation\(env,/gu) || []).length, 2);
 });
+
+
+test("new self-generated workflows require explicit read-only token permissions", () => {
+  const plan = validPlan();
+  plan.operations[1].path = ".github/workflows/readonly.yml";
+  plan.operations[1].content = [
+    "name: Read-only automation",
+    "on: push",
+    "permissions: read-all",
+    "jobs:",
+    "  inspect:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo inspect",
+    ""
+  ].join("\n");
+  assert.equal(validateImprovementPlan(plan).ok, true);
+
+  for (const unsafe of [
+    ["name: Missing permissions", "on: push", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", ""],
+    ["name: Write permission", "on: push", "permissions:", "  contents: write", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", ""],
+    ["name: Dangerous trigger", "on: pull_request_target", "permissions: read-all", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", ""],
+    ["name: Secret access", "on: push", "permissions: read-all", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", "    env:", "      TOKEN: \${{ secrets.GITHUB_TOKEN }}", ""],
+  ]) {
+    plan.operations[1].content = unsafe.join("\n");
+    assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
+  }
+});
