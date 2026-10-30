@@ -15,7 +15,7 @@ const PROTECTED_WORKFLOWS = new Set([
 ]);
 const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "apply_patch", "create_pull_request"]);
 
-function validRepositoryPath(path, operationType) {
+function validRepositoryPath(path, operationType, content) {
   if (typeof path !== "string" || !path || path.length > 240
     || path.startsWith("/") || path.includes("\\")
     || path.split("/").some((part) => part === ".." || part === "." || part === "")) return false;
@@ -23,7 +23,9 @@ function validRepositoryPath(path, operationType) {
   if (ALLOWED_ROOT_FILES.has(path)) return operationType === "update_file" || operationType === "apply_patch";
   if (path.startsWith(".github/workflows/")) {
     return operationType === "create_file" && !PROTECTED_WORKFLOWS.has(path)
-      && /^[a-z0-9][a-z0-9._-]*\.ya?ml$/iu.test(path.slice(".github/workflows/".length));
+      && /^[a-z0-9][a-z0-9._-]*\.ya?ml$/iu.test(path.slice(".github/workflows/".length))
+      && typeof content === "string"
+      && !/(?:pull_request_target|workflow_run|secrets\.|write-all|contents:\s*write|pull-requests:\s*write|issues:\s*write|actions:\s*write)/iu.test(content);
   }
   return false;
 }
@@ -41,7 +43,7 @@ export function validateImprovementPlan(plan) {
     operation.type === "create_file" || operation.type === "update_file" || operation.type === "apply_patch");
   if (fileOperations.length === 0) return { ok: false, reason: "no_file_changes" };
   for (const operation of fileOperations) {
-    if (!validRepositoryPath(operation.path, operation.type)) {
+    if (!validRepositoryPath(operation.path, operation.type, operation.type === "apply_patch" ? operation.patch : operation.content)) {
       return { ok: false, reason: "changed_path_out_of_scope" };
     }
     if ((operation.type === "update_file" || operation.type === "apply_patch")
