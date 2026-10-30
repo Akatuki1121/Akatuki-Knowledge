@@ -339,6 +339,14 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
       ON CONFLICT(budget_day) DO NOTHING
     `).bind(budgetDay, now).run();
 
+    await db.prepare(`
+      UPDATE agent_tasks
+      SET next_attempt_at = CASE WHEN next_attempt_at > ? THEN next_attempt_at ELSE ? END,
+          deadline_at = CASE WHEN deadline_at > ? THEN deadline_at ELSE ? END,
+          updated_at = ?
+      WHERE status = 'queued' AND budget_reserved = 0
+    `).bind(now, now, now, deadline, now).run();
+
     const budget = await db.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?")
       .bind(budgetDay).first();
     if (!budget) return { reserved: 0, available: 0, reason: "budget_row_unavailable" };
