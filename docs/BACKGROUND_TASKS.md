@@ -48,7 +48,7 @@ D1、Workers requests、Durable Objects、Workflows executionなどもCloudflare
 - ルート設定: wrangler.toml、package.json、package-lock.json、README.md（既存ファイルの更新のみ）。
 - GitHub Actions workflow: 新規workflowファイルの作成のみ。危険なtrigger・write権限・secrets参照を含むworkflowは禁止。
 - 保護対象: .github/workflows/auto-merge.yml、check.yml、deploy.yml。これらの変更・置換は禁止。
-- GitHub操作: branch作成、ファイル作成・更新・unified diff適用、PR作成。
+- GitHub操作: branch作成、ファイル作成・更新・unified diff適用、PR作成。github_read_fileは行範囲を指定して大きなファイルを段階的に読める。apply_patchは現在のblob SHAを検証してから既存ファイルに差分を適用する。計画の操作件数に固定上限は設けず、モデルcontext・GitHub API payloadなど実際の制約に従う。
 - 対象外: mainへの直接push、PR mergeの直接実行、release、deploy、本番migration適用、ファイル削除、権限変更、任意の外部サービスへの書き込み。
 
 migrationはmigrations/pending/に追加できるが、本番適用は別途レビュー・承認が必要。pending migrationが存在する間はdeploy workflowが本番デプロイを止める。
@@ -59,9 +59,9 @@ Web調査は背景タスク経路では無効。GitHubファイル・Issue・PR�
 
 ## 定期自己監査
 
-wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実行する。監査はD1のtask status/error group、Workflow step予約、Workers AI telemetryを読み取り、監査レポートをapp_metaに冪等保存する。メトリクスの異常や定期監査対象があればNotes/改善/に自己監査ノートを作成し、通常の改善ノート処理へ渡す。
+wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実行し、異常の有無にかかわらず毎日1件の自己監査ノートを作成する。監査はD1のtask status/error group、Workflow step予約、Workers AI telemetryを読み取り、監査レポートをapp_metaに冪等保存する。メトリクスの異常や定期監査対象があればNotes/改善/に自己監査ノートを作成し、通常の改善ノート処理へ渡す。
 
-自己監査ノートにはorigin: budget-auditとaudit_generated: trueを付ける。監査タスクが別の監査タスクを起票する再帰経路は作らない。日次の監査レポートは一意キーで重複生成を防ぐ。監査結果から必要な修正が見つかった場合は、改善エージェントが実装・テスト・migration・ドキュメントを含むPRを作る。自己監査の定量値だけで不具合がないと断定せず、コード・Workflow・CI・DB schema・Cloudflare quotaの整合性も確認するよう監査依頼に明記する。
+自己監査ノートにはorigin: budget-auditとaudit_generated: trueを付ける。監査タスクが別の監査タスクを起票する再帰経路は作らない。日次の監査レポートは一意キーで重複生成を防ぐ。監査結果は認証済みGET /api/budget-auditから最新14件を取得できる。監査結果から必要な修正が見つかった場合は、改善エージェントが実装・テスト・migration・ドキュメントを含むPRを作る。自己監査の定量値だけで不具合がないと断定せず、コード・Workflow・CI・DB schema・Cloudflare quotaの整合性も確認するよう監査依頼に明記する。
 
 ## GitHub自動マージ
 
