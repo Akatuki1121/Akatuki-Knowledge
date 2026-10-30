@@ -416,7 +416,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
           .bind(taskId, budgetDay).run();
         break;
       }
-      await db.batch([
+      const finalized = await db.batch([
         db.prepare("UPDATE agent_task_budget_reservations SET counted = 2 WHERE task_id = ? AND budget_day = ? AND counted = 1")
           .bind(taskId, budgetDay),
         db.prepare(`
@@ -429,7 +429,21 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
             )
         `).bind(now, now, taskId, taskId, budgetDay),
       ]);
-      reserved++;
+      if (Number(finalized?.[1]?.meta?.changes || 0) === 1) {
+        reserved++;
+      } else {
+        await db.batch([
+          db.prepare(`
+            UPDATE agent_task_daily_budget
+            SET tasks_reserved = MAX(0, tasks_reserved - 1),
+                workflow_steps_reserved = MAX(0, workflow_steps_reserved - 32),
+                updated_at = ?
+            WHERE budget_day = ?
+          `).bind(now, budgetDay),
+          db.prepare("UPDATE agent_task_budget_reservations SET counted = 0 WHERE task_id = ? AND budget_day = ?")
+            .bind(taskId, budgetDay),
+        ]);
+      }
     }
 
     const remaining = (await db.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?")
