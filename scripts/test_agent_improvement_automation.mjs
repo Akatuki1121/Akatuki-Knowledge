@@ -1,10 +1,35 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { callWorkersAi, WORKERS_AI_MODEL, WORKERS_AI_MAX_OUTPUT_TOKENS } from "../src/workers-ai-client.mjs";
 import { executeApprovedImprovementPlan } from "../src/agent-improvement-executor.mjs";
 import { validateImprovementPlan, improvementIdempotencyKey, IMPROVEMENT_AUTOMATION_LIMITS, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
 import { hashGitHubWritePlan } from "../src/agent-github-tools.mjs";
+
+function createBudgetDb() {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(`CREATE TABLE workers_ai_daily_usage (
+    usage_day TEXT PRIMARY KEY,
+    reserved_neurons INTEGER NOT NULL DEFAULT 0,
+    actual_neurons INTEGER NOT NULL DEFAULT 0,
+    calls_completed INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  )`);
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        first() { return sqlite.prepare(sql).get(...values) ?? null; },
+        run() {
+          const result = sqlite.prepare(sql).run(...values);
+          return { meta: { changes: Number(result.changes) } };
+        }
+      };
+    }
+  };
+}
 
 const validPlan = () => ({
   repository: "Akatuki1121/Akatuki-Knowledge",
@@ -18,9 +43,10 @@ const validPlan = () => ({
 
 test("Workers AI client uses bounded tool-capable model and returns text", async () => {
   let called;
-  const env = { AI: { run: async (...args) => { called = args; return { response: '{"action":"final","reply":"ok","source_ids":[]}' }; } } };
+  const env = { DB: createBudgetDb(), AI: { run: async (...args) => { called = args; return { response: '{"action":"final","reply":"ok","source_ids":[]}' }; } } };
   const result = await callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json" });
   assert.equal(result, '{"action":"final","reply":"ok","source_ids":[]}');
+  assert.equal(WORKERS_AI_MODEL, "@cf/zai-org/glm-4.7-flash");
   assert.equal(called[0], WORKERS_AI_MODEL);
   assert.equal(called[1].max_tokens, 500);
   assert.deepEqual(called[1].response_format, { type: "json_object" });
@@ -31,7 +57,7 @@ test("Workers AI client preserves sanitized upstream failure and keeps stable re
   const upstream = new Error("quota exceeded for model");
   upstream.name = "WorkersAiError";
   upstream.code = "model_error";
-  const env = { AI: { run: async () => { throw upstream; } } };
+  const env = { DB: createBudgetDb(), AI: { run: async () => { throw upstream; } } };
   await assert.rejects(
     callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json" }),
     (error) => {
@@ -48,7 +74,7 @@ test("Workers AI client preserves sanitized upstream failure and keeps stable re
 
 test("Workers AI client does not pass signal to AI.run", async () => {
   let called;
-  const env = { AI: { run: async (...args) => { called = args; return { response: "ok" }; } } };
+  const env = { DB: createBudgetDb(), AI: { run: async (...args) => { called = args; return { response: "ok" }; } } };
   const result = await callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json", signal: AbortSignal.timeout(1000) });
   assert.equal(result, "ok");
   assert.equal(called.length, 2);
@@ -59,7 +85,7 @@ test("Workers AI client does not pass signal to AI.run", async () => {
 test("Workers AI client truncates and redacts sanitized failure messages", async () => {
   const upstream = new Error(`failed api_key=secret-token-123 ${"y".repeat(300)}`);
   upstream.code = 429;
-  const env = { AI: { run: async () => { throw upstream; } } };
+  const env = { DB: createBudgetDb(), AI: { run: async () => { throw upstream; } } };
   await assert.rejects(
     callWorkersAi(env, "prompt", 500),
     (error) => {
