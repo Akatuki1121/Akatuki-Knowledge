@@ -51,6 +51,18 @@ assert.equal(first.ok, true);
 assert.equal(first.recorded, true);
 assert.equal(first.report.status, "normal");
 assert.equal(db.writes.length, 1);
-assert.match(db.writes[0].args[0], /budget-audit:2026-10-30:00/);\n\nlet createdNote = null;\nconst attentionDb = fakeDb();\nconst attention = await runBudgetSelfAudit({ DB: attentionDb }, Date.parse("2026-10-30T00:00:00.000Z"), {\n  includeSystemAudit: true,\n  createNote: async (note) => { createdNote = note; return { ok: true, status: 201 }; },\n});\nassert.equal(attention.ok, true);\nassert.equal(attention.noteCreated, true);\nassert.match(createdNote.path, /^Notes\\/改善\\/自己監査-2026-10-30\\.md$/u);\nassert.match(createdNote.content, /origin: budget-audit/);\nassert.match(createdNote.content, /audit_generated: true/);
+assert.match(db.writes[0].args[0], /budget-audit:2026-10-30:00/);
+
+let createdNote = null;
+const attentionDb = fakeDb();
+const attention = await runBudgetSelfAudit({ DB: attentionDb }, Date.parse("2026-10-30T00:00:00.000Z"), {
+  includeSystemAudit: true,
+  createNote: async (note) => { createdNote = note; return { ok: true, status: 201 }; },
+});
+assert.equal(attention.ok, true);
+assert.equal(attention.noteCreated, true);
+assert.match(createdNote.path, /^Notes\\/改善\\/自己監査-2026-10-30\\.md$/u);
+assert.match(createdNote.content, /origin: budget-audit/);
+assert.match(createdNote.content, /audit_generated: true/);
 
 console.log("budget self-audit tests passed");
