@@ -119,6 +119,7 @@ const quotaFailure = await recordAgentTaskFailure(db, {
   nowMs: quotaAt,
 });
 assert.equal(quotaFailure.applied, true);
+assert.equal(quotaFailure.workflowBudgetReleased, true);
 assert.equal(quotaFailure.decision.action, "retry");
 assert.equal(quotaFailure.decision.retryAtMs, Date.parse("2026-11-01T00:01:00.000Z"));
 row = sqlite.prepare("SELECT status, budget_reserved, attempts, last_error_class, next_attempt_at, deadline_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
@@ -155,6 +156,7 @@ const crossDayFailure = await recordAgentTaskFailure(db, {
   nowMs: Date.parse("2026-10-31T23:59:50.000Z"),
 });
 assert.equal(crossDayFailure.applied, true);
+assert.equal(crossDayFailure.workflowBudgetReleased, true);
 assert.equal(new Date(crossDayFailure.decision.retryAtMs).toISOString().slice(0, 10), "2026-11-01");
 row = sqlite.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task_id = 'cross-day-retry'").get();
 assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 0 });
