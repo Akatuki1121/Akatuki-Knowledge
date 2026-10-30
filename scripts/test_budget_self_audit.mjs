@@ -61,7 +61,7 @@ const attention = await runBudgetSelfAudit({ DB: attentionDb }, Date.parse("2026
 });
 assert.equal(attention.ok, true);
 assert.equal(attention.noteCreated, true);
-assert.match(createdNote.path, /^Notes\\/改善\\/自己監査-2026-10-30\\.md$/u);
+assert.match(createdNote.path, /^Notes\/改善\/自己監査-2026-10-30\.md$/u);
 assert.match(createdNote.content, /origin: budget-audit/);
 assert.match(createdNote.content, /audit_generated: true/);
 
