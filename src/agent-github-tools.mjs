@@ -307,8 +307,21 @@ export async function executeGitHubWritePlan(planInput, { token, fetchImpl = fet
     } else if (op.type === "create_file" || op.type === "update_file") {
       path = "/repos/" + plan.repository + "/contents/" + op.path.split("/").map(encodeURIComponent).join("/");
       method = "PUT";
-      body = { message: op.message, content: btoa(String.fromCharCode(...new TextEncoder().encode(op.content))), branch: op.branch };
+      body = { message: op.message, content: encodeBase64Utf8(op.content), branch: op.branch };
       if (op.type === "update_file") body.sha = op.sha;
+    } else if (op.type === "apply_patch") {
+      const filePath = "/repos/" + plan.repository + "/contents/" + op.path.split("/").map(encodeURIComponent).join("/");
+      const current = await githubGet(filePath + "?ref=" + encodeURIComponent(op.branch), { token, fetchImpl, signal });
+      if (current.type !== "file" || current.encoding !== "base64" || current.sha !== op.sha
+        || typeof current.content !== "string" || current.size > 1_000_000) {
+        throw new Error("github_write_conflict");
+      }
+      const currentContent = decodeBase64Utf8(current.content);
+      const patchedContent = applyUnifiedPatch(currentContent, op.patch, op.path);
+      if (patchedContent.length > 1_000_000) throw new Error("github_file_too_large");
+      path = filePath;
+      method = "PUT";
+      body = { message: op.message, content: encodeBase64Utf8(patchedContent), branch: op.branch, sha: current.sha };
     } else if (op.type === "create_issue") {
       path = "/repos/" + plan.repository + "/issues";
       body = { title: op.title, body: op.body };
