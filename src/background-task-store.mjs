@@ -82,7 +82,6 @@ export async function expireAgentTasks(db, input = {}) {
     SET status = 'failed',
         stop_reason = CASE
           WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
-          WHEN attempts >= max_attempts THEN 'attempt_budget_exhausted'
           ELSE 'attempt_budget_exhausted'
         END,
         completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
@@ -182,9 +181,6 @@ export async function enqueueAgentTask(db, input) {
   const taskId = input.taskId.trim();
   const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
     ? input.notifyChatId.trim() : null;
-  // Cloudflare Workers Free includes 3,000 Workflow steps/day. Reserve at most
-  // 2,700 here, leaving 300 steps for other account workloads and variance.
-  // Each admitted task reserves 32 steps; there is no separate task-count cap.
   // Cloudflare Workers Free includes 3,000 Workflow steps/day. Reserve at most
   // 2,700 here, leaving 300 steps for other account workloads and variance.
   // Each admitted task reserves 32 steps; there is no separate task-count cap.
@@ -377,9 +373,8 @@ export async function claimNextAgentTask(db, input = {}) {
 }
 
 /**
- * Reserve budget before issuing an AI request. The increment is atomic and the
- * call is charged even if the provider later fails, preventing retry loops from
- * making unbounded external requests.
+ * Record estimated AI usage before the provider call. This is telemetry only:
+ * it does not impose per-task call/token limits or replace Cloudflare's quota.
  */
 export async function reserveAgentAiBudget(db, input) {
   const estimatedTokens = Math.floor(finiteNumber(input.estimatedTokens, 0));
