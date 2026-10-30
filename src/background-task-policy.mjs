@@ -98,8 +98,8 @@ export function decideTaskRetry(input) {
   const retryDelaysMs = Array.isArray(input.retryDelaysMs) ? input.retryDelaysMs : null;
   const exponent = Math.min(Math.max(attempts - 1, 0), 20);
   const requestedDelay = retryDelaysMs?.length
-    ? finiteNumber(retryDelaysMs[Math.min(attempts - 1, retryDelaysMs.length - 1)], baseDelayMs)
-    : baseDelayMs * (2 ** exponent);
+    ? finiteNumber(retryDelaysMs[Math.min(attempts - 1, retryDelaysMs.length - 1)], requestedBaseDelay)
+    : requestedBaseDelay * (2 ** exponent);
   const delayMs = Math.min(
     Math.max(1, Math.floor(requestedDelay)),
     maxRetryDelayMs,
