@@ -397,6 +397,4 @@ export async function runAgentToolLoop(input) {
       pendingAction: null,
     });
   }
-
-  throw new Error("model_call_budget_exhausted");
 }
