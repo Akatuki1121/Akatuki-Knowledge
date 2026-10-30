@@ -459,8 +459,8 @@ export async function executeGitHubReadTool(tool, args, options = {}) {
     if (content.includes("\u0000")) throw new Error("github_not_text_file");
     const lines = content.replace(/\r\n/g, "\n").split("\n");
     const totalLines = lines.length;
-    const startLine = args.start_line === undefined ? 1 : validateNumber(args.start_line);
-    const endLine = args.end_line === undefined ? Math.min(totalLines, startLine + 999) : validateNumber(args.end_line);
+    const startLine = args.start_line == null ? 1 : validateNumber(args.start_line);
+    const endLine = args.end_line == null ? Math.min(totalLines, startLine + 999) : validateNumber(args.end_line);
     if (endLine < startLine || endLine - startLine > 999 || startLine > totalLines + 1) throw new Error("invalid_input");
     const selected = lines.slice(startLine - 1, endLine).join("\n");
     result = {
