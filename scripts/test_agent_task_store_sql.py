@@ -29,8 +29,8 @@ for index, statement in enumerate(statements, start=1):
 
 print(f"Background task store SQL compilation passed ({len(statements)} statements).")
 
-# Regression: execute the real enqueue SQL batch at both independent daily caps.
-# This tests the production statements, rather than a simplified copy of the guard.
+# Regression: execute the real enqueue SQL batch against the former task-count cap
+# and the Cloudflare Free Workflow-step budget. No simplified guard is substituted.
 enqueue_start = source.index("export async function enqueueAgentTask")
 enqueue_end = source.index("export async function claimNextAgentTask", enqueue_start)
 enqueue_source = source[enqueue_start:enqueue_end]
