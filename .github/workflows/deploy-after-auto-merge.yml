@@ -1,0 +1,92 @@
+name: 自動マージ後のDeploy起動保証
+
+on:
+  workflow_run:
+    workflows:
+      - 自動マージ設定
+      - Check recovered Worker and YAOS event sync
+    types:
+      - completed
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: auto-merge-deploy-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch-deploy:
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.pull_requests[0].number != null }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: 自動マージ対象のPRを確認
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_NUMBER" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          if jq -e '.merged == true' <<< "$pr_json" >/dev/null; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! jq -e '.auto_merge != null' <<< "$pr_json" >/dev/null; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::このPRは自動マージ待ちではないため、Deploy起動を省略します。"
+            exit 0
+          fi
+
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "merged=false" >> "$GITHUB_OUTPUT"
+
+      - name: PRのマージ完了を待機
+        id: wait
+        if: steps.target.outputs.eligible == 'true' && steps.target.outputs.merged != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+            if jq -e '.merged == true' <<< "$pr_json" >/dev/null; then
+              echo "merged=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            state="$(jq -r '.state' <<< "$pr_json")"
+            auto_merge="$(jq -r 'if .auto_merge == null then "false" else "true" end' <<< "$pr_json")"
+            if [ "$state" = "closed" ] || [ "$auto_merge" != "true" ]; then
+              echo "merged=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::PRはマージされずに終了したため、Deploy起動を省略します。"
+              exit 0
+            fi
+            sleep 30
+          done
+
+          echo "::error::自動マージ設定後30分以内にPRのマージを確認できませんでした。"
+          exit 1
+
+      - name: Deploy workflowを明示起動
+        if: >-
+          steps.target.outputs.eligible == 'true' &&
+          (steps.target.outputs.merged == 'true' || steps.wait.outputs.merged == 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run deploy.yml --ref main
+          echo "Deploy workflow_dispatch を main に対して要求しました。"
