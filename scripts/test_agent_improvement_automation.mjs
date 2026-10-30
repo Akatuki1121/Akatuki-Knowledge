@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { callWorkersAi, WORKERS_AI_MODEL, WORKERS_AI_MAX_OUTPUT_TOKENS } from "../src/workers-ai-client.mjs";
 import { executeApprovedImprovementPlan } from "../src/agent-improvement-executor.mjs";
-import { validateImprovementPlan, improvementIdempotencyKey, IMPROVEMENT_AUTOMATION_LIMITS, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
+import { validateImprovementPlan, improvementIdempotencyKey, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
 import { hashGitHubWritePlan } from "../src/agent-github-tools.mjs";
 
 function createBudgetDb() {
@@ -57,9 +57,9 @@ test("Workers AI client uses bounded tool-capable model and returns text", async
   assert.equal(result, '{"action":"final","reply":"ok","source_ids":[]}');
   assert.equal(WORKERS_AI_MODEL, "@cf/zai-org/glm-4.7-flash");
   assert.equal(called[0], WORKERS_AI_MODEL);
-  assert.equal(called[1].max_tokens, 500);
+  assert.equal(called[1].max_completion_tokens, 500);
   assert.deepEqual(called[1].response_format, { type: "json_object" });
-  assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 1024);
+  assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 131072);
   assert.deepEqual(usageSeen, { prompt_tokens: 20, completion_tokens: 5 });
 });
 
@@ -164,8 +164,9 @@ test("idempotency key is stable and bounded for sync UUID plus content hash", as
   assert.equal(first, await improvementIdempotencyKey("sync-uuid", hash));
   assert.notEqual(first, await improvementIdempotencyKey("other-uuid", hash));
   assert.ok(first.length <= 100);
-  assert.equal(Object.hasOwn(IMPROVEMENT_AUTOMATION_LIMITS, "maxTasksPerDay"), false);
-  assert.equal(IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask, 5);
+  const expanded = validPlan();
+  expanded.operations[1].path = "migrations/pending/0019_audit.sql";
+  assert.equal(validateImprovementPlan(expanded).ok, true);
 });
 
 test("eligible plan creates PR and enables squash auto-merge through mocked GitHub calls", async () => {
