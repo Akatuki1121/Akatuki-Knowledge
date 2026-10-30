@@ -138,6 +138,33 @@ const nextDayReservation = await reserveQueuedAgentTaskBudget(db, {
 assert.equal(nextDayReservation.reserved, 1);
 row = sqlite.prepare("SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
 assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 1, next_attempt_at: "2026-11-01 00:02:00" });
+sqlite.prepare("INSERT INTO agent_tasks (task_id, task_type, status, budget_reserved, payload_json, attempts, lease_token, lease_expires_at, deadline_at, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+  .run("cross-day-retry", "github_query", "running", 1, JSON.stringify({ prompt: "retry" }), 1,
+    "cross-day-lease", "2026-11-01 00:10:00", "2026-11-01 00:30:00",
+    "2026-10-31 23:59:50", "2026-10-31 23:50:00", "2026-10-31 23:59:50");
+sqlite.prepare("INSERT INTO agent_task_budget_reservations (task_id, budget_day, workflow_steps, counted) VALUES (?, ?, ?, ?)")
+  .run("cross-day-retry", "2026-10-31", 32, 2);
+sqlite.prepare("UPDATE agent_task_daily_budget SET tasks_reserved = tasks_reserved + 1, workflow_steps_reserved = workflow_steps_reserved + 32 WHERE budget_day = ?")
+  .run("2026-10-31");
+const crossDayFailure = await recordAgentTaskFailure(db, {
+  taskId: "cross-day-retry",
+  leaseToken: "cross-day-lease",
+  errorClass: "timeout",
+  errorDetail: "timeout",
+  retryable: true,
+  nowMs: Date.parse("2026-10-31T23:59:50.000Z"),
+});
+assert.equal(crossDayFailure.applied, true);
+assert.equal(new Date(crossDayFailure.decision.retryAtMs).toISOString().slice(0, 10), "2026-11-01");
+row = sqlite.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task_id = 'cross-day-retry'").get();
+assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 0 });
+const crossDayReservation = sqlite.prepare("SELECT budget_day, counted FROM agent_task_budget_reservations WHERE task_id = 'cross-day-retry'").get();
+assert.deepEqual({ ...crossDayReservation }, { budget_day: "2026-11-01", counted: 0 });
+const crossDayReserved = await reserveQueuedAgentTaskBudget(db, { nowMs: Date.parse("2026-11-01T00:03:00.000Z") });
+assert.equal(crossDayReserved.reserved, 1);
+row = sqlite.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task_id = 'cross-day-retry'").get();
+assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 1 });
+
 const nextDayBudget = sqlite.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = '2026-11-01'").get();
 assert.deepEqual({ ...nextDayBudget }, { tasks_reserved: 1, workflow_steps_reserved: 32 });
 
