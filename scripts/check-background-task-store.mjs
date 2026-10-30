@@ -23,6 +23,8 @@ for (const required of [
   "status = 'succeeded'",
   "decideTaskRetry(",
   "safeErrorDetail(input.errorDetail)",
+  "last_error_class = COALESCE(NULLIF(last_error_class, ''), CASE",
+  "lease_expires_at = datetime(?, '+120 seconds')",
   "task_deadline_exceeded",
   "attempt_budget_exhausted",
   "export async function reserveAgentAiBudget",
@@ -54,6 +56,9 @@ assert.ok(!source.includes("ai_tokens_used + ? <= max_ai_tokens"), "AI token cou
 assert.ok(!source.includes("tasks_reserved < 60"), "Task admission must not use an arbitrary daily task-count cap");
 assert.ok(!source.includes("workflow_steps_reserved + 32 <= 2000"), "Workflow admission must use the Cloudflare Free step budget");
 assert.ok(!source.includes("input.error.message"), "Raw exception messages must not be persisted");
+const failureRecorder = source.slice(source.indexOf("export async function recordAgentTaskFailure"));
+assert.ok(failureRecorder.includes("WHERE task_id = ? AND status = 'running' AND lease_token = ?"), "Failure recording must be fenced by task status and lease token");
+assert.ok(!failureRecorder.includes("lease_expires_at > ?"), "An expired but unreclaimed lease must still be able to persist its failure");
 assert.equal(toSqliteDateTime(Date.UTC(2026, 9, 20, 12, 34, 56)), "2026-10-20 12:34:56");
 console.log("Background task store contract checks passed.");
 
