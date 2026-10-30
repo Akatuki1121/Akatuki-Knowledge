@@ -57,6 +57,16 @@ DOのGraphQL `wallTime` はDO durationのGB-sと同じ指標ではないため�
 - https://developers.cloudflare.com/workers-ai/platform/pricing/
 - https://developers.cloudflare.com/d1/observability/metrics-analytics/
 
+### 本番反映とD1スキーマの不一致（2026-10-30確認）
+
+PR #174のマージ後、GitHub Actionsの本番Deploy workflow（run `41015689299`）は成功し、Workerコードはmain commit `cd4a9f5` で本番デプロイ済み。一方、本番D1を読み取り確認した結果、migration ledgerの最新は `0015_yaos_file_identity_map.sql`（id 15）のままで、次の状態だった。
+
+- `agent_task_daily_budget` の本番CHECK制約は依然 `tasks_reserved BETWEEN 0 AND 60` / `workflow_steps_reserved BETWEEN 0 AND 2000`。
+- `workers_ai_daily_usage` テーブルは存在しない。
+- したがってPR #174のWorkerコードと本番D1スキーマは不一致。現在のWorkerはAI呼び出し前にNeurons台帳を予約するため、テーブル不在時はAI呼び出しがD1エラーで止まる。バックグラウンドタスクの60件/2,000 steps制約も本番DBに残っている。
+
+これは未解消の本番互換性問題。今回のPRではmigration `0016`〜`0018` を `migrations/pending/` に置き、今後の自動デプロイをmigration適用まで停止させる。**本番D1への適用・Worker再デプロイはこのPRでは行わない。** オーナー承認のある別作業として、0016→0017→0018を適用し、ledgerとschemaを照合する必要がある。
+
 ## 2. 根本原因と失敗時の修正
 
 根本原因は、Cloudflareのアカウント共有クォータを測らず、アプリ内で改善タスク3件/日・全体60件/日という固定件数を先に消費していたこと。失敗実行もその枠を消費し、改善ノートの内容が変わっても既存の失敗記録・seen記録が再実行を妨げる経路があった。
