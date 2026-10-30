@@ -141,7 +141,7 @@ test("improvement plan allows pending migrations and safe workflows but protects
   plan.operations[1].path = ".github/workflows/audit-report.yml";
   plan.operations[1].content = ["name: Audit", "on:", "  schedule:", "    - cron: 0 0 * * *", "permissions:", "  contents: read"].join("\n");
   assert.equal(validateImprovementPlan(plan).ok, true);
-  plan.operations[1].content += "\\npermissions:\\n  contents: write\\n";
+  plan.operations[1].content += "\n" + ["permissions:", "  contents: write"].join("\n");
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
   const patchPlan = validPlan();
   patchPlan.operations[1] = {
