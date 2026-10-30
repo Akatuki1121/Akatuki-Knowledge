@@ -595,9 +595,9 @@ export async function reserveAgentAiBudget(db, input) {
         lease_expires_at = MAX(lease_expires_at, datetime(?, '+120 seconds')),
         updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-      AND deadline_at > ? AND lease_expires_at > ?
+      AND deadline_at > ?
   `).bind(
-    estimatedTokens, now, now, input.taskId, input.leaseToken, now, now,
+    estimatedTokens, now, now, input.taskId, input.leaseToken, now,
   ).run();
   return result?.meta?.changes === 1;
 }
