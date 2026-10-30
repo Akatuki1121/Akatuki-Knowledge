@@ -19,7 +19,7 @@ import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { callWorkersAi } from "./workers-ai-client.mjs";
-import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey } from "./agent-improvement-policy.mjs";
+import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -11448,12 +11448,6 @@ async function markImprovementSeen(env, syncUuid, contentHash) {
   const key = await improvementSeenKey(syncUuid, contentHash);
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at").bind(key, now).run();
-}
-function stripImprovementResults(content) {
-  let cleaned = String(content ?? "");
-  const resultBlock = /(?:\r?\n){2}<!-- akatuki-improvement-result:[^>]+ -->\r?\n### 改善エージェント実行結果\r?\n\r?\n\x60\x60\x60json\r?\n[\s\S]*?\r?\n\x60\x60\x60\s*$/u;
-  while (resultBlock.test(cleaned)) cleaned = cleaned.replace(resultBlock, "");
-  return cleaned.trimEnd();
 }
 async function reserveImprovementTaskSlot(env, day) {
   const key = "agent_improvement_daily:" + day;
