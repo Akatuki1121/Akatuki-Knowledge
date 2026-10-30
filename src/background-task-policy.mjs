@@ -69,7 +69,13 @@ export function decideTaskRetry(input) {
   // reset instead of applying an application-specific call/token ceiling.
   if (errorClass === "workers_ai_daily_quota_exhausted" && input.retryable === true) {
     const current = new Date(nowMs);
-    const retryAtMs = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
+    const nextUtcResetCheck = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
+    // Cloudflare documents a UTC daily reset. If the first post-reset probe is
+    // still rejected, recheck hourly rather than parking the task for another
+    // full day; provider-side quota propagation can lag the documented reset.
+    const retryAtMs = input.previousErrorClass === "workers_ai_daily_quota_exhausted"
+      ? nowMs + 60 * 60 * 1000
+      : nextUtcResetCheck;
     return {
       action: "retry",
       status: "waiting",
