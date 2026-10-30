@@ -178,5 +178,50 @@ assert.equal(await requeueAgentTaskAfterBudgetWait(db, "legacy-budget-failure", 
 row = sqlite.prepare("SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = 'legacy-budget-failure'").get();
 assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 0, stop_reason: null });
 
+
+// Expired leases must not discard provider settlement or the final failure.
+// The lease token is the fencing value: expiry alone does not mean a new
+// workflow has claimed the task.
+const staleAt = Date.parse("2026-10-31T14:00:00.000Z");
+const staleExpiry = toSqliteDateTime(staleAt - 60_000);
+const staleDeadline = toSqliteDateTime(staleAt + 60 * 60 * 1000);
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, payload_json, attempts, max_attempts,
+    ai_calls_used, ai_tokens_used, lease_token, lease_expires_at,
+    deadline_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  "expired-lease-failure", "github_query", "running",
+  JSON.stringify({ improvementRequest: true }), 4, 4, 1, 136_757,
+  "expired-lease-token", staleExpiry, staleDeadline, staleExpiry, staleExpiry,
+);
+assert.equal(await settleAgentAiBudget(db, {
+  taskId: "expired-lease-failure",
+  leaseToken: "expired-lease-token",
+  reservedTokens: 136_757,
+  actualTokens: 5_685,
+  nowMs: staleAt,
+}), true);
+row = sqlite.prepare("SELECT ai_tokens_used FROM agent_tasks WHERE task_id = 'expired-lease-failure'").get();
+assert.equal(row.ai_tokens_used, 5_685);
+const staleFailure = await recordAgentTaskFailure(db, {
+  taskId: "expired-lease-failure",
+  leaseToken: "expired-lease-token",
+  errorClass: "upstream_5xx",
+  errorDetail: "WorkersAiError: upstream HTTP 503",
+  retryable: true,
+  nowMs: staleAt,
+});
+assert.equal(staleFailure.applied, true);
+assert.equal(staleFailure.decision.stopReason, "attempt_budget_exhausted");
+row = sqlite.prepare("SELECT status, last_error_class, last_error, stop_reason FROM agent_tasks WHERE task_id = 'expired-lease-failure'").get();
+assert.deepEqual({ ...row }, {
+  status: "failed",
+  last_error_class: "upstream_5xx",
+  last_error: "WorkersAiError: upstream HTTP 503",
+  stop_reason: "attempt_budget_exhausted",
+});
+
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");
