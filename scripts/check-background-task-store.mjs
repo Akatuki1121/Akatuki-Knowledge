@@ -27,6 +27,9 @@ for (const required of [
   "attempt_budget_exhausted",
   "export async function reserveAgentAiBudget",
   "export async function settleAgentAiBudget",
+  "export async function reserveQueuedAgentTaskBudget",
+  "export async function requeueAgentTaskAfterBudgetWait",
+  "queuedForBudget: true",
   "ai_calls_used = ai_calls_used + 1",
   "ai_tokens_used = ai_tokens_used + ?",
   "ai_tokens_used = MAX(0, ai_tokens_used - ?) + ?",
@@ -45,6 +48,7 @@ for (const required of [
 ]) {
   assert.ok(source.includes(required), "Missing background task store contract: " + required);
 }
+assert.ok(source.includes("export async function reserveQueuedAgentTaskBudget"), "Workflow capacity must be reserved for queued tasks after the UTC reset");
 assert.ok(!source.includes("ai_calls_used < max_ai_calls"), "AI call counters must not be an admission gate");
 assert.ok(!source.includes("ai_tokens_used + ? <= max_ai_tokens"), "AI token counters must not be an admission gate");
 assert.ok(!source.includes("tasks_reserved < 60"), "Task admission must not use an arbitrary daily task-count cap");
