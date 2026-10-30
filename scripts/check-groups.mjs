@@ -29,6 +29,7 @@ export const checks = [
   ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
   ["workers-ai-budget-syntax", process.execPath, ["--check", "src/workers-ai-budget.mjs"]],
   ["workers-ai-budget", process.execPath, ["scripts/test_workers_ai_budget.mjs"]],
+  ["budget-self-audit", process.execPath, ["scripts/test_budget_self_audit.mjs"]],
   ["agent-improvement-policy-syntax", process.execPath, ["--check", "src/agent-improvement-policy.mjs"]],
   ["agent-improvement-executor-syntax", process.execPath, ["--check", "src/agent-improvement-executor.mjs"]],
   ["agent-improvement-automation", process.execPath, ["scripts/test_agent_improvement_automation.mjs"]],
