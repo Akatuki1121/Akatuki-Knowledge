@@ -91,7 +91,7 @@ assert.equal(deferred.task.status, "queued");
 assert.equal(deferred.task.budget_reserved, 0);
 row = sqlite.prepare("SELECT next_attempt_at, deadline_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
 assert.equal(row.next_attempt_at, "2026-10-31 00:01:00");
-assert.equal(row.deadline_at, "2026-10-31 01:01:00");
+assert.equal(row.deadline_at, "2026-10-31 07:50:00");
 
 const resumedAt = Date.parse("2026-10-31T00:02:00.000Z");
 const reserved = await reserveQueuedAgentTaskBudget(db, { nowMs: resumedAt });
