@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, GITHUB_READ_TOOLS, GITHUB_WRITE_PROPOSAL_TOOL } from "../src/agent-github-tools.mjs";
+import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, applyUnifiedPatch, GITHUB_READ_TOOLS, GITHUB_WRITE_PROPOSAL_TOOL } from "../src/agent-github-tools.mjs";
 
 const calls = [];
 const response = (status, body, headers = {}) => new Response(JSON.stringify(body), {
@@ -135,10 +135,49 @@ assert.equal(writes.results[2].url, "https://github.com/example/project/pull/9")
 assert.ok(writeCalls.every((call) => call.init.headers.authorization === "Bearer test-token"));
 assert.deepEqual(writeCalls.map((call) => call.init.method), ["GET", "POST", "PUT", "POST"]);
 assert.throws(() => validateGitHubWritePlan({
-  repository: "example/project", summary: "too many", operations: Array.from({ length: 6 }, () => ({
+  repository: "example/project", summary: "too many", operations: Array.from({ length: 51 }, () => ({
     type: "create_issue", title: "x", body: "",
   })),
 }), /invalid_input/);
+
+const original = "alpha\\nbeta\\ngamma\\n";
+const unifiedDiff = "--- a/docs/agent.md\\n+++ b/docs/agent.md\\n@@ -2,1 +2,1 @@\\n-beta\\n+BETA\\n";
+assert.equal(applyUnifiedPatch(original, unifiedDiff, "docs/agent.md"), "alpha\\nBETA\\ngamma\\n");
+assert.throws(() => applyUnifiedPatch(original, unifiedDiff, "docs/other.md"), /github_patch_path_mismatch/);
+assert.throws(() => applyUnifiedPatch(original, unifiedDiff.replace("-beta", "-wrong"), "docs/agent.md"), /github_patch_context_mismatch/);
+
+const patchSha = "d".repeat(40);
+let patchedContent = null;
+const patchFetch = async (url, init = {}) => {
+  if (init.method === "GET" && String(url).endsWith("/git/ref/heads/main")) {
+    return response(200, { object: { sha: "a".repeat(40) } });
+  }
+  if (init.method === "POST" && String(url).endsWith("/git/refs")) {
+    return response(201, { ref: "refs/heads/bot/patch" });
+  }
+  if (init.method === "GET" && String(url).includes("/contents/docs/agent.md?ref=bot%2Fpatch")) {
+    return response(200, { type: "file", encoding: "base64", size: original.length, sha: patchSha, content: btoa(original) });
+  }
+  if (init.method === "PUT" && String(url).endsWith("/contents/docs/agent.md")) {
+    patchedContent = atob(JSON.parse(init.body).content);
+    return response(200, { content: { path: "docs/agent.md" }, commit: { sha: "e".repeat(40) } });
+  }
+  if (init.method === "POST" && String(url).endsWith("/pulls")) {
+    return response(201, { number: 10, html_url: "https://github.com/example/project/pull/10" });
+  }
+  return response(404, { message: "Not Found" });
+};
+const patchPlan = {
+  repository: "example/project",
+  summary: "Patch a line in an existing source file",
+  operations: [
+    { type: "create_branch", branch: "bot/patch", base_ref: "main" },
+    { type: "apply_patch", branch: "bot/patch", path: "docs/agent.md", patch: unifiedDiff, message: "patch: update line", sha: patchSha },
+    { type: "create_pull_request", head: "bot/patch", base: "main", title: "patch: update line", body: "Patch existing file", draft: false },
+  ],
+};
+await executeGitHubWritePlan(patchPlan, { token: "test-token", fetchImpl: patchFetch });
+assert.equal(patchedContent, "alpha\\nBETA\\ngamma\\n");
 
 // The tool definition shown to the model must disclose exactly the keys the validator
 // requires (Issue #90): for every operation type, a plan built from exactly the
