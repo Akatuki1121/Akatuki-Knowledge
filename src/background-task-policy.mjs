@@ -1,7 +1,9 @@
 export const TASK_BUDGET_CEILINGS = Object.freeze({
   maxAttempts: 4,
   maxTaskAgeMs: 60 * 60 * 1000,
+  maxImprovementTaskAgeMs: 8 * 60 * 60 * 1000,
   maxDelayMs: 30 * 60 * 1000,
+  maxImprovementRetryDelayMs: 3 * 60 * 60 * 1000,
   maxAiCalls: 20,
   maxAiTokens: 40_000,
   baseDelayMs: 30_000,
@@ -49,7 +51,11 @@ function finiteNumber(value, fallback) {
 export function decideTaskRetry(input) {
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const createdAtMs = finiteNumber(input.createdAtMs, nowMs);
-  const hardDeadlineMs = createdAtMs + TASK_BUDGET_CEILINGS.maxTaskAgeMs;
+  const maxTaskAgeMs = Math.min(
+    TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs,
+    Math.max(1, Math.floor(finiteNumber(input.maxTaskAgeMs, TASK_BUDGET_CEILINGS.maxTaskAgeMs))),
+  );
+  const hardDeadlineMs = createdAtMs + maxTaskAgeMs;
   const suppliedDeadlineMs = finiteNumber(input.deadlineAtMs, hardDeadlineMs);
   const deadlineMs = Math.min(suppliedDeadlineMs, hardDeadlineMs);
 
@@ -85,11 +91,18 @@ export function decideTaskRetry(input) {
     1,
     finiteNumber(input.baseDelayMs, TASK_BUDGET_CEILINGS.baseDelayMs),
   );
-  const baseDelayMs = Math.min(requestedBaseDelay, TASK_BUDGET_CEILINGS.maxDelayMs);
+  const maxRetryDelayMs = Math.min(
+    TASK_BUDGET_CEILINGS.maxImprovementRetryDelayMs,
+    Math.max(1, Math.floor(finiteNumber(input.maxRetryDelayMs, TASK_BUDGET_CEILINGS.maxDelayMs))),
+  );
+  const retryDelaysMs = Array.isArray(input.retryDelaysMs) ? input.retryDelaysMs : null;
   const exponent = Math.min(Math.max(attempts - 1, 0), 20);
+  const requestedDelay = retryDelaysMs?.length
+    ? finiteNumber(retryDelaysMs[Math.min(attempts - 1, retryDelaysMs.length - 1)], requestedBaseDelay)
+    : requestedBaseDelay * (2 ** exponent);
   const delayMs = Math.min(
-    baseDelayMs * (2 ** exponent),
-    TASK_BUDGET_CEILINGS.maxDelayMs,
+    Math.max(1, Math.floor(requestedDelay)),
+    maxRetryDelayMs,
   );
   const retryAtMs = nowMs + delayMs;
 
@@ -143,7 +156,8 @@ export function classifyAgentTaskError(error) {
     if (message.includes(fixed)) return fixed;
   }
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
-  if (/Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
+  if (/Gemini API returned 5\d\d/i.test(message)
+    || /workers_ai_request_failed[\s\S]{0,180}\b5\d\d\b/i.test(message)) return "upstream_5xx";
   if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
   if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
   return "unknown";

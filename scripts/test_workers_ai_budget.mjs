@@ -8,6 +8,7 @@ import {
   estimateWorkersAiNeurons,
   reserveWorkersAiBudget,
   settleWorkersAiBudget,
+  settleWorkersAiBudgetFailure,
 } from "../src/workers-ai-budget.mjs";
 
 class Statement {
@@ -32,6 +33,7 @@ function makeDb() {
       reserved_neurons INTEGER NOT NULL DEFAULT 0 CHECK (reserved_neurons >= 0),
       actual_neurons INTEGER NOT NULL DEFAULT 0 CHECK (actual_neurons >= 0),
       calls_completed INTEGER NOT NULL DEFAULT 0 CHECK (calls_completed >= 0),
+      calls_failed INTEGER NOT NULL DEFAULT 0 CHECK (calls_failed >= 0),
       updated_at TEXT NOT NULL
     )
   `);
@@ -108,5 +110,26 @@ test("missing provider usage retains its reservation instead of undercounting", 
   const row = sqlite.prepare("SELECT reserved_neurons, actual_neurons FROM workers_ai_daily_usage").get();
   assert.equal(row.reserved_neurons, reservation.reservedNeurons);
   assert.equal(row.actual_neurons, 0);
+  sqlite.close();
+});
+
+
+test("a response-less provider failure settles estimated input only and releases output reservation", async () => {
+  const { sqlite, db } = makeDb();
+  const reservation = await reserveWorkersAiBudget(db, {
+    model: "@cf/zai-org/glm-4.7-flash", prompt: "日本語の失敗した依頼", maxOutputTokens: 1024,
+    nowMs: Date.parse("2026-10-30T12:00:00Z")
+  });
+  const inputTokens = estimateWorkersAiInputTokens("system prompt and user request");
+  const settled = await settleWorkersAiBudgetFailure(db, reservation, inputTokens);
+  assert.equal(settled.settled, true);
+  assert.equal(settled.outcome, "failed");
+  const row = sqlite.prepare("SELECT reserved_neurons, actual_neurons, calls_completed, calls_failed FROM workers_ai_daily_usage").get();
+  assert.equal(row.reserved_neurons, 0);
+  assert.equal(row.actual_neurons, calculateWorkersAiNeurons(reservation.model, {
+    prompt_tokens: inputTokens, completion_tokens: 0
+  }));
+  assert.equal(row.calls_completed, 0);
+  assert.equal(row.calls_failed, 1);
   sqlite.close();
 });

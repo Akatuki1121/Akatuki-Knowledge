@@ -10,7 +10,7 @@ Obsidian のノートを検索し、AI で整理するための個人用ナレ�
 - **現在のパスによるノート API**: `GET /api/notes/<URLエンコードしたパス>` で生存ノートの本文とメタデータを取得できます。`DELETE /api/notes/<引数>` は現在の `notes.path` を優先し、該当しなければ従来の `notes.id` / Telegram ID として解決します。パス参照と ID 参照が異なるノートを指す場合は `409 ambiguous_note_reference` で拒否します。
 - **全件マニフェスト**: `GET /api/sync/manifest?limit=500&cursor=...` は `nextCursor` を使ってページ送りでき、`totalCount` に全レコード件数を返します。既存の `notes` / `nextCursor` フィールドは維持されます。
 - **バックグラウンドタスク**: `POST /api/agent-tasks` で、ナレッジベースを検索して要約するタスクを非同期に実行します。結果は `GET /api/agent-tasks` で取得します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
-- **改善依頼の自動実行**: 毎時の Vault pull が成功した後、`Notes/改善/`（`このフォルダについて.md` を除く）の D1 ノートを走査します。`sync_uuid` と `content_hash` の組み合わせで重複起票を防ぎ、Workers AI で変更計画を作成します。自動実行は `src/`・`scripts/`・`docs/` 内のファイル変更、ブランチ作成、PR 作成に限定し、計画ハッシュを再検証してから実行します。対象外の計画は PR を作らず理由をノートへ追記します。条件を満たす PR には squash 自動マージを有効化し、CI の成功を GitHub 側で待ちます。最大 3 タスク/日、最大 5 モデル呼び出し/タスクです。Web 調査は無効です。
+- **改善依頼の自動実行**: 毎時の Vault pull が成功した後、`Notes/改善/`（`このフォルダについて.md` を除く）の D1 ノートを走査します。`sync_uuid` と `content_hash` の組み合わせで重複起票を防ぎ、Workers AI で変更計画を作成します。自動実行は `src/`・`scripts/`・`docs/` 内のファイル変更、ブランチ作成、PR 作成に限定し、計画ハッシュを再検証してから実行します。対象外の計画は PR を作らず理由をノートへ追記します。条件を満たす PR には squash 自動マージを有効化し、CI の成功を GitHub 側で待ちます。旧3タスク/日・全体60タスク/日の固定件数制限は撤去済みです。現在はWorkflow予約2,700 steps/日（32 steps/タスク）とWorkers AI予約8,000 Neurons/日を適用し、改善タスクは最大5回のAI呼び出し・1回最大1,024出力tokensです。失敗時は入力token推定分だけを計上し、改善依頼は内容編集で新しい試行として再投入できます。全資源の実消費量制御は段階移行中です。Web調査は無効です。
 - **長期記憶メタデータ**: 既存ノートに由来・信頼度・有効期限などのメタデータを付けて扱います。D1 マイグレーション `0013_agent_memory_metadata.sql` は 2026-10-22 に本番へ適用・台帳記録済みで、`migrations/` に配置されています。
 
 ## 安全面の方針
@@ -59,6 +59,7 @@ npm run check:sync   # 同期・バックグラウンドタスク関連のみ
 | [`AGENTS.md`](AGENTS.md) | AI エージェント向けの作業ルール |
 | [`docs/AGENT_MEMORY.md`](docs/AGENT_MEMORY.md) | 長期記憶の分類、信頼度、競合、失効ポリシー |
 | [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) | バックグラウンドタスクの設計と制限 |
+| [`docs/BACKGROUND_TASK_BUDGET_ROADMAP.md`](docs/BACKGROUND_TASK_BUDGET_ROADMAP.md) | Cloudflare予算再設計の調査結果・段階移行・自己監査計画 |
 | [`docs/AI_SEND_POLICY.md`](docs/AI_SEND_POLICY.md) | AI 送信の許可・機微情報の扱い(Issue #61) |
 | [`docs/YAOS_EVENT_SYNC.md`](docs/YAOS_EVENT_SYNC.md) | YAOS イベント同期 |
 | [`docs/PRODUCTION_STATUS.md`](docs/PRODUCTION_STATUS.md) | 本番環境の観測記録 |

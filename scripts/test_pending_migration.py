@@ -58,3 +58,24 @@ foreign_key_errors = list(connection.execute("PRAGMA foreign_key_check"))
 assert not foreign_key_errors, f"Foreign-key violations after migration: {foreign_key_errors}"
 
 print("Outbox migration (0009) applies cleanly to the captured schema in isolated SQLite.")
+
+
+# Pending migrations are intentionally kept outside the production migration path.
+PENDING = ROOT / "migrations" / "pending"
+EXPECTED_PENDING = {
+    "0016_workers_ai_daily_usage.sql",
+    "0017_cloudflare_free_workflow_budget.sql",
+    "0018_workers_ai_failed_calls.sql",
+}
+pending_names = {path.name for path in PENDING.glob("*.sql")}
+assert EXPECTED_PENDING <= pending_names, f"Missing pending budget migrations: {EXPECTED_PENDING - pending_names}"
+
+# Validate the Workers AI usage table and its follow-up failure counter migration.
+budget_db = sqlite3.connect(":memory:")
+budget_db.executescript((PENDING / "0016_workers_ai_daily_usage.sql").read_text(encoding="utf-8"))
+budget_db.executescript((PENDING / "0018_workers_ai_failed_calls.sql").read_text(encoding="utf-8"))
+columns = {row[1] for row in budget_db.execute("PRAGMA table_info(workers_ai_daily_usage)")}
+assert {"usage_day", "reserved_neurons", "actual_neurons", "calls_completed", "calls_failed", "updated_at"} <= columns
+budget_db.close()
+
+print("Pending budget migrations are present and the Workers AI migration chain validates in isolated SQLite.")

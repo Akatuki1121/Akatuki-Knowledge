@@ -1,5 +1,7 @@
 # Background task architecture
 
+予算制御の調査・段階移行・自己監査の計画は [BACKGROUND_TASK_BUDGET_ROADMAP.md](BACKGROUND_TASK_BUDGET_ROADMAP.md) を参照。
+
 > 2026-10-26 の縮小で Telegram の入口 (`/task`、`/research`、`/task_status`、`/cancel`、`/github` コマンドと GitHub 変更計画のチャット承認) と、完了通知の Telegram 送信は廃止した。タスクの受付は `POST /api/agent-tasks` のみで、結果は `GET /api/agent-tasks` で取得する。本文書のうち Telegram に言及する部分は廃止時点の設計記録として残す。
 
 ## Chosen first executor
@@ -20,15 +22,14 @@ Terminal alternatives: `failed` and `cancelled`. Lease expiry permits recovery o
 
 ## Hard retry and usage limits
 
-- Maximum attempts per task: 4 total claims.
-- Backoff: 30, 60, then 120 seconds; capped at 30 minutes.
-- Maximum task age: 1 hour.
-- Maximum AI calls per task: 20.
-- Maximum estimated AI tokens per task: 40,000.
-- Daily admission cap: 60 tasks and 2,000 reserved Workflow steps (32 per task), leaving margin below the published 3,000 Workflow steps/day Free allowance. Task insertion, reservation-ledger insertion, daily counter increment, and `budget_reserved` admission flag are applied in one D1 batch. A task-keyed unique ledger and `counted` marker prevent retries from charging twice. Reservations are conservative and are not refunded if dispatch fails.
-- Only explicit transient classes are retryable: network error, timeout, rate limit, upstream 5xx, executor interruption.
-- Unknown errors stop. Authentication/authorization, invalid input, credential detection, PII masking failures and policy errors stop immediately.
-- AI call and estimated-token budget is reserved atomically before the provider call; a failed provider call still consumes the reservation.
+- 通常タスク: 最大4回のclaim、最大経過時間1時間、backoff 30秒→60秒→120秒（最大30分）。
+- 改善タスク: 最大4試行（初回＋一時障害時の再試行3回）、待機1時間→3時間→3時間、最大経過時間8時間。Workflow step内の再試行もAI呼び出し回数に含める。
+- AI呼び出し上限: 通常タスク20回、改善タスク5回。トークン上限: 通常タスク40,000、改善タスク12,000。改善タスクの1回あたり最大出力は1,024 tokens。
+- 一時障害として再試行するのは network error、timeout、429/rate limit、upstream 5xx、executor interruption。認証・権限、入力不正、認証情報検出、PII masking、policy違反などは再試行しない。未知のエラーも安全側で停止する。
+- 改善依頼が失敗・キャンセルした場合、同じ本文のまま自動で新規タスクを作らない。内容を編集するとcontent hash/idempotency keyが変わり、新しい試行として受け付ける。失敗結果は改善ノートへ追記せず、成功結果だけを書き戻す。
+- AI呼び出し前にNeuronsとタスク別tokenを予約する。成功時にprovider usageが返れば実トークンから精算する。応答なしの失敗は入力token推定分だけを実消費として計上し、出力予約を戻す。usageがない成功応答は過少計上防止のため予約を残す。呼び出し回数は返金しない。
+- 日次Workflow予約は32 steps/タスク、最大2,700 reserved steps/UTC日。旧60件/日制限は撤去済み。Workers AIの日次予約上限は8,000 Neurons（無料枠10,000の80%）。この2つは現在のアプリ側ゲートであり、アカウント全体の全資源を測る完全な消費量制御ではない。
+- Workflow step予約はまだタスク単位の固定見積もりで、失敗時に実際に使わなかったstep分を精算していない。Workers/D1/DO/YAOSの共有利用量やGraphQL Analyticsとの照合も未実装。これらは影子運用の別PRで扱う。
 - Raw exception messages are not persisted. Only classified error codes are stored.
 
 ## Safety invariants
@@ -40,17 +41,25 @@ Terminal alternatives: `failed` and `cancelled`. Lease expiry permits recovery o
 - No `ai_allowed` switch or per-operation AI permission gate is added.
 - The API endpoint is authenticated and bounds request size, prompt length and output tokens.
 
-## Cloudflare Free-plan constraints checked 2026-10-20
+## Cloudflare Free-plan constraints checked 2026-10-30
 
-Official docs:
-- Workflows pricing: https://developers.cloudflare.com/workflows/reference/pricing/
-- Workflows limits: https://developers.cloudflare.com/workflows/reference/limits/
-- Workers limits: https://developers.cloudflare.com/workers/platform/limits/
-- Gemini Google Search grounding: https://ai.google.dev/gemini-api/docs/google-search
-- Gemini URL Context: https://ai.google.dev/gemini-api/docs/url-context
-- Gemini API pricing and data use: https://ai.google.dev/gemini-api/docs/pricing
+Official docs (quotas reset at 00:00 UTC where applicable):
+- Workers: 100,000 requests/day; Workflow executions share this request quota.
+- D1: 5 million rows read/day and 100,000 rows written/day.
+- Durable Objects: 100,000 requests/day and 13,000 GB-s/day.
+- Workers AI: 10,000 Neurons/day.
+- Workflows: 100,000 executions/day shared with Workers and 3,000 steps/day.
 
-Published Free allowances include 3,000 Workflow steps/day, 100,000 Workflow executions/day shared with Workers request limits, 100 active concurrent Workflow instances, 10 ms CPU per step, 1 MiB per non-stream step result, 100 MB maximum persisted state per instance, 1 GB-month of included Workflow state storage, and 3-day Workflow state retention. Workflow steps can wait on network I/O without consuming CPU during the wait. The design keeps steps small, caps task execution and output size, and uses D1 as durable business state. The recovery Cron handles at most five tasks per run to limit CPU and subrequests.
+References:
+- https://developers.cloudflare.com/workers/platform/limits/
+- https://developers.cloudflare.com/workers/platform/pricing/
+- https://developers.cloudflare.com/durable-objects/platform/pricing/
+- https://developers.cloudflare.com/workflows/reference/pricing/
+- https://developers.cloudflare.com/workflows/reference/limits/
+- https://developers.cloudflare.com/workers-ai/platform/pricing/
+- https://developers.cloudflare.com/d1/observability/metrics-analytics/
+
+Seven-day account-level GraphQL Analytics observations and the staged budget redesign are documented in [BACKGROUND_TASK_BUDGET_ROADMAP.md](BACKGROUND_TASK_BUDGET_ROADMAP.md). The observations are account-wide and must not be interpreted as Akatuki-only consumption where the dataset has no worker-level attribution. GraphQL Analytics runtime ingestion is not connected to this Worker yet; it requires an owner-issued read-only Account Analytics token.
 
 ## Current task-type boundary
 

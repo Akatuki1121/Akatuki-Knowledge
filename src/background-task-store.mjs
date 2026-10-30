@@ -154,7 +154,12 @@ export async function enqueueAgentTask(db, input) {
   }
 
   const nowMs = finiteNumber(input.nowMs, Date.now());
-  const hardDeadline = nowMs + TASK_BUDGET_CEILINGS.maxTaskAgeMs;
+  const maxTaskAgeMs = boundedInteger(
+    input.maxTaskAgeMs,
+    TASK_BUDGET_CEILINGS.maxTaskAgeMs,
+    TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs,
+  );
+  const hardDeadline = nowMs + maxTaskAgeMs;
   const deadlineAtMs = Math.min(finiteNumber(input.deadlineAtMs, hardDeadline), hardDeadline);
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
 
@@ -433,6 +438,33 @@ export async function reserveAgentAiBudget(db, input) {
   return false;
 }
 
+/**
+ * Replace the conservative per-call token reservation with provider usage.
+ * When a provider returns no usage, callers deliberately leave the reservation
+ * in place. A response-less provider failure settles estimated input tokens.
+ */
+export async function settleAgentAiBudget(db, input) {
+  const reservedTokens = Math.floor(finiteNumber(input.reservedTokens, -1));
+  const actualTokens = Math.floor(finiteNumber(input.actualTokens, -1));
+  if (reservedTokens < 1 || actualTokens < 0 || actualTokens > TASK_BUDGET_CEILINGS.maxAiTokens) {
+    throw new RangeError("AI token settlement is outside the permitted range");
+  }
+  const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET ai_tokens_used = ai_tokens_used - ? + ?, updated_at = ?
+    WHERE task_id = ? AND status = 'running' AND lease_token = ?
+      AND lease_expires_at > ? AND deadline_at > ?
+      AND ai_tokens_used >= ?
+      AND ai_tokens_used - ? + ? <= max_ai_tokens
+  `).bind(
+    reservedTokens, actualTokens, now,
+    input.taskId, input.leaseToken, now, now,
+    reservedTokens, reservedTokens, actualTokens,
+  ).run();
+  return result?.meta?.changes === 1;
+}
+
 export async function renewAgentTaskLease(db, input) {
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const leaseToken = typeof input.leaseToken === "string" ? input.leaseToken : "";
@@ -485,10 +517,19 @@ export async function recordAgentTaskFailure(db, input) {
   `).bind(input.taskId, input.leaseToken, now).first();
   if (!row) return { applied: false, decision: null };
 
+  const payload = parseJson(row.payload_json, {});
+  const isImprovementRequest = payload?.improvementRequest === true;
   const decision = decideTaskRetry({
     nowMs,
     createdAtMs: fromSqliteDateTime(row.created_at),
     deadlineAtMs: fromSqliteDateTime(row.deadline_at),
+    maxTaskAgeMs: isImprovementRequest
+      ? TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs
+      : TASK_BUDGET_CEILINGS.maxTaskAgeMs,
+    maxRetryDelayMs: isImprovementRequest
+      ? TASK_BUDGET_CEILINGS.maxImprovementRetryDelayMs
+      : TASK_BUDGET_CEILINGS.maxDelayMs,
+    retryDelaysMs: isImprovementRequest ? [60 * 60 * 1000, 3 * 60 * 60 * 1000, 3 * 60 * 60 * 1000] : undefined,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
     aiCallsUsed: row.ai_calls_used,
