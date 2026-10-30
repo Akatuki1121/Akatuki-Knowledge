@@ -12776,7 +12776,7 @@ var wrapper_default = {
     }
     if (event.cron === TASK_RECOVERY_CRON) {
       try {
-        const recovery = await recoverAgentTaskWorkflows(env, 5);
+        const recovery = await recoverAgentTaskWorkflows(env, 20);
         if (recovery.dispatched > 0 || recovery.deferred > 0) {
           console.log(JSON.stringify({ agentTaskRecovery: recovery }));
         }
