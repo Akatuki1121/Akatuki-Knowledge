@@ -1,4 +1,6 @@
 const MAX_RUNS_PER_DAY = 2;
+const MAX_AUDIT_IMPROVEMENTS_PER_DAY = 1;
+const MAX_OPEN_AUDIT_IMPROVEMENTS = 3;
 const WORKFLOW_WARNING_RATIO = 0.8;
 const AI_WARNING_RATIO = 0.8;
 
@@ -83,6 +85,60 @@ function summarizeFindings({ budget, taskGroups, errorGroups, aiUsage }) {
  * calls and writes only a compact report to app_meta. The two UTC slots and
  * unique keys cap persistence at two reports per day and prevent recursion.
  */
+async function createAuditImprovementRequest(env, report, nowMs) {
+  if (!report.findings.length) return { created: false, reason: "no_actionable_findings" };
+  const day = new Date(nowMs).toISOString().slice(0, 10);
+  const auditKey = "budget-audit-improvement:" + day;
+  const now = utcTimestamp(nowMs);
+  const claimed = await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, 'claimed', ?) ON CONFLICT(key) DO NOTHING").bind(auditKey, now).run();
+  if (Number(claimed?.meta?.changes || 0) !== 1) return { created: false, reason: "daily_improvement_limit" };
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS count FROM notes WHERE path LIKE 'Notes/改善/自動監査-%' AND deleted_at IS NULL AND updated_at >= ?").bind(utcTimestamp(nowMs - 30 * 24 * 60 * 60 * 1000)).first();
+  if (Number(recent?.count || 0) >= MAX_OPEN_AUDIT_IMPROVEMENTS) {
+    await env.DB.prepare("UPDATE app_meta SET value = 'blocked_open_limit', updated_at = ? WHERE key = ?").bind(now, auditKey).run();
+    return { created: false, reason: "open_improvement_limit" };
+  }
+  const path = "Notes/改善/自動監査-" + day + ".md";
+  if (await env.DB.prepare("SELECT id FROM notes WHERE path = ?").bind(path).first()) return { created: false, reason: "note_already_exists" };
+  const syncUuid = crypto.randomUUID();
+  const title = "自動監査による改善依頼 " + day;
+  const content = [
+    "<!-- budget-audit-generated:v1 -->",
+    "origin: budget-audit",
+    "audit_generated: true",
+    "",
+    "# 自動監査による改善依頼",
+    "",
+    "監査日時: " + new Date(nowMs).toISOString(),
+    "",
+    "## 依頼",
+    "",
+    "以下の監査結果を根拠に、Akatuki-Knowledge の現行コードを調査し、再現可能な原因を特定して修正・テストし、レビュー用Pull Requestを作成してください。監査結果だけから原因を断定せず、コードと既存テストを確認してください。根拠が弱い場合は変更せず、理由を報告してください。",
+    "変更範囲は src/、scripts/、docs/ に限定します。migrations、.github、Cloudflare設定、Secrets、権限、デプロイ、マージは禁止です。PRは作成しますが、自動マージは有効化しません。レビューとマージ判断はオーナーに残します。",
+    "",
+    "## 監査結果",
+    "",
+    "```json",
+    JSON.stringify(report, null, 2),
+    "```",
+    "",
+    "## 完了条件",
+    "",
+    "- 根拠をコード位置・既存テストで示す",
+    "- 修正と回帰テストを追加する",
+    "- 関連チェックを実行し結果を記録する",
+    "- PRを作成し、このノートにPR URLと結果を記録する",
+    "- 修正不要なら、その判断根拠を記録して終了する"
+  ].join("\n");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const payload = { id: path, path, title, content, contentHash: hash, syncUuid, deletedAt: null, expectedPreviousContent: null, allowRestore: false };
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, source_modified_at, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, '[]', 1, 'unknown', 'ready')").bind(path, path, syncUuid, title, content, hash, now, now),
+    env.DB.prepare("INSERT INTO yaos_sync_jobs (event_id, entity_type, entity_id, operation, payload_json, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, 'notes', ?, 'upsert', ?, 'pending', 0, ?, ?, ?)").bind(crypto.randomUUID(), path, JSON.stringify(payload), now, now, now),
+    env.DB.prepare("UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?").bind(JSON.stringify({ path, syncUuid, contentHash: hash }), now, auditKey)
+  ]);
+  return { created: true, path, syncUuid };
+}
 export async function runBudgetSelfAudit(env, nowMs = Date.now()) {
   if (!env?.DB?.prepare) return { ok: false, skipped: "database_unavailable" };
   const now = utcTimestamp(nowMs);
@@ -145,14 +201,11 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now()) {
   const saved = await env.DB.prepare(
     "INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING"
   ).bind(key, JSON.stringify(report), now).run();
-
-  return {
-    ok: true,
-    recorded: Number(saved?.meta?.changes || 0) === 1,
-    skipped: Number(saved?.meta?.changes || 0) === 1 ? null : "slot_already_recorded",
-    key,
-    report,
-  };
+  if (Number(saved?.meta?.changes || 0) !== 1) return { ok: true, recorded: false, skipped: "slot_already_recorded", key, report };
+  let improvement = { created: false, reason: "no_actionable_findings" };
+  try { improvement = await createAuditImprovementRequest(env, report, nowMs); }
+  catch { improvement = { created: false, reason: "improvement_request_creation_failed" }; }
+  return { ok: true, recorded: true, key, report, improvement };
 }
 
 export { MAX_RUNS_PER_DAY, summarizeFindings };
