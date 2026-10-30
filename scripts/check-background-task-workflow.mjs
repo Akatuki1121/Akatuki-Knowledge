@@ -54,6 +54,8 @@ for (const required of [
   "AbortSignal.timeout(30_000)",
   "recordAgentTaskFailure",
   "recoverAgentTaskWorkflows",
+  "reserveQueuedAgentTaskBudget",
+  "requeueAgentTaskAfterBudgetWait",
   "allowRestart: true",
   'return "restart_deferred"',
   "allowRestart = false",
@@ -76,6 +78,7 @@ assert.ok(config.includes('"*/15 * * * *"'));
 assert.ok(config.includes('"55 23 * * *"'), "Daily system self-audit must be scheduled");
 assert.ok(source.includes('event.cron === BUDGET_AUDIT_CRON'), "Daily budget and system audit must be connected to Cron");
 assert.ok(source.includes('url.pathname === "/api/budget-audit"'), "Latest audit reports must be queryable through an authenticated API");
+assert.ok(source.includes('taskRow.budget_reserved !== 1'), "Workflow dispatch must wait for a reserved step budget");
 assert.ok(source.includes("workers_ai_daily_quota_exhausted"), "Cloudflare Workers AI quota exhaustion must wait for the UTC reset");
 const workflowStart = source.indexOf("class AgentTaskWorkflow extends WorkflowEntrypoint");
 const workflowEnd = source.indexOf('__name(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
