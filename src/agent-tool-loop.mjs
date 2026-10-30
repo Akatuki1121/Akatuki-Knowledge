@@ -5,9 +5,9 @@ import {
 import { GITHUB_READ_TOOLS, GITHUB_WRITE_PROPOSAL_TOOL, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 
 export const AGENT_TOOL_LIMITS = Object.freeze({
-  maxModelCalls: 5,
-  maxToolCalls: 4,
-  maxToolOutputChars: 12_000,
+  // Tool output is bounded by the Workflow checkpoint payload, not by an
+  // arbitrary number of model or tool turns.
+  maxToolOutputChars: 65_536,
 });
 
 export const AGENT_READ_ONLY_TOOLS = Object.freeze({
@@ -52,7 +52,7 @@ function invalidInput(reason) {
 }
 
 function parseResponse(raw) {
-  if (typeof raw !== "string" || raw.length > 16_000) {
+  if (typeof raw !== "string" || raw.length > 524_288) {
     throw invalidInput("model_response_size");
   }
   let response;
@@ -161,11 +161,6 @@ function restoreLoop(checkpoint, allowWebResearch, allowGitHubRead, allowGitHubW
     parsed.pendingAction = validateAgentToolAction(checkpoint.pendingAction, { allowWebResearch, allowGitHubRead, allowGitHubWrite });
     if (parsed.pendingAction.action !== "tool") throw invalidInput("checkpoint_pending_action");
   }
-  if (parsed.modelCalls > AGENT_TOOL_LIMITS.maxModelCalls
-    || parsed.toolCalls.length > AGENT_TOOL_LIMITS.maxToolCalls
-    || parsed.transcript.length > AGENT_TOOL_LIMITS.maxModelCalls * 2) {
-    throw new Error("policy_violation");
-  }
   const savedToolResults = parsed.transcript.filter((item) => item?.role === "tool");
   const savedActions = parsed.transcript.filter((item) => item?.role === "assistant");
   if (savedToolResults.length !== parsed.toolCalls.length
@@ -235,8 +230,6 @@ export async function runAgentToolLoop(input) {
   const allowGitHubWrite = input.allowGitHubWrite === true;
   const state = restoreLoop(input.checkpoint, allowWebResearch, allowGitHubRead, allowGitHubWrite);
   const seenCalls = new Set(state.toolCalls.map((call) => `${call.tool}:${JSON.stringify(call.arguments)}`));
-  const maxModelCalls = Math.min(AGENT_TOOL_LIMITS.maxModelCalls, input.maxModelCalls ?? AGENT_TOOL_LIMITS.maxModelCalls);
-  const maxToolCalls = Math.min(AGENT_TOOL_LIMITS.maxToolCalls, input.maxToolCalls ?? AGENT_TOOL_LIMITS.maxToolCalls);
   const save = (checkpoint) => input.saveCheckpoint({
     ...checkpoint,
     initialPrompt: input.initialPrompt,
@@ -247,7 +240,7 @@ export async function runAgentToolLoop(input) {
   // It is never written into checkpoints, so a resumed loop re-derives it from scratch.
   let writePlanFeedback = null;
 
-  while (state.modelCalls < maxModelCalls) {
+  while (true) {
     let action = state.pendingAction;
     if (!action) {
       const prompt = [
@@ -340,7 +333,6 @@ export async function runAgentToolLoop(input) {
       });
     }
 
-    if (state.toolCalls.length >= maxToolCalls) throw new Error("tool_budget_exhausted");
     const signature = `${action.tool}:${JSON.stringify(action.arguments)}`;
     if (seenCalls.has(signature)) throw new Error("tool_loop_detected");
     if (action.tool === "get_note" && !noteIdsFromTranscript(state.transcript).has(action.arguments.id)) {
