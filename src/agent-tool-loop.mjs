@@ -238,7 +238,7 @@ function summarizeToolCallForContext(call) {
         id: note?.id,
         title: note?.title,
         path: note?.path,
-        excerpt: String(note?.excerpt ?? note?.content ?? "").slice(0, 220),
+        excerpt: String(note?.text ?? note?.excerpt ?? note?.content ?? "").slice(0, 350),
       })),
     };
   }
@@ -247,7 +247,7 @@ function summarizeToolCallForContext(call) {
     return {
       tool: call.tool,
       arguments: args,
-      note: { id: note?.id, title: note?.title, path: note?.path, excerpt: String(note?.content ?? "").slice(0, 500) },
+      note: { id: note?.id, title: note?.title, path: note?.path, excerpt: String(note?.text ?? note?.content ?? "").slice(0, 500) },
     };
   }
   if (call?.tool === "github_read_file") {
@@ -259,15 +259,16 @@ function summarizeToolCallForContext(call) {
       totalLines: result.totalLines,
       lineRange: [result.startLine, result.endLine],
       truncated: result.truncated === true,
-      excerpt: String(result.content ?? "").slice(0, 350),
+      excerpt: String(result.content ?? result.excerpt ?? "").slice(0, 500),
     };
   }
   if (call?.tool === "web_research") {
     return {
       tool: call.tool,
       arguments: args,
+      report: String(result.report ?? "").slice(0, 800),
       sources: (Array.isArray(result.sources) ? result.sources : []).slice(0, AGENT_WEB_RESEARCH_LIMITS.maxReturnedSources)
-        .map((source) => ({ url: source.url, title: source.title, snippet: String(source.snippet ?? "").slice(0, 350) })),
+        .map((source) => ({ url: source.url, title: source.title, snippet: String(source.evidence ?? source.snippet ?? "").slice(0, 350) })),
     };
   }
   if (call?.tool === "github_propose_write") {
@@ -277,28 +278,120 @@ function summarizeToolCallForContext(call) {
       status: result.pendingGitHubWrite?.status || result.status || "proposed",
       planHash: result.pendingGitHubWrite?.planHash || null,
       summary: result.pendingGitHubWrite?.plan?.summary || null,
+      operations: (result.pendingGitHubWrite?.plan?.operations || []).map((operation) => ({
+        type: operation.type, path: operation.path, branch: operation.branch,
+      })),
     };
   }
-  return { tool: call?.tool || "unknown", arguments: args, result: JSON.stringify(result).slice(0, 350) };
+  return { tool: call?.tool || "unknown", arguments: args, result: JSON.stringify(result).slice(0, 500) };
+}
+
+function compactToolResultForCheckpoint(call, keepRaw) {
+  if (keepRaw || call?.tool === "web_research" || call?.tool === "github_propose_write") return call?.result;
+  const result = call?.result || {};
+  if (call?.tool === "search_notes") {
+    return {
+      notes: (Array.isArray(result.notes) ? result.notes : []).map((note) => ({
+        id: note?.id,
+        title: String(note?.title ?? "").slice(0, 300),
+        text: String(note?.text ?? note?.excerpt ?? note?.content ?? "").slice(0, 400),
+        kind: note?.kind,
+        scope: note?.scope,
+        memoryKinds: note?.memoryKinds,
+        memoryTrustLevels: note?.memoryTrustLevels,
+        memoryStatus: note?.memoryStatus,
+        memoryConfidence: note?.memoryConfidence,
+        memoryRecordedAt: note?.memoryRecordedAt,
+        memoryExpiresAt: note?.memoryExpiresAt,
+      })),
+    };
+  }
+  if (call?.tool === "get_note") {
+    const note = result.note || result;
+    return { note: {
+      id: note?.id,
+      title: String(note?.title ?? "").slice(0, 300),
+      path: note?.path,
+      text: String(note?.text ?? note?.content ?? "").slice(0, 800),
+    } };
+  }
+  if (call?.tool === "github_read_file") {
+    return {
+      path: result.path,
+      sha: result.sha,
+      startLine: result.startLine,
+      endLine: result.endLine,
+      totalLines: result.totalLines,
+      truncated: true,
+      excerpt: String(result.content ?? "").slice(0, 500),
+    };
+  }
+  const serialized = JSON.stringify(result);
+  return { summary: typeof serialized === "string" ? serialized.slice(0, 1_000) : "" };
+}
+
+function compactCheckpointHistory(toolCalls, transcript, pendingAction) {
+  const keepRecentRawCalls = 2;
+  const keepFrom = Math.max(0, toolCalls.length - keepRecentRawCalls);
+  const compactedCalls = toolCalls.map((call, index) => ({
+    ...call,
+    result: compactToolResultForCheckpoint(call, index >= keepFrom),
+  }));
+  let toolIndex = 0;
+  const compactedTranscript = transcript.map((item) => {
+    if (item?.role !== "tool") return item;
+    const call = compactedCalls[toolIndex++];
+    return call ? { ...item, result: call.result } : item;
+  });
+  if (pendingAction && compactedTranscript.length) {
+    const last = compactedTranscript.at(-1);
+    if (last?.role === "assistant") {
+      compactedTranscript[compactedTranscript.length - 1] = { ...last, action: pendingAction };
+    }
+  }
+  return { toolCalls: compactedCalls, transcript: compactedTranscript };
 }
 
 function compactTranscriptForModel(state) {
-  const recentMessageCount = 12;
-  if (state.transcript.length <= recentMessageCount) return state.transcript;
-  const recentToolCount = 6;
+  const recentMessageCount = 8;
+  const recentToolCount = 3;
+  if (state.transcript.length <= recentMessageCount
+    && state.transcript.every((item) => item?.role !== "tool" || JSON.stringify(item.result).length <= 8_000)) {
+    return state.transcript;
+  }
   const olderCalls = state.toolCalls.slice(0, Math.max(0, state.toolCalls.length - recentToolCount));
   const summaryCalls = olderCalls.slice(-100).map(summarizeToolCallForContext);
   const omitted = Math.max(0, olderCalls.length - summaryCalls.length);
+  const recent = state.transcript.slice(-recentMessageCount).map((item) => {
+    if (item?.role === "tool" && JSON.stringify(item.result).length > 8_000) {
+      const call = state.toolCalls.find((candidate) => candidate.tool === item.name
+        && JSON.stringify(candidate.result) === JSON.stringify(item.result));
+      return { ...item, result: call ? summarizeToolCallForContext(call) : { summary: JSON.stringify(item.result).slice(0, 1_000) } };
+    }
+    if (item?.role === "assistant" && item.action?.tool === "github_propose_write") {
+      const plan = item.action.arguments || {};
+      return { role: "assistant", action: {
+        action: "tool",
+        tool: "github_propose_write",
+        arguments: {
+          repository: plan.repository,
+          summary: plan.summary,
+          operations: (plan.operations || []).map((operation) => ({ type: operation.type, path: operation.path, branch: operation.branch })),
+        },
+      } };
+    }
+    return item;
+  });
   return [
     {
       role: "history_summary",
       content: JSON.stringify({
         earlierToolCallsOmittedFromSummary: omitted,
         earlierToolCallSummary: summaryCalls,
-        note: "Older raw tool results remain in the checkpoint evidence ledger. Re-read a source with its ID/path and current SHA when exact content is needed.",
+        note: "Older raw tool results are compacted in the durable checkpoint. Re-read a source by ID/path and current SHA when exact content is needed.",
       }),
     },
-    ...state.transcript.slice(-recentMessageCount),
+    ...recent,
   ];
 }
 
@@ -315,11 +408,21 @@ export async function runAgentToolLoop(input) {
   const allowGitHubWrite = input.allowGitHubWrite === true;
   const state = restoreLoop(input.checkpoint, allowWebResearch, allowGitHubRead, allowGitHubWrite);
   const seenCalls = new Set(state.toolCalls.map((call) => `${call.tool}:${JSON.stringify(call.arguments)}`));
-  const save = (checkpoint) => input.saveCheckpoint({
-    ...checkpoint,
-    initialPrompt: input.initialPrompt,
-    contextNotes: input.contextNotes ?? [],
-  });
+  const save = (checkpoint) => {
+    const compacted = checkpoint.stage === "agent_loop"
+      ? compactCheckpointHistory(checkpoint.toolCalls || [], checkpoint.transcript || [], checkpoint.pendingAction)
+      : null;
+    if (compacted) {
+      state.toolCalls = compacted.toolCalls;
+      state.transcript = compacted.transcript;
+    }
+    return input.saveCheckpoint({
+      ...checkpoint,
+      ...(compacted ? { toolCalls: compacted.toolCalls, transcript: compacted.transcript } : {}),
+      initialPrompt: input.initialPrompt,
+      contextNotes: input.contextNotes ?? [],
+    });
+  };
   // Transient within this loop run only: set when a write-plan proposal fails shape
   // validation, appended to the next prompt, and cleared once a response validates.
   // It is never written into checkpoints, so a resumed loop re-derives it from scratch.
@@ -437,6 +540,7 @@ export async function runAgentToolLoop(input) {
           && call.arguments.repository === action.arguments.repository
           && call.arguments.path === operation.path);
         if (!source || source.result?.sha !== operation.sha
+          || typeof source.result?.content !== "string"
           || (operation.type === "update_file" && source.result?.truncated === true)) {
           throw new Error(operation.type === "update_file"
             ? "github_write_requires_complete_file_read"
