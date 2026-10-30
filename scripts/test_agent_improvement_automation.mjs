@@ -14,9 +14,11 @@ function createBudgetDb() {
     reserved_neurons INTEGER NOT NULL DEFAULT 0,
     actual_neurons INTEGER NOT NULL DEFAULT 0,
     calls_completed INTEGER NOT NULL DEFAULT 0,
+    calls_failed INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
   )`);
   return {
+    get(sql, ...values) { return sqlite.prepare(sql).get(...values) ?? null; },
     prepare(sql) {
       let values = [];
       return {
@@ -43,14 +45,22 @@ const validPlan = () => ({
 
 test("Workers AI client uses bounded tool-capable model and returns text", async () => {
   let called;
-  const env = { DB: createBudgetDb(), AI: { run: async (...args) => { called = args; return { response: '{"action":"final","reply":"ok","source_ids":[]}' }; } } };
-  const result = await callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json" });
+  let usageSeen = null;
+  const env = { DB: createBudgetDb(), AI: { run: async (...args) => { called = args; return {
+    response: '{"action":"final","reply":"ok","source_ids":[]}',
+    usage: { prompt_tokens: 20, completion_tokens: 5 }
+  }; } } };
+  const result = await callWorkersAi(env, "prompt", 500, {
+    responseMimeType: "application/json",
+    onUsage: async (usage) => { usageSeen = usage; }
+  });
   assert.equal(result, '{"action":"final","reply":"ok","source_ids":[]}');
   assert.equal(WORKERS_AI_MODEL, "@cf/zai-org/glm-4.7-flash");
   assert.equal(called[0], WORKERS_AI_MODEL);
   assert.equal(called[1].max_tokens, 500);
   assert.deepEqual(called[1].response_format, { type: "json_object" });
   assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 1024);
+  assert.deepEqual(usageSeen, { prompt_tokens: 20, completion_tokens: 5 });
 });
 
 test("Workers AI client preserves sanitized upstream failure and keeps stable reason", async () => {
@@ -70,6 +80,25 @@ test("Workers AI client preserves sanitized upstream failure and keeps stable re
       return true;
     }
   );
+});
+
+test("Workers AI client settles response-less failures as input-only usage", async () => {
+  const db = createBudgetDb();
+  let failureUsage = null;
+  const upstream = new Error("HTTP 503 upstream unavailable");
+  const env = { DB: db, AI: { run: async () => { throw upstream; } } };
+  await assert.rejects(
+    callWorkersAi(env, "prompt", 500, {
+      onFailure: async (usage) => { failureUsage = usage; }
+    }),
+    (error) => error.reason === "workers_ai_request_failed"
+  );
+  assert.ok(Number.isSafeInteger(failureUsage?.inputTokens) && failureUsage.inputTokens > 0);
+  const row = db.get("SELECT reserved_neurons, actual_neurons, calls_completed, calls_failed FROM workers_ai_daily_usage");
+  assert.equal(row.reserved_neurons, 0);
+  assert.ok(row.actual_neurons > 0);
+  assert.equal(row.calls_completed, 0);
+  assert.equal(row.calls_failed, 1);
 });
 
 test("Workers AI client does not pass signal to AI.run", async () => {
