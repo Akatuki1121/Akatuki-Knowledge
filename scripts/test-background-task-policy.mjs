@@ -21,6 +21,15 @@ const second = decideTaskRetry({ ...base, attempts: 2 });
 const dailyQuota = decideTaskRetry({ ...base, nowMs: Date.parse("2026-10-30T12:00:00.000Z"), deadlineAtMs: Date.parse("2026-10-30T13:00:00.000Z"), errorClass: "workers_ai_daily_quota_exhausted", retryable: true });
 assert.equal(dailyQuota.action, "retry");
 assert.equal(dailyQuota.retryAtMs, Date.parse("2026-10-31T00:01:00.000Z"));
+const quotaRetryAfterReset = decideTaskRetry({
+  ...base,
+  nowMs: Date.parse("2026-10-31T00:01:00.000Z"),
+  deadlineAtMs: Date.parse("2026-10-31T01:01:00.000Z"),
+  errorClass: "workers_ai_daily_quota_exhausted",
+  previousErrorClass: "workers_ai_daily_quota_exhausted",
+  retryable: true,
+});
+assert.equal(quotaRetryAfterReset.retryAtMs, Date.parse("2026-10-31T01:01:00.000Z"));
 assert.equal(second.delayMs, 60_000);
 const capped = decideTaskRetry({ ...base, attempts: 4, maxAttempts: 99 });
 assert.equal(capped.action, "stop");
