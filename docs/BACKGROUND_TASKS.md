@@ -34,7 +34,7 @@ Neurons台帳は観測と監査に使う。Cloudflareの実枠を超えて処理
 
 ## Workers / Workflow / D1などの別枠
 
-Workers AIとは別に、Cloudflare FreeのWorkflows step枠を超えないよう日次予約を行う。現在は1タスクあたり32 stepsを予約し、UTC日あたり2,700 stepsまで受け付ける。Cloudflare Freeの3,000 steps/日に対して300 stepsを他用途・変動分として残す設計であり、これはAI利用上限ではない。実消費量による予約精算は今後の改善対象。タスク数の独立した固定上限は設けない。
+Workers AIとは別に、Cloudflare FreeのWorkflows step枠を超えないよう日次予約を行う。現在は1タスクあたり32 stepsを予約し、UTC日あたり2,700 stepsまで受け付ける。Cloudflare Freeの3,000 steps/日に対して300 stepsを他用途・変動分として残す設計であり、これはAI利用上限ではない。実消費量による予約精算は今後の改善対象。タスク数の独立した固定上限は設けない。枠に入らないタスクはD1のqueued状態で保持し、次のUTC日次リセット後（00:01 UTC）に予約を取り直して自動実行する。旧実装でdaily_workflow_budget_exhaustedとしてterminal化されたタスクも、同じ依頼の冪等キーを保ったまま再キューする。
 
 D1、Workers requests、Durable Objects、Workflows executionなどもCloudflare側のquotaが最終的な制約となる。各種計測値はアカウント全体の利用量と混在する場合があるため、Akatuki-Knowledge単体の消費量と誤認しない。
 
