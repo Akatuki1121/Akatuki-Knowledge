@@ -12679,7 +12679,9 @@ var wrapper_default = {
       if (url.pathname === "/sync/pull" && request.method === "POST") {
         let result;
         try {
-          result = await pullFromVault(env, ctx, url.origin, url.searchParams.get("apply") === "1");
+          const apply = url.searchParams.get("apply") === "1";
+          if (apply) await drainSyncOutbox(env, 10);
+          result = await pullFromVault(env, ctx, url.origin, apply);
         } catch (error) {
           await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "manual"));
           throw error;
