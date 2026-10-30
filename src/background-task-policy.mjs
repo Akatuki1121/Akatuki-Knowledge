@@ -156,7 +156,8 @@ export function classifyAgentTaskError(error) {
     if (message.includes(fixed)) return fixed;
   }
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
-  if (/Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
+  if (/Gemini API returned 5\d\d/i.test(message)
+    || /workers_ai_request_failed[\s\S]{0,180}\b5\d\d\b/i.test(message)) return "upstream_5xx";
   if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
   if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
   return "unknown";
