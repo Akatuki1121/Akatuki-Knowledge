@@ -218,7 +218,7 @@ export async function enqueueAgentTask(db, input) {
       WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
         AND EXISTS (
           SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved < 60
+          WHERE budget_day = ?
             AND workflow_steps_reserved + 32 <= 2700
         )
       ON CONFLICT(task_id) DO NOTHING
@@ -231,7 +231,7 @@ export async function enqueueAgentTask(db, input) {
       WHERE task_id = ? AND budget_day = ? AND counted = 0
         AND EXISTS (
           SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved < 60
+          WHERE budget_day = ?
             AND workflow_steps_reserved + 32 <= 2700
         )
     `).bind(taskId, budgetDay, budgetDay),
