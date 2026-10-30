@@ -9,6 +9,7 @@ import {
   listAgentTasks,
   claimNextAgentTask,
   reserveAgentAiBudget,
+  settleAgentAiBudget,
   saveAgentTaskCheckpoint,
   completeAgentTask,
   recordAgentTaskFailure,
@@ -19,6 +20,7 @@ import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { callWorkersAi } from "./workers-ai-client.mjs";
+import { estimateWorkersAiPromptTokens } from "./workers-ai-budget.mjs";
 import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
@@ -11516,7 +11518,6 @@ async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
   const rows = (await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE path LIKE 'Notes/改善/%' AND path <> 'Notes/改善/このフォルダについて.md' AND deleted_at IS NULL ORDER BY updated_at ASC LIMIT 30").all()).results || [];
   let queued = 0, scanned = 0;
-  const day = new Date().toISOString().slice(0, 10);
   for (const note of rows) {
     scanned++;
     if (typeof note.sync_uuid !== "string" || !note.sync_uuid
@@ -11534,8 +11535,7 @@ async function runImprovementInbox(env) {
       ORDER BY created_at DESC
       LIMIT 1
     `).bind(note.sync_uuid, note.path).first();
-    let taskIdempotencyKey = "improvement:" + idempotencyKey;
-    let retryingFailedRequest = false;
+    const taskIdempotencyKey = "improvement:" + idempotencyKey;
     let previousPayload = null;
     try {
       previousPayload = previous?.payload_json ? JSON.parse(previous.payload_json) : null;
@@ -11548,18 +11548,11 @@ async function runImprovementInbox(env) {
       if (!seen) await markImprovementSeen(env, note.sync_uuid, note.content_hash);
       continue;
     }
-    if (sameRequest && ["failed", "cancelled"].includes(previous?.status)) {
-      // The prior failure may have written a result block before this fix.
-      // Reuse its original source hash and strip generated result blocks from
-      // the prompt so a retry checks the user's request, not its own report.
-      const sourceHash = previousPayload?.sourceContentHash;
-      if (typeof sourceHash === "string" && /^[a-f0-9]{64}$/i.test(sourceHash)) {
-        const originalKey = await improvementIdempotencyKey(note.sync_uuid, sourceHash);
-        taskIdempotencyKey = "improvement:" + originalKey + ":retry:" + day;
-        retryingFailedRequest = true;
-      }
-    }
-    if (seen && !retryingFailedRequest) continue;
+    // A terminal failure/cancellation is not retried unchanged. Editing the
+    // request changes its content hash and creates a fresh attempt; transient
+    // errors are retried by the Workflow's bounded task retry schedule.
+    if (sameRequest && ["failed", "cancelled"].includes(previous?.status)) continue;
+    if (seen) continue;
     if (requestContent.length > 8000 || !requestContent.trim()) {
       await appendImprovementResult(env, {
         improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
@@ -11576,7 +11569,8 @@ async function runImprovementInbox(env) {
         taskId: crypto.randomUUID(),
         taskType: "github_query",
         idempotencyKey: taskIdempotencyKey,
-        maxAttempts: 1,
+        maxAttempts: 4,
+        maxTaskAgeMs: 8 * 60 * 60 * 1000,
         maxAiCalls: IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask,
         maxAiTokens: 12000,
         payload: {
@@ -11848,7 +11842,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               if (hasSensitiveCategory(inspection.findings)) {
                 throw new Error("pii_masking_failed");
               }
-              const estimatedTokens = Math.max(1, Math.ceil(inspection.text.length / 4) + prepared.maxOutputTokens);
+              const estimatedTokens = estimateWorkersAiPromptTokens(inspection.text) + prepared.maxOutputTokens;
               const reserved = await reserveAgentAiBudget(this.env.DB, {
                 taskId, leaseToken, estimatedTokens
               });
@@ -11856,7 +11850,21 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const raw = await callWorkersAi(this.env, inspection.text, prepared.maxOutputTokens, {
                 responseMimeType: "application/json",
-                signal: AbortSignal.timeout(30_000)
+                signal: AbortSignal.timeout(30_000),
+                onUsage: async (usage) => {
+                  const actualTokens = Number(usage?.prompt_tokens) + Number(usage?.completion_tokens);
+                  if (!Number.isSafeInteger(actualTokens) || actualTokens < 0) return;
+                  const settled = await settleAgentAiBudget(this.env.DB, {
+                    taskId, leaseToken, reservedTokens: estimatedTokens, actualTokens
+                  });
+                  if (!settled) throw new Error("ai_token_budget_settlement_failed");
+                },
+                onFailure: async ({ inputTokens }) => {
+                  const settled = await settleAgentAiBudget(this.env.DB, {
+                    taskId, leaseToken, reservedTokens: estimatedTokens, actualTokens: inputTokens
+                  });
+                  if (!settled) throw new Error("ai_token_budget_settlement_failed");
+                }
               });
               const safeResponse = inspectAndRedact(raw, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
               if (!safeResponse.ok) {
