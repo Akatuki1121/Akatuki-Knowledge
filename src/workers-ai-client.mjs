@@ -1,3 +1,5 @@
+import { reserveWorkersAiBudget, settleWorkersAiBudget } from "./workers-ai-budget.mjs";
+
 // GLM-4.7-Flash remains available on Workers Free and supports multilingual tool-calling.
 export const WORKERS_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
 export const WORKERS_AI_MAX_OUTPUT_TOKENS = 1024;
@@ -59,6 +61,9 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options 
     },
     { role: "user", content: prompt }
   ];
+  const budgetReservation = await reserveWorkersAiBudget(env.DB, {
+    model: WORKERS_AI_MODEL, prompt, maxOutputTokens: maxTokens
+  });
   let result;
   try {
     // AI バインディングの文書化された options は gateway のみで、signal は未文書化。
@@ -72,6 +77,9 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options 
   } catch (error) {
     throw createWorkersAiRequestFailure(error);
   }
+  // Provider usage is authoritative when present. If omitted, keep the pre-call
+  // reservation so missing telemetry cannot silently undercount consumption.
+  await settleWorkersAiBudget(env.DB, budgetReservation, result?.usage).catch(() => {});
   const response = typeof result?.response === "string" ? result.response : "";
   if (!response.trim() || response.length > 16_000) throw new Error("workers_ai_invalid_response");
   return response;
