@@ -167,6 +167,24 @@ assert.equal(crossDayReserved.reserved, 1);
 row = sqlite.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task_id = 'cross-day-retry'").get();
 assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 1 });
 
+sqlite.prepare("UPDATE agent_tasks SET status = 'running', lease_token = ?, lease_expires_at = ?, deadline_at = ?, attempts = 1 WHERE task_id = ?")
+  .run("quota-recheck", "2026-11-01 00:45:00", "2026-11-01 20:00:00", "queued-for-workflow-budget");
+const quotaRecheck = await recordAgentTaskFailure(db, {
+  taskId: "queued-for-workflow-budget",
+  leaseToken: "quota-recheck",
+  errorClass: "workers_ai_daily_quota_exhausted",
+  errorDetail: "Cloudflare quota reset propagation is still pending",
+  retryable: true,
+  nowMs: Date.parse("2026-11-01T00:15:00.000Z"),
+});
+assert.equal(quotaRecheck.applied, true);
+assert.equal(quotaRecheck.decision.retryAtMs, Date.parse("2026-11-01T01:15:00.000Z"));
+assert.equal(quotaRecheck.workflowBudgetReleased, false);
+row = sqlite.prepare("SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 1, next_attempt_at: "2026-11-01 01:15:00" });
+const sameDayReservation = sqlite.prepare("SELECT budget_day, counted FROM agent_task_budget_reservations WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.deepEqual({ ...sameDayReservation }, { budget_day: "2026-11-01", counted: 2 });
+
 const nextDayBudget = sqlite.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = '2026-11-01'").get();
 assert.deepEqual({ ...nextDayBudget }, { tasks_reserved: 2, workflow_steps_reserved: 64 });
 
