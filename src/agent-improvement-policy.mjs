@@ -15,6 +15,23 @@ const PROTECTED_WORKFLOWS = new Set([
 ]);
 const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "apply_patch", "create_pull_request"]);
 
+function hasExplicitReadOnlyWorkflowPermissions(content) {
+  const lines = content.split(/\r?\n/u);
+  const index = lines.findIndex((line) => /^permissions:\s*(?:read-all|\{\})?\s*(?:#.*)?$/u.test(line));
+  if (index < 0) return false;
+  const declaration = lines[index].replace(/^permissions:\s*/u, "").trim();
+  if (declaration === "read-all" || declaration === "{}") return true;
+  let entries = 0;
+  for (let lineIndex = index + 1; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
+    if (!line.trim()) continue;
+    if (!/^\s{2,}/u.test(line)) break;
+    if (!/^\s{2,}[A-Za-z0-9_-]+:\s*read\s*(?:#.*)?$/u.test(line)) return false;
+    entries++;
+  }
+  return entries > 0;
+}
+
 function validRepositoryPath(path, operationType, content) {
   if (typeof path !== "string" || !path || path.length > 240
     || path.startsWith("/") || path.includes("\\")
@@ -25,7 +42,8 @@ function validRepositoryPath(path, operationType, content) {
     return operationType === "create_file" && !PROTECTED_WORKFLOWS.has(path)
       && /^[a-z0-9][a-z0-9._-]*\.ya?ml$/iu.test(path.slice(".github/workflows/".length))
       && typeof content === "string"
-      && !/(?:pull_request_target|workflow_run|secrets\.|write-all|contents:\s*write|pull-requests:\s*write|issues:\s*write|actions:\s*write)/iu.test(content);
+      && hasExplicitReadOnlyWorkflowPermissions(content)
+      && !/(?:pull_request_target|workflow_run|secrets\.|write-all|[A-Za-z0-9_-]+:\s*write)/iu.test(content);
   }
   return false;
 }
