@@ -27,6 +27,8 @@ export const checks = [
   ["sync-strip-frontmatter-ids", process.execPath, ["scripts/test-sync-strip-frontmatter-ids.mjs"]],
   ["sync-cleanup-measurement-notes", process.execPath, ["scripts/test-sync-cleanup-measurement-notes.mjs"]],
   ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
+  ["workers-ai-budget-syntax", process.execPath, ["--check", "src/workers-ai-budget.mjs"]],
+  ["workers-ai-budget", process.execPath, ["scripts/test_workers_ai_budget.mjs"]],
   ["agent-improvement-policy-syntax", process.execPath, ["--check", "src/agent-improvement-policy.mjs"]],
   ["agent-improvement-executor-syntax", process.execPath, ["--check", "src/agent-improvement-executor.mjs"]],
   ["agent-improvement-automation", process.execPath, ["scripts/test_agent_improvement_automation.mjs"]],
