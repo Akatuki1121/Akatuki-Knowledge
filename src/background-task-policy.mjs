@@ -158,6 +158,7 @@ export function classifyAgentTaskError(error) {
     typeof error?.message === "string" ? error.message : "",
     typeof error?.workersAiError?.message === "string" ? error.workersAiError.message : "",
     error?.workersAiError?.code !== undefined ? String(error.workersAiError.code) : "",
+    error?.workersAiError?.status !== undefined ? String(error.workersAiError.status) : "",
   ].filter(Boolean).join(" ");
   for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "tool_output_too_large", "workers_ai_daily_quota_exhausted"]) {
     if (message.includes(fixed)) return fixed;
