@@ -98,3 +98,5 @@ wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実�
 - 次のUTC日00:01以降、15分ごとのrecovery Cronが空きWorkflow stepsを予約し、完了済みWorkflow instanceを再起動する。これによりAI枠のリセット待ちでWorkflow runを長時間sleepさせず、翌日分のWorkflow枠も再予約する。
 - Workflowsの日次予約が満杯で新規タスクを受け付けられない場合も、タスクをfailedにせずqueuedに残す。next_attempt_atとdeadline_atを翌日枠に合わせ、recovery Cronが空き枠を予約する。古い実装でdaily_workflow_budget_exhaustedとしてfailedになったタスクも再キュー可能。
 - この待機はWorkers AIの独自上限ではなく、Cloudflare FreeのWorkers AI/Workflows各サービスが持つ別々の日次枠に対する回復処理。AI呼び出し回数・token数にアプリ独自の上限は設けない。
+
+UTC日跨ぎの通常再試行も同じ扱いにし、現在のWorkflow runを終了して翌日のWorkflow stepsを再予約する。
