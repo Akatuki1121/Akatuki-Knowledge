@@ -59,6 +59,8 @@ assert.ok(!source.includes("input.error.message"), "Raw exception messages must 
 const failureRecorder = source.slice(source.indexOf("export async function recordAgentTaskFailure"));
 assert.ok(failureRecorder.includes("WHERE task_id = ? AND status = 'running' AND lease_token = ?"), "Failure recording must be fenced by task status and lease token");
 assert.ok(!failureRecorder.includes("lease_expires_at > ?"), "An expired but unreclaimed lease must still be able to persist its failure");
+const aiReservation = source.slice(source.indexOf("export async function reserveAgentAiBudget"), source.indexOf("export async function settleAgentAiBudget"));
+assert.ok(!aiReservation.includes("lease_expires_at > ?"), "An expired but unreclaimed lease must be able to account for an in-flight AI call");
 assert.equal(toSqliteDateTime(Date.UTC(2026, 9, 20, 12, 34, 56)), "2026-10-20 12:34:56");
 console.log("Background task store contract checks passed.");
 
