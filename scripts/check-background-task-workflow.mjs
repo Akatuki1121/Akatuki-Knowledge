@@ -97,7 +97,7 @@ assert.ok(config.includes('binding = "AI"'), "Workers AI binding must be configu
 assert.ok(source.includes("runImprovementInbox(env)"), "Hourly pull must be followed by improvement inbox scanning");
 assert.ok(source.includes("executeApprovedImprovementPlan"), "Improvement plan execution must use the constrained executor");
 assert.ok(source.includes("appendImprovementResult"), "Improvement task outcomes must be written back to their source note");
-assert.ok(source.includes("IMPROVEMENT_AUTOMATION_LIMITS.maxTasksPerDay"), "Improvement tasks must have an explicit daily cap");
+assert.ok(!source.includes("IMPROVEMENT_AUTOMATION_LIMITS.maxTasksPerDay"), "Improvement tasks must use shared resource budgets, not a separate daily task cap");
 assert.ok(toolLoop.includes('throw new Error("unknown_tool")'), "Unknown tools must fail closed");
 assert.ok(toolLoop.includes('throw new Error("tool_loop_detected")'), "Repeated tool calls must stop");
 assert.ok(toolLoop.includes("AGENT_TOOL_LIMITS.maxToolOutputChars"), "Tool output size must be bounded");
