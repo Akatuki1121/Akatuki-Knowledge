@@ -83,8 +83,7 @@ export async function expireAgentTasks(db, input = {}) {
         stop_reason = CASE
           WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
           WHEN attempts >= max_attempts THEN 'attempt_budget_exhausted'
-          WHEN ai_calls_used >= max_ai_calls THEN 'ai_call_budget_exhausted'
-          ELSE 'ai_token_budget_exhausted'
+          ELSE 'attempt_budget_exhausted'
         END,
         completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
     WHERE status IN ('queued', 'waiting', 'running')
@@ -92,7 +91,7 @@ export async function expireAgentTasks(db, input = {}) {
         deadline_at <= ?
         OR (
           (status IN ('queued', 'waiting') OR (status = 'running' AND lease_expires_at <= ?))
-          AND (attempts >= max_attempts OR ai_calls_used >= max_ai_calls OR ai_tokens_used >= max_ai_tokens)
+          AND attempts >= max_attempts
         )
       )
   `).bind(now, now, now, now, now).run();
@@ -111,8 +110,6 @@ export async function listRecoverableAgentTasks(db, input = {}) {
       AND budget_reserved = 1
       AND deadline_at > ?
       AND attempts < max_attempts
-      AND ai_calls_used < max_ai_calls
-      AND ai_tokens_used < max_ai_tokens
       AND (
         status = 'queued'
         OR (status = 'waiting' AND next_attempt_at <= ?)
@@ -164,8 +161,9 @@ export async function enqueueAgentTask(db, input) {
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
 
   const maxAttempts = boundedInteger(input.maxAttempts, 4, TASK_BUDGET_CEILINGS.maxAttempts);
-  const maxAiCalls = boundedInteger(input.maxAiCalls, 20, TASK_BUDGET_CEILINGS.maxAiCalls);
-  const maxAiTokens = boundedInteger(input.maxAiTokens, 40_000, TASK_BUDGET_CEILINGS.maxAiTokens);
+  // Legacy columns remain for telemetry/schema compatibility; they are not limits.
+  const maxAiCalls = Number.MAX_SAFE_INTEGER;
+  const maxAiTokens = Number.MAX_SAFE_INTEGER;
   const idempotencyKey = typeof input.idempotencyKey === "string" && input.idempotencyKey.trim()
     ? input.idempotencyKey.trim()
     : null;
@@ -364,8 +362,6 @@ export async function claimNextAgentTask(db, input = {}) {
       )
         AND deadline_at > ?
         AND attempts < max_attempts
-        AND ai_calls_used < max_ai_calls
-        AND ai_tokens_used < max_ai_tokens
         AND (? IS NULL OR task_id = ?)
       ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, created_at
       LIMIT 1
@@ -387,8 +383,8 @@ export async function claimNextAgentTask(db, input = {}) {
  */
 export async function reserveAgentAiBudget(db, input) {
   const estimatedTokens = Math.floor(finiteNumber(input.estimatedTokens, 0));
-  if (estimatedTokens < 1 || estimatedTokens > TASK_BUDGET_CEILINGS.maxAiTokens) {
-    throw new RangeError("estimatedTokens is outside the permitted range");
+  if (estimatedTokens < 1 || !Number.isSafeInteger(estimatedTokens)) {
+    throw new RangeError("estimatedTokens must be a positive safe integer");
   }
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const result = await db.prepare(`
@@ -397,70 +393,33 @@ export async function reserveAgentAiBudget(db, input) {
         ai_tokens_used = ai_tokens_used + ?,
         updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-      AND deadline_at > ?
-      AND lease_expires_at > ?
-      AND ai_calls_used < max_ai_calls
-      AND ai_calls_used < ?
-      AND ai_tokens_used + ? <= max_ai_tokens
-      AND ai_tokens_used + ? <= ?
+      AND deadline_at > ? AND lease_expires_at > ?
   `).bind(
     estimatedTokens, now, input.taskId, input.leaseToken, now, now,
-    TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
-    TASK_BUDGET_CEILINGS.maxAiTokens,
   ).run();
-  if (result?.meta?.changes === 1) return true;
-
-  // If the lease is still ours, turn an exhausted budget into a terminal task
-  // state instead of leaving a task that no executor can ever claim again.
-  await db.prepare(`
-    UPDATE agent_tasks
-    SET status = 'failed',
-        stop_reason = CASE
-          WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
-          WHEN ai_calls_used >= max_ai_calls OR ai_calls_used >= ? THEN 'ai_call_budget_exhausted'
-          ELSE 'ai_token_budget_exhausted'
-        END,
-        completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
-    WHERE task_id = ? AND status = 'running' AND lease_token = ?
-      AND lease_expires_at > ?
-      AND (
-        deadline_at <= ?
-        OR ai_calls_used >= max_ai_calls
-        OR ai_calls_used >= ?
-        OR ai_tokens_used + ? > max_ai_tokens
-        OR ai_tokens_used + ? > ?
-      )
-  `).bind(
-    now, now, now, input.taskId, input.leaseToken, now,
-    now, TASK_BUDGET_CEILINGS.maxAiCalls, estimatedTokens, estimatedTokens,
-    TASK_BUDGET_CEILINGS.maxAiTokens,
-  ).run();
-  return false;
+  return result?.meta?.changes === 1;
 }
 
 /**
  * Replace the conservative per-call token reservation with provider usage.
- * When a provider returns no usage, callers deliberately leave the reservation
- * in place. A response-less provider failure settles estimated input tokens.
+ * Counters are telemetry only and never reject an AI request or result.
  */
 export async function settleAgentAiBudget(db, input) {
   const reservedTokens = Math.floor(finiteNumber(input.reservedTokens, -1));
   const actualTokens = Math.floor(finiteNumber(input.actualTokens, -1));
-  if (reservedTokens < 1 || actualTokens < 0 || actualTokens > TASK_BUDGET_CEILINGS.maxAiTokens) {
-    throw new RangeError("AI token settlement is outside the permitted range");
+  if (reservedTokens < 1 || actualTokens < 0 || !Number.isSafeInteger(actualTokens)) {
+    throw new RangeError("AI token settlement values must be non-negative safe integers");
   }
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const result = await db.prepare(`
     UPDATE agent_tasks
-    SET ai_tokens_used = ai_tokens_used - ? + ?, updated_at = ?
+    SET ai_tokens_used = MAX(0, ai_tokens_used - ?) + ?, updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
       AND lease_expires_at > ? AND deadline_at > ?
       AND ai_tokens_used >= ?
-      AND ai_tokens_used - ? + ? <= max_ai_tokens
   `).bind(
     reservedTokens, actualTokens, now,
-    input.taskId, input.leaseToken, now, now,
-    reservedTokens, reservedTokens, actualTokens,
+    input.taskId, input.leaseToken, now, now, reservedTokens,
   ).run();
   return result?.meta?.changes === 1;
 }
@@ -532,10 +491,6 @@ export async function recordAgentTaskFailure(db, input) {
     retryDelaysMs: isImprovementRequest ? [60 * 60 * 1000, 3 * 60 * 60 * 1000, 3 * 60 * 60 * 1000] : undefined,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
-    aiCallsUsed: row.ai_calls_used,
-    maxAiCalls: row.max_ai_calls,
-    aiTokensUsed: row.ai_tokens_used,
-    maxAiTokens: row.max_ai_tokens,
     errorClass: input.errorClass,
     retryable: input.retryable === true,
   });
@@ -546,10 +501,16 @@ export async function recordAgentTaskFailure(db, input) {
       UPDATE agent_tasks
       SET status = 'waiting', next_attempt_at = ?, updated_at = ?,
           last_error_class = ?, last_error = ?, stop_reason = NULL,
+          attempts = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN MAX(0, attempts - 1) ELSE attempts END,
+          deadline_at = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN datetime(?, '+1 hour') ELSE deadline_at END,
           lease_token = NULL, lease_expires_at = NULL
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
         AND lease_expires_at > ?
-    `).bind(retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), input.taskId, input.leaseToken, now).run();
+    `).bind(
+      retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail),
+      input.errorClass ?? "unknown", input.errorClass ?? "unknown", retryAt,
+      input.taskId, input.leaseToken, now,
+    ).run();
     return { applied: result?.meta?.changes === 1, decision };
   }
 
