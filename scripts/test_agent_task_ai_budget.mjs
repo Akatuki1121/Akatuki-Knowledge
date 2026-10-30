@@ -6,7 +6,7 @@ import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQue
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
 const taskMigration = await readFile(new URL("migrations/0011_agent_tasks.sql", root), "utf8");
-const budgetMigration = await readFile(new URL("migrations/pending/0017_cloudflare_free_workflow_budget.sql", root), "utf8");
+const budgetMigration = await readFile(new URL("migrations/0017_cloudflare_free_workflow_budget.sql", root), "utf8");
 
 class D1Statement {
   constructor(sqlite, sql) { this.sqlite = sqlite; this.sql = sql; this.values = []; }
