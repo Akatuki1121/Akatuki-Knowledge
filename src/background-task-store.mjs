@@ -381,7 +381,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
         db.prepare(`
           INSERT INTO agent_task_budget_reservations (task_id, budget_day, workflow_steps, counted)
           SELECT task_id, ?, 32, 0 FROM agent_tasks
-          WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
+          WHERE task_id = ? AND status IN ('queued', 'waiting') AND budget_reserved = 0
           ON CONFLICT(task_id) DO UPDATE SET
             budget_day = excluded.budget_day, workflow_steps = 32, counted = 0
           WHERE agent_task_budget_reservations.counted = 0
@@ -407,7 +407,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
               SELECT 1 FROM agent_task_budget_reservations r
               JOIN agent_tasks t ON t.task_id = r.task_id
               WHERE r.task_id = ? AND r.budget_day = ? AND r.counted = 1
-                AND t.status = 'queued' AND t.budget_reserved = 0
+                AND t.status IN ('queued', 'waiting') AND t.budget_reserved = 0
             )
         `).bind(now, budgetDay, taskId, budgetDay),
       ]);
