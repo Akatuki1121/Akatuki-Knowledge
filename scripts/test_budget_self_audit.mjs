@@ -15,7 +15,7 @@ assert.deepEqual(summary.findings.map((item) => item.code), [
   "workers_ai_budget_near_limit",
 ]);
 
-function fakeDb() {
+function fakeDb(existingAudit = null) {
   const writes = [];
   return {
     writes,
@@ -24,6 +24,7 @@ function fakeDb() {
         bind(...args) {
           return {
             async first() {
+              if (sql.includes("SELECT value FROM app_meta WHERE key = ?")) return existingAudit ? { value: JSON.stringify(existingAudit) } : null;
               if (sql.includes("agent_task_daily_budget")) return { tasks_reserved: 2, workflow_steps_reserved: 64 };
               if (sql.includes("workers_ai_daily_usage")) return { reserved_neurons: 100, actual_neurons: 50, calls_failed: 0, calls_completed: 2 };
               return null;
@@ -64,5 +65,19 @@ assert.equal(attention.noteCreated, true);
 assert.match(createdNote.path, /^Notes\/改善\/自己監査-2026-10-30\.md$/u);
 assert.match(createdNote.content, /origin: budget-audit/);
 assert.match(createdNote.content, /audit_generated: true/);
+
+
+const existingReport = { day: "2026-10-30", status: "normal", noteCreated: true };
+const duplicateDb = fakeDb(existingReport);
+let duplicateNoteCalls = 0;
+const duplicate = await runBudgetSelfAudit({ DB: duplicateDb }, Date.parse("2026-10-30T12:00:00.000Z"), {
+  includeSystemAudit: true,
+  createNote: async () => { duplicateNoteCalls++; return { ok: true, status: 201 }; },
+});
+assert.equal(duplicate.ok, true);
+assert.equal(duplicate.recorded, false);
+assert.deepEqual(duplicate.report, existingReport);
+assert.equal(duplicateNoteCalls, 0);
+assert.equal(duplicateDb.writes.length, 0);
 
 console.log("budget self-audit tests passed");
