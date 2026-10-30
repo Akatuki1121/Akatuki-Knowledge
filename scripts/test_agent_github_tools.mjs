@@ -225,4 +225,15 @@ assert.throws(() => validateGitHubWritePlan({
   repository: "example/project", summary: "undisclosed operation", operations: [{ type: "delete_file", path: "docs/note.md" }],
 }), /unknown_tool/, "Operation types absent from the disclosure must stay unsupported");
 
+const expandedPlan = validateGitHubWritePlan({
+  repository: "example/project",
+  summary: "A multi-operation plan is not cut off by an arbitrary operation count",
+  operations: Array.from({ length: 51 }, (_, index) => ({
+    type: "create_issue",
+    title: "Issue " + index,
+    body: "Issue body " + index,
+  })),
+});
+assert.equal(expandedPlan.operations.length, 51, "Operation count is bounded by the serialized plan size, not an arbitrary count");
+
 console.log("GitHub tools tests passed: read allowlist, bounded writes, approval-plan validation, hashing, path blocking, API failures, and write-plan schema disclosure consistency.");
