@@ -23,7 +23,7 @@ function validRepositoryPath(path, operationType) {
   if (ALLOWED_ROOT_FILES.has(path)) return operationType === "update_file" || operationType === "apply_patch";
   if (path.startsWith(".github/workflows/")) {
     return operationType === "create_file" && !PROTECTED_WORKFLOWS.has(path)
-      && /^[a-z0-9][a-z0-9._-]*\\.ya?ml$/iu.test(path.slice(".github/workflows/".length));
+      && /^[a-z0-9][a-z0-9._-]*\.ya?ml$/iu.test(path.slice(".github/workflows/".length));
   }
   return false;
 }
@@ -64,7 +64,7 @@ export function validateImprovementPlan(plan) {
   }
 
   const branch = branches[0].branch;
-  if (typeof branch !== "string" || !/^agent\\/[a-z0-9][a-z0-9._/-]{0,80}$/iu.test(branch)
+  if (typeof branch !== "string" || !/^agent\/[a-z0-9][a-z0-9._/-]{0,80}$/iu.test(branch)
     || branch.includes("..") || branch.includes("//") || branch.endsWith("/")) {
     return { ok: false, reason: "branch_name_invalid" };
   }
