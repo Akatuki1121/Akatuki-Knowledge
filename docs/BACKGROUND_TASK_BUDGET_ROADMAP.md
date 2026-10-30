@@ -122,3 +122,5 @@ D1 rows read/write、Workers requests、DO requests/GB-s、Workflow executions�
 - .github/workflows/auto-merge.ymlはPurgeと同じpull_request_target + gh pr merge --auto --squash方式。Dependabotの既知semver更新と、作成者/イベント実行者がともにAkatuki1121である非Draft PRだけを対象にする。自己改善PRはexecutor側でもGraphQL auto-mergeを要求し、GitHub必須チェックとBranch Protectionを迂回しない。
 - 自己改善エージェントが変更できるのはsrc、scripts、tests、docs、schema-snapshots、migrations/pending、および明示許可したroot config。既存のauto-merge.yml/check.yml/deploy.ymlは保護し、新規workflowもread-only権限以外は禁止する。
 - 本番D1 migration 0016〜0018の適用・照合とWorker deployは別途オーナー承認が必要。pending migrationが残る間はDeploy workflowが本番deployを停止する。Workflow予約コードと本番D1の2000-step CHECK制約不一致は、0017適用まで残る既知の制約。
+
+UTC日跨ぎの通常再試行も同じ扱いにし、現在のWorkflow runを終了して翌日のWorkflow stepsを再予約する。
