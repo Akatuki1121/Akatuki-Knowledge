@@ -35,6 +35,7 @@ export async function executeApprovedImprovementPlan({ plan, expectedPlanHash, t
       "/repos/" + plan.repository + "/pulls/" + pullRequest.number,
       { token, fetchImpl }
     );
+    if (details.auto_merge) return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: true };
     if (typeof details.node_id !== "string" || !details.node_id) {
       return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: false, reason: "pull_request_node_id_missing" };
     }
@@ -48,7 +49,10 @@ export async function executeApprovedImprovementPlan({ plan, expectedPlanHash, t
       }
     });
     if (Array.isArray(result.errors) && result.errors.length) {
-      return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: false, reason: "auto_merge_not_enabled" };
+      const alreadyEnabled = result.errors.some((error) => /already.{0,40}auto.?merge|auto.?merge.{0,40}already/iu.test(String(error?.message || "")));
+      return alreadyEnabled
+        ? { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: true }
+        : { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: false, reason: "auto_merge_not_enabled" };
     }
     return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: true };
   } catch {

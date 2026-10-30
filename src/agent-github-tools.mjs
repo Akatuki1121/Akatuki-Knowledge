@@ -1,5 +1,5 @@
-const MAX_RESULT_CHARS = 10_000;
-const MAX_FILE_CHARS = 8_000;
+const MAX_RESULT_CHARS = 40_000;
+const MAX_FILE_CHARS = 30_000;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u;
 const PATH_PATTERN = /^[A-Za-z0-9_./@+-]{1,240}$/u;
 const BLOCKED_PATH_PARTS = /(?:^|\/)(?:\.env(?:\..*)?|\.dev\.vars|secrets?|credentials?|private[-_]?keys?)(?:\/|$)|\.(?:pem|p12|pfx|key)$/iu;
@@ -26,9 +26,9 @@ export const GITHUB_READ_TOOLS = Object.freeze({
     arguments: Object.freeze(["repository", "number"]),
   }),
   github_read_file: Object.freeze({
-    description: "Read a bounded text file from a public GitHub repository's branch. Sensitive file paths are blocked.",
+    description: "Read a text file from a public GitHub repository branch. Optional line ranges are supported; sensitive file paths are blocked.",
     sideEffect: "external_read",
-    arguments: Object.freeze(["repository", "path", "ref"]),
+    arguments: Object.freeze(["repository", "path", "ref", "start_line", "end_line"]),
   }),
 });
 
@@ -79,7 +79,7 @@ async function githubGet(path, { token, fetchImpl = fetch, signal } = {}) {
     throw new Error("github_request_failed");
   }
   const text = await response.text();
-  if (text.length > 100_000) throw new Error("github_response_too_large");
+  if (text.length > 2_000_000) throw new Error("github_response_too_large");
   try {
     return JSON.parse(text);
   } catch {
@@ -93,20 +93,22 @@ async function githubGet(path, { token, fetchImpl = fetch, signal } = {}) {
 // first proposal fail strict validation (Issue #90). scripts/test_agent_github_tools.mjs
 // pins this disclosure against the validator.
 export const GITHUB_WRITE_PROPOSAL_TOOL = Object.freeze({
-  description: "Prepare a bounded GitHub write plan for explicit user approval. This tool NEVER performs writes. "
-    + "The arguments object must contain exactly the keys repository, summary, operations (no extra keys). "
-    + "repository is in \"owner/repo\" form. summary is a non-empty string of at most 500 characters. "
-    + "operations is an array of 1 to 5 operations. Each operation must contain exactly the keys listed for its type in operationArguments (no missing or extra keys). "
-    + "branch, base_ref, head, and base are branch names. In create_file/update_file, path is a relative file path (sensitive paths such as .env are blocked), content is a string of at most 20000 characters, and message is a non-empty string of at most 200 characters. "
-    + "update_file also requires sha, the current 40-character hex blob sha of the file. In create_issue/create_pull_request, title is a non-empty string of at most 200 characters and body is a string of at most 10000 characters. "
-    + "add_issue_comment requires number (an integer from 1 to 1000000) and body (a non-empty string of at most 10000 characters). "
-    + "create_pull_request requires draft as a boolean. The whole plan must fit within 9000 characters of JSON.",
+  description: "Prepare a GitHub write plan for explicit user approval. This tool NEVER performs writes. "
+    + "The arguments object must contain exactly repository, summary, operations. "
+    + "operations may contain one or more entries, bounded by the total serialized plan size. Each operation must contain exactly its documented keys. "
+    + "create_branch={type,branch,base_ref}; create_file={type,branch,path,content,message}; "
+    + "update_file={type,branch,path,content,message,sha}; apply_patch={type,branch,path,patch,message,sha}; "
+    + "create_issue={type,title,body}; add_issue_comment={type,number,body}; "
+    + "create_pull_request={type,head,base,title,body,draft}. "
+    + "File content may be up to 200000 characters. apply_patch uses a standard unified diff for exactly one existing file, with --- a/<path> and +++ b/<path> headers, and is limited to 100000 characters. "
+    + "update_file and apply_patch require the current 40-character blob sha. The complete plan must fit within 500000 characters of JSON.",
   sideEffect: "approval_required",
   arguments: Object.freeze(["repository", "summary", "operations"]),
   operationArguments: Object.freeze({
     create_branch: Object.freeze(["type", "branch", "base_ref"]),
     create_file: Object.freeze(["type", "branch", "path", "content", "message"]),
     update_file: Object.freeze(["type", "branch", "path", "content", "message", "sha"]),
+    apply_patch: Object.freeze(["type", "branch", "path", "patch", "message", "sha"]),
     create_issue: Object.freeze(["type", "title", "body"]),
     add_issue_comment: Object.freeze(["type", "number", "body"]),
     create_pull_request: Object.freeze(["type", "head", "base", "title", "body", "draft"]),
@@ -146,7 +148,7 @@ export function validateGitHubWritePlan(input) {
     || Object.keys(input).sort().join(",") !== "operations,repository,summary") throw new Error("invalid_input");
   const repository = validateRepository(input.repository);
   const summary = validateShortText(input.summary, 500, "summary");
-  if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 5) {
+  if (!Array.isArray(input.operations) || input.operations.length < 1) {
     throw new Error("invalid_input");
   }
   const operations = input.operations.map((op) => {
@@ -159,14 +161,25 @@ export function validateGitHubWritePlan(input) {
       case "create_file": {
         if (!exactObjectKeys(op, ["type", "branch", "path", "content", "message"])) throw new Error("invalid_input");
         return { type: op.type, branch: validateBranch(op.branch), path: validateWritePath(op.path),
-          content: validateContent(op.content, 20_000),
+          content: validateContent(op.content, 200_000),
           message: validateShortText(op.message, 200, "message") };
       }
       case "update_file": {
         if (!exactObjectKeys(op, ["type", "branch", "path", "content", "message", "sha"]) || !SHA_PATTERN.test(op.sha)) throw new Error("invalid_input");
         return { type: op.type, branch: validateBranch(op.branch), path: validateWritePath(op.path),
-          content: validateContent(op.content, 20_000),
+          content: validateContent(op.content, 200_000),
           message: validateShortText(op.message, 200, "message"), sha: op.sha };
+      }
+      case "apply_patch": {
+        if (!exactObjectKeys(op, ["type", "branch", "path", "patch", "message", "sha"]) || !SHA_PATTERN.test(op.sha)) throw new Error("invalid_input");
+        return {
+          type: op.type,
+          branch: validateBranch(op.branch),
+          path: validateWritePath(op.path),
+          patch: validateContent(op.patch, 100_000),
+          message: validateShortText(op.message, 200, "message"),
+          sha: op.sha,
+        };
       }
       case "create_issue": {
         if (!exactObjectKeys(op, ["type", "title", "body"])) throw new Error("invalid_input");
@@ -189,12 +202,87 @@ export function validateGitHubWritePlan(input) {
     }
   });
   const normalized = { repository, summary, operations };
-  if (JSON.stringify(normalized).length > 9_000) throw new Error("github_write_plan_too_large");
+  if (JSON.stringify(normalized).length > 500_000) throw new Error("github_write_plan_too_large");
   return normalized;
 }
 
 function exactObjectKeys(value, keys) {
   return Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+}
+
+function decodeBase64Utf8(value) {
+  let decoded;
+  try { decoded = atob(value.replace(/\n/g, "")); }
+  catch { throw new Error("github_invalid_file"); }
+  const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new Error("github_invalid_file"); }
+}
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+export function applyUnifiedPatch(original, patch, path) {
+  const normalizedOriginal = String(original).replace(/\r\n/g, "\n");
+  const hadTrailingNewline = normalizedOriginal.endsWith("\n");
+  const sourceLines = normalizedOriginal.split("\n");
+  if (hadTrailingNewline) sourceLines.pop();
+  const patchLines = String(patch).replace(/\r\n/g, "\n").split("\n");
+  if (patchLines[0] !== "--- a/" + path || patchLines[1] !== "+++ b/" + path) {
+    throw new Error("github_patch_path_mismatch");
+  }
+  const output = [];
+  let sourceIndex = 0;
+  let hunks = 0;
+  let index = 2;
+  while (index < patchLines.length) {
+    if (!patchLines[index]) { index++; continue; }
+    const match = patchLines[index].match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/u);
+    if (!match) throw new Error("github_patch_invalid");
+    const oldStart = Number(match[1]);
+    const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+    const newCount = match[4] === undefined ? 1 : Number(match[4]);
+    const targetIndex = oldStart === 0 ? 0 : oldStart - 1;
+    if (targetIndex < sourceIndex || targetIndex > sourceLines.length) throw new Error("github_patch_context_mismatch");
+    output.push(...sourceLines.slice(sourceIndex, targetIndex));
+    sourceIndex = targetIndex;
+    let consumed = 0;
+    let produced = 0;
+    index++;
+    while (index < patchLines.length && patchLines[index] !== "" && !patchLines[index].startsWith("@@ ")) {
+      const line = patchLines[index++];
+      if (line.startsWith("\\ No newline at end of file")) continue;
+      const marker = line[0];
+      const text = line.slice(1);
+      if (marker === " ") {
+        if (sourceLines[sourceIndex] !== text) throw new Error("github_patch_context_mismatch");
+        output.push(text);
+        sourceIndex++;
+        consumed++;
+        produced++;
+      } else if (marker === "-") {
+        if (sourceLines[sourceIndex] !== text) throw new Error("github_patch_context_mismatch");
+        sourceIndex++;
+        consumed++;
+      } else if (marker === "+") {
+        output.push(text);
+        produced++;
+      } else {
+        throw new Error("github_patch_invalid");
+      }
+    }
+    if (consumed !== oldCount || produced !== newCount) throw new Error("github_patch_invalid");
+    hunks++;
+  }
+  if (hunks === 0) throw new Error("github_patch_invalid");
+  output.push(...sourceLines.slice(sourceIndex));
+  return output.join("\n") + (hadTrailingNewline ? "\n" : "");
 }
 
 export async function hashGitHubWritePlan(plan) {
@@ -219,8 +307,21 @@ export async function executeGitHubWritePlan(planInput, { token, fetchImpl = fet
     } else if (op.type === "create_file" || op.type === "update_file") {
       path = "/repos/" + plan.repository + "/contents/" + op.path.split("/").map(encodeURIComponent).join("/");
       method = "PUT";
-      body = { message: op.message, content: btoa(String.fromCharCode(...new TextEncoder().encode(op.content))), branch: op.branch };
+      body = { message: op.message, content: encodeBase64Utf8(op.content), branch: op.branch };
       if (op.type === "update_file") body.sha = op.sha;
+    } else if (op.type === "apply_patch") {
+      const filePath = "/repos/" + plan.repository + "/contents/" + op.path.split("/").map(encodeURIComponent).join("/");
+      const current = await githubGet(filePath + "?ref=" + encodeURIComponent(op.branch), { token, fetchImpl, signal });
+      if (current.type !== "file" || current.encoding !== "base64" || current.sha !== op.sha
+        || typeof current.content !== "string" || current.size > 1_000_000) {
+        throw new Error("github_write_conflict");
+      }
+      const currentContent = decodeBase64Utf8(current.content);
+      const patchedContent = applyUnifiedPatch(currentContent, op.patch, op.path);
+      if (patchedContent.length > 1_000_000) throw new Error("github_file_too_large");
+      path = filePath;
+      method = "PUT";
+      body = { message: op.message, content: encodeBase64Utf8(patchedContent), branch: op.branch, sha: current.sha };
     } else if (op.type === "create_issue") {
       path = "/repos/" + plan.repository + "/issues";
       body = { title: op.title, body: op.body };
@@ -353,24 +454,26 @@ export async function executeGitHubReadTool(tool, args, options = {}) {
     if (file.type !== "file" || typeof file.content !== "string" || file.encoding !== "base64") {
       throw new Error("github_not_text_file");
     }
-    if (file.size > MAX_FILE_CHARS * 4) throw new Error("github_file_too_large");
-    let decoded;
-    try {
-      decoded = atob(file.content.replace(/\n/g, ""));
-    } catch {
-      throw new Error("github_invalid_file");
-    }
-    const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
-    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (file.size > 1_000_000) throw new Error("github_file_too_large");
+    const content = decodeBase64Utf8(file.content);
     if (content.includes("\u0000")) throw new Error("github_not_text_file");
+    const lines = content.replace(/\r\n/g, "\n").split("\n");
+    const totalLines = lines.length;
+    const startLine = args.start_line == null ? 1 : validateNumber(args.start_line);
+    const endLine = args.end_line == null ? Math.min(totalLines, startLine + 999) : validateNumber(args.end_line);
+    if (endLine < startLine || endLine - startLine > 999 || startLine > totalLines + 1) throw new Error("invalid_input");
+    const selected = lines.slice(startLine - 1, endLine).join("\n");
     result = {
       repository,
       path: args.path,
       ref: boundedText(ref || file.target || "", 120),
       sha: boundedText(file.sha, 100),
       url: safeUrl(file.html_url),
-      truncated: content.length > MAX_FILE_CHARS,
-      content: content.slice(0, MAX_FILE_CHARS),
+      totalLines,
+      startLine,
+      endLine: Math.min(endLine, totalLines),
+      truncated: selected.length > MAX_FILE_CHARS || endLine < totalLines,
+      content: selected.slice(0, MAX_FILE_CHARS),
     };
   }
   if (JSON.stringify(result).length > MAX_RESULT_CHARS) throw new Error("github_result_too_large");

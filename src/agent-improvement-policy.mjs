@@ -1,30 +1,80 @@
-export const IMPROVEMENT_AUTOMATION_LIMITS = Object.freeze({
-  maxModelCallsPerTask: 5,
-});
+const TARGET_REPOSITORY = "Akatuki1121/Akatuki-Knowledge";
+const ALLOWED_FILE_ROOTS = Object.freeze([
+  "src/",
+  "scripts/",
+  "tests/",
+  "docs/",
+  "schema-snapshots/",
+  "migrations/pending/",
+]);
+const ALLOWED_ROOT_FILES = new Set(["wrangler.toml", "package.json", "package-lock.json", "README.md"]);
+const PROTECTED_WORKFLOWS = new Set([
+  ".github/workflows/auto-merge.yml",
+  ".github/workflows/check.yml",
+  ".github/workflows/deploy.yml",
+]);
+const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "apply_patch", "create_pull_request"]);
 
-const ALLOWED_SOURCE_ROOTS = Object.freeze(["src/", "scripts/", "docs/"]);
-const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "create_pull_request"]);
+function hasExplicitReadOnlyWorkflowPermissions(content) {
+  const lines = content.split(/\r?\n/u);
+  const index = lines.findIndex((line) => /^permissions:\s*(?:read-all|\{\})?\s*(?:#.*)?$/u.test(line));
+  if (index < 0) return false;
+  const declaration = lines[index].replace(/^permissions:\s*/u, "").trim();
+  if (declaration === "read-all" || declaration === "{}") return true;
+  let entries = 0;
+  for (let lineIndex = index + 1; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
+    if (!line.trim()) continue;
+    if (!/^\s{2,}/u.test(line)) break;
+    if (!/^\s{2,}[A-Za-z0-9_-]+:\s*read\s*(?:#.*)?$/u.test(line)) return false;
+    entries++;
+  }
+  return entries > 0;
+}
+
+function validRepositoryPath(path, operationType, content) {
+  if (typeof path !== "string" || !path || path.length > 240
+    || path.startsWith("/") || path.includes("\\")
+    || path.split("/").some((part) => part === ".." || part === "." || part === "")) return false;
+  if (ALLOWED_FILE_ROOTS.some((root) => path.startsWith(root))) return true;
+  if (ALLOWED_ROOT_FILES.has(path)) return operationType === "update_file" || operationType === "apply_patch";
+  if (path.startsWith(".github/workflows/")) {
+    return operationType === "create_file" && !PROTECTED_WORKFLOWS.has(path)
+      && /^[a-z0-9][a-z0-9._-]*\.ya?ml$/iu.test(path.slice(".github/workflows/".length))
+      && typeof content === "string"
+      && hasExplicitReadOnlyWorkflowPermissions(content)
+      && !/(?:pull_request_target|workflow_run|secrets\.|write-all|[A-Za-z0-9_-]+:\s*write)/iu.test(content);
+  }
+  return false;
+}
 
 export function validateImprovementPlan(plan) {
-  if (!plan || !Array.isArray(plan.operations) || plan.operations.length < 3) {
+  if (!plan || plan.repository !== TARGET_REPOSITORY
+    || !Array.isArray(plan.operations) || plan.operations.length < 3) {
     return { ok: false, reason: "plan_shape_not_allowed" };
   }
   if (plan.operations.some((operation) => !ALLOWED_OPERATION_TYPES.has(operation?.type))) {
     return { ok: false, reason: "operation_type_not_allowed" };
   }
+
   const fileOperations = plan.operations.filter((operation) =>
-    operation.type === "create_file" || operation.type === "update_file");
+    operation.type === "create_file" || operation.type === "update_file" || operation.type === "apply_patch");
   if (fileOperations.length === 0) return { ok: false, reason: "no_file_changes" };
   for (const operation of fileOperations) {
-    const path = operation.path;
-    if (typeof path !== "string"
-      || !ALLOWED_SOURCE_ROOTS.some((root) => path.startsWith(root))
-      || path.startsWith(".github/")
-      || path.startsWith("migrations/")
-      || path.split("/").some((part) => part === ".." || part === "." || part === "")) {
+    if (!validRepositoryPath(operation.path, operation.type, operation.type === "apply_patch" ? operation.patch : operation.content)) {
       return { ok: false, reason: "changed_path_out_of_scope" };
     }
+    if ((operation.type === "update_file" || operation.type === "apply_patch")
+      && (typeof operation.sha !== "string" || !/^[a-f0-9]{40}$/iu.test(operation.sha))) {
+      return { ok: false, reason: "existing_file_sha_required" };
+    }
+    const filePayload = operation.type === "apply_patch" ? operation.patch : operation.content;
+    const maxFilePayload = operation.type === "apply_patch" ? 100_000 : 200_000;
+    if (typeof filePayload !== "string" || filePayload.length > maxFilePayload) {
+      return { ok: false, reason: "file_content_invalid_or_too_large" };
+    }
   }
+
   const branches = plan.operations.filter((operation) => operation.type === "create_branch");
   const pullRequests = plan.operations.filter((operation) => operation.type === "create_pull_request");
   if (branches.length !== 1 || pullRequests.length !== 1
@@ -32,9 +82,16 @@ export function validateImprovementPlan(plan) {
     || plan.operations.at(-1)?.type !== "create_pull_request") {
     return { ok: false, reason: "branch_and_pull_request_required" };
   }
+
   const branch = branches[0].branch;
-  if (fileOperations.some((operation) => operation.branch !== branch)
-    || pullRequests[0].head !== branch || pullRequests[0].draft !== false) {
+  if (typeof branch !== "string" || !/^agent\/[a-z0-9][a-z0-9._/-]{0,80}$/iu.test(branch)
+    || branch.includes("..") || branch.includes("//") || branch.endsWith("/")) {
+    return { ok: false, reason: "branch_name_invalid" };
+  }
+  if (branches[0].base_ref !== "main"
+    || fileOperations.some((operation) => operation.branch !== branch)
+    || pullRequests[0].head !== branch || pullRequests[0].base !== "main"
+    || pullRequests[0].draft !== false) {
     return { ok: false, reason: "branch_mismatch_or_draft_pr" };
   }
   return { ok: true };

@@ -2,6 +2,7 @@ from pathlib import Path
 import re
 import sqlite3
 import textwrap
+from datetime import datetime, timedelta
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "background-task-store.mjs"
@@ -49,9 +50,9 @@ enqueue_statements = [
 assert len(enqueue_statements) == 7, f"Expected all seven admission-batch statements, found {len(enqueue_statements)}"
 def enqueue(day, task_id):
     now = day + " 12:00:00"
-    deadline = "2099-01-01 00:00:00"
+    deadline = (datetime.strptime(day, "%Y-%m-%d") + timedelta(hours=20)).strftime("%Y-%m-%d %H:%M:%S")
     params = [
-        (task_id, None, "test", "{}", 4, 20, 40000, now, now, deadline, now, None, None, now),
+        (task_id, None, "test", "{}", 4, 9_007_199_254_740_991, 9_007_199_254_740_991, now, now, deadline, now, None, None, now),
         (day, now),
         (day, task_id, day),
         (task_id, day, day),
@@ -65,12 +66,16 @@ def enqueue(day, task_id):
         "SELECT status, budget_reserved FROM agent_tasks WHERE task_id = ?", (task_id,)
     ).fetchone()
     if row and row[1] != 1 and row[0] == "queued":
+        next_day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1))
+        retry_at = next_day.replace(hour=0, minute=1, second=0).strftime("%Y-%m-%d %H:%M:%S")
+        next_deadline = next_day.replace(hour=1, minute=1, second=0).strftime("%Y-%m-%d %H:%M:%S")
         connection.execute(
-            """UPDATE agent_tasks SET status = 'failed',
-                stop_reason = 'daily_workflow_budget_exhausted',
-                completed_at = ?, updated_at = ?
-            WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'""",
-            (now, now, task_id),
+            """UPDATE agent_tasks
+               SET next_attempt_at = ?,
+                   deadline_at = CASE WHEN deadline_at < ? THEN ? ELSE deadline_at END,
+                   updated_at = ?
+               WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'""",
+            (retry_at, next_deadline, next_deadline, now, task_id),
         )
     return connection.execute(
         "SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = ?", (task_id,)
@@ -93,15 +98,21 @@ connection.execute(
     "INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at) VALUES (?, ?, ?, ?)",
     ("2026-10-22", 84, 2688, "2026-10-22 00:00:00"),
 )
-assert enqueue("2026-10-22", "over-step-budget") == ("failed", 0, "daily_workflow_budget_exhausted")
+assert enqueue("2026-10-22", "over-step-budget") == ("queued", 0, None)
 reservation = connection.execute(
     "SELECT counted FROM agent_task_budget_reservations WHERE task_id = ?", ("over-step-budget",)
 ).fetchone()
-assert reservation is None, f"Capacity rejection must not create a reservation: {reservation}"
+deferred = connection.execute(
+    "SELECT next_attempt_at, deadline_at FROM agent_tasks WHERE task_id = ?", ("over-step-budget",)
+).fetchone()
+assert deferred == ("2026-10-23 00:01:00", "2026-10-23 01:01:00"), (
+    f"Workflow capacity exhaustion must defer, not fail, the task: {deferred}"
+)
+assert reservation is None, f"Deferred task must not reserve unavailable Workflow steps: {reservation}"
 counters = connection.execute(
     "SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?",
     ("2026-10-22",),
 ).fetchone()
-assert counters == (84, 2688), f"Rejected task must not increase daily counters: {counters}"
+assert counters == (84, 2688), f"Deferred task must not increase daily counters: {counters}"
 
-print("Background task store SQL compilation and Cloudflare Free step-budget admission tests passed.")
+print("Background task store SQL compilation and Cloudflare Free step-budget queue deferral tests passed.")

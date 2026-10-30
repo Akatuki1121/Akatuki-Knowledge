@@ -1,26 +1,20 @@
 # Cloudflare予算管理・自己監査ロードマップ
 
 確認日: 2026-10-30  
-対象: Akatuki Knowledge Worker / D1 / Durable Objects / Workflows と YAOS  
-前提: Akatuki Knowledge と YAOS は同じ Cloudflare アカウントの無料枠を共有する。
+対象: Akatuki-Knowledge Worker / D1 / Durable Objects / Workflows と YAOS  
+前提: Akatuki-KnowledgeとYAOSは同じCloudflareアカウントのFree quotaを共有する。
 
-## 1. 調査結果
+## 現在の結論
 
-### 固定件数制限の定義箇所
+Workers AIについて、Cloudflare FreeのNeurons枠を超えるアプリ独自の停止条件は撤去した。Cloudflareアカウント全体の10,000 Neurons/UTC日が唯一の利用枠であり、Workers AI利用台帳は観測専用である。タスク単位のmodel call数・token数上限、改善タスク固有のAI呼び出し数上限、1回1,024 output token制限も撤去し、GLM-4.7-Flashのコンテキスト上限に合わせた。
 
-| 制限 | 旧定義 | 現在 |
-|---|---|---|
-| 改善タスク | `src/agent-improvement-policy.mjs` の1日3件 | PR #174 で撤廃 |
-| 改善タスク日次カウンター | `src/index.js` の `reserveImprovementTaskSlot` / `app_meta` | PR #174 で撤廃 |
-| バックグラウンドタスク | `migrations/0011_agent_tasks.sql` の1日60件 | PR #174 の `0017` でDB制約を撤去 |
-| Workflow予約 | 1件32 steps、旧2,000 steps/日 | PR #174 で2,700 steps/日に変更。32 steps/件の固定予約は残存 |
-| Workers AI | PR #174 で8,000 Neurons/日を予約上限に設定 | 継続。無料枠10,000の80% |
+CloudflareがWorkers AIのquota exhaustionを返した場合、タスクをwaitingにし、次のUTC 00:00以降にWorkflow recoveryで再開する。リセット直後も拒否が続く場合は1時間ごとに再確認し、利用可能になり次第再開する。Neurons台帳が未作成・未適用・書き込み失敗でもAI呼び出しを止めない。Cloudflareの実際のquotaを超えて無料利用できるわけではなく、課金を有効にする変更でもない。
 
-PR #174 は3件・60件という固定件数の足かせを外したが、Cloudflareアカウント全体の実消費量を見て全資源を制御する完成形ではない。現在の2,700 steps/日は実際のWorkflow step数ではなく、タスクごとに32 stepsを予約する保守的なアプリ内予算である。Workers AIの8,000 Neuronsもコード内の固定値で、他Workerの消費量を自動取得していない。
+Workers AI以外のCloudflare資源は別枠で管理する。特にWorkflowsはFreeの3,000 steps/dayに対し、1タスク32 steps・日次2,700 reserved stepsの受付ゲートを維持する。これはAI利用上限ではなく、他のCloudflare workload用に300 stepsを残す設計。実消費量の精算とCloudflare全体利用量の帰属は今後の改善余地として残す。
 
-### Cloudflare GraphQL Analytics（2026-10-23〜2026-10-29）
+## 1. 以前の調査結果と注意点
 
-2026-10-30に接続済みCloudflareアカウントのGraphQL Analyticsを読み取り、7日分を集計した。Workers・D1・DOはアカウント全体、WorkflowsはAkatuki KnowledgeのWorkflow名で絞り込んだ。D1はアカウント内の全データベース、DOはAkatuki KnowledgeとYAOSを含む。
+2026-10-23〜2026-10-29のGraphQL Analyticsを2026-10-30に取得した。Workers・D1・DOはアカウント全体、WorkflowsはAkatuki-KnowledgeのWorkflow名で集計した。D1はアカウント内全データベース、DOはAkatuki-KnowledgeとYAOSを含む。
 
 | UTC日付 | Workers requests | D1 rows read / written | DO requests | Workflow starts | Workers AI Neurons |
 |---|---:|---:|---:|---:|---:|
@@ -28,27 +22,27 @@ PR #174 は3件・60件という固定件数の足かせを外したが、Cloudf
 | 10/24 | 190 | 145,904 / 1,572 | 672 | 13 | 0 |
 | 10/25 | 444 | 373,551 / 9,300 | 1,986 | 7 | 1,276.25 |
 | 10/26 | 141 | 16,870 / 12 | 246 | 0 | 0 |
-| 10/27 | 251 | 27,991 / 1,002 | 739 | 0 | 0 |
-| 10/28 | 1,207 | 1,020,033 / 8,172 | 4,015 | 0 | 0 |
-| 10/29 | 838 | 275,241 / 5,513 | 3,733 | 2 | 0* |
+| 10/27 | 251 | 27,991 / 1,002 | 1,148 | 0 | 0 |
+| 10/28 | 284 | 34,112 / 1,338 | 1,406 | 0 | 0 |
+| 10/29 | 303 | 43,800 / 1,501 | 1,941 | 0 | 0 |
 
-`Workflow starts` は `WORKFLOW_START` の件数。step数は状態別イベントが同じ実行を重複して表すため、この表では合算していない。DO requests は `akatuki-knowledge` と `yaos` の合計。Workers・D1・DOのアカウント内他サービスの利用も含む。
+この観測では、D1 readが最大でも1.02M/5M（20.4%）、D1 writeは無料枠の9.3%、DO requestsは4.0%、Workers requestsは1.2%だった。Workers AIは10/25に451件・1,276.25 Neurons、10/29に6件・errorCode 5028・0 Neuronsを観測した。requestSourceはunknown、tagは空であり、Akatuki-Knowledge由来とは特定できない。これらをAkatuki単体の実績と誤認しない。
 
-観測期間中の最大値を無料枠と比較すると、Workers requests は1,207/100,000（約1.2%）、D1 rows read は1,020,033/5,000,000（約20.4%）、D1 rows written は9,300/100,000（約9.3%）、DO requests は4,015/100,000（約4.0%）、Workflow starts は13/100,000（約0.013%）。この期間では、Workers/D1/DO/Workflowのアカウント全体使用量は無料枠に対して余裕があった。D1 read が相対的に最も高く、将来も無視してよいとは言えない。
+DOのGraphQL wallTimeはDO durationのGB-sと同じ指標ではない。Workers AI Neuronsも呼び出し元への帰属ができない。Cloudflare GraphQL Analyticsのread-only Account tokenはWorkerに接続されていないため、現時点の自己監査はD1に保存されたタスク・予約・Workers AI telemetryを中心に行う。
 
-Workers AIは10/25に451件・1,276.25 Neurons（入力75,606 tokens、出力8,976 tokens）が観測された。モデルは `@cf/meta/llama-3.1-8b-instruct-fp8`。10/29は6件、モデル `@cf/meta/llama-3.1-8b-instruct`、errorCode 5028、Neurons 0。いずれもGraphQLの `requestSource` は `unknown`、`tag` は空で、Akatuki Knowledge由来かを特定できなかった。したがってこの数値をAkatukiのAI実績として扱わず、アカウント全体の観測値として記録する。10/29の6件は失敗応答の可能性があるが、Neurons 0だけで消費ゼロとは断定しない。
+## 2. 現行のCloudflare Free枠
 
-DOのGraphQL `wallTime` はDO durationのGB-sと同じ指標ではないため、13,000 GB-s/日の利用率はこの調査では算出していない。Workers AIのNeuronsもモデル・呼び出し元の帰属ができず、7日間の実績から改善タスク1件あたりの消費分布を確定することはできなかった。直近20件のp90推定へ切り替えるには、タスク単位の実測台帳を先に整える必要がある。
+2026-10-30に公式Docsを確認。
 
-### 公式無料枠（2026-10-30に公式Docsで再確認）
+| サービス | Free枠 |
+|---|---:|
+| Workers | 100,000 requests/day（Workflows executionと共有） |
+| D1 | 5,000,000 rows read/day、100,000 rows written/day |
+| Durable Objects | 100,000 requests/day、13,000 GB-s/day |
+| Workers AI | 10,000 Neurons/day |
+| Workflows | 100,000 executions/day（Workers requestsと共有）、3,000 steps/day |
 
-- Workers: 100,000 requests/日（Workflowsの実行数と共有）
-- D1: 5,000,000 rows read/日、100,000 rows written/日
-- Durable Objects: 100,000 requests/日、13,000 GB-s/日
-- Workers AI: 10,000 Neurons/日、UTC 00:00リセット
-- Workflows: 100,000 executions/日（Workers requestsと共有）、3,000 steps/日
-
-参照:
+公式資料:
 - https://developers.cloudflare.com/workers/platform/limits/
 - https://developers.cloudflare.com/workers/platform/pricing/
 - https://developers.cloudflare.com/durable-objects/platform/pricing/
@@ -57,67 +51,76 @@ DOのGraphQL `wallTime` はDO durationのGB-sと同じ指標ではないため�
 - https://developers.cloudflare.com/workers-ai/platform/pricing/
 - https://developers.cloudflare.com/d1/observability/metrics-analytics/
 
-### 本番反映とD1スキーマの不一致（2026-10-30確認）
+## 3. Workers AIのアプリ独自制限撤去
 
-PR #174のマージ後、GitHub Actionsの本番Deploy workflow（run `41015689299`）は成功し、Workerコードはmain commit `cd4a9f5` で本番デプロイ済み。一方、本番D1を読み取り確認した結果、migration ledgerの最新は `0015_yaos_file_identity_map.sql`（id 15）のままで、次の状態だった。
+撤去した制限:
+- 8,000 Neurons/dayのアプリ側予約ゲート（Cloudflare Free枠の80%）。
+- 通常タスク20回・改善タスク5回などのmodel call count上限。
+- 通常タスク40,000・改善タスク12,000などのtask AI token上限。
+- 改善タスクの1回1,024 output token制限。
+- 改善依頼の固定件数上限。
 
-- `agent_task_daily_budget` の本番CHECK制約は依然 `tasks_reserved BETWEEN 0 AND 60` / `workflow_steps_reserved BETWEEN 0 AND 2000`。
-- `workers_ai_daily_usage` テーブルは存在しない。
-- したがってPR #174のWorkerコードと本番D1スキーマは不一致。現在のWorkerはAI呼び出し前にNeurons台帳を予約するため、テーブル不在時はAI呼び出しがD1エラーで止まる。バックグラウンドタスクの60件/2,000 steps制約も本番DBに残っている。
+現行の動作:
+- workers_ai_daily_usageはbest-effort telemetry。Neurons推定値とprovider usageを記録するが、予約失敗・テーブル不在・DB書き込み失敗でAIを拒否しない。
+- provider usageが返れば実績を記録。応答なしの失敗は入力token推定分のみを計上し、出力token分を請求したことにしない。usageなし成功は過少計上を避けるため予約を残す。
+- AIの最大出力はモデルの仕様上限と残りコンテキストに従う。これはCloudflareのFree quotaとは別のモデル制約。
+- CloudflareのNeurons quota exhaustionを分類し、UTC 00:01まで待機して自動再開する。Cloudflareのerror code 3036（daily free allocation of 10,000 neurons exceeded）を日次枠到達として分類し、quota待ちは通常の失敗試行を消費しない。アプリ台帳の推定誤差や他Workerの使用量を根拠に、早期に止めない。
+- Cloudflare側で無料枠超過が拒否された場合は待機する。課金・有料枠を有効化する動作はしない。
 
-これは未解消の本番互換性問題。今回のPRではmigration `0016`〜`0018` を `migrations/pending/` に置き、今後の自動デプロイをmigration適用まで停止させる。**本番D1への適用・Worker再デプロイはこのPRでは行わない。** オーナー承認のある別作業として、0016→0017→0018を適用し、ledgerとschemaを照合する必要がある。
+## 4. 別資源の受付制御
 
-## 2. 根本原因と失敗時の修正
+Workflows Free枠は3,000 steps/day。現行は1タスク32 stepsを予約し、2,700 steps/dayまで受付する。300 stepsは他用途・予測誤差の余白として残す。これはWorkflow実行量の厳密な予測ではなく、固定予約による受付ゲートである。タスク件数の固定上限ではない。
 
-根本原因は、Cloudflareのアカウント共有クォータを測らず、アプリ内で改善タスク3件/日・全体60件/日という固定件数を先に消費していたこと。失敗実行もその枠を消費し、改善ノートの内容が変わっても既存の失敗記録・seen記録が再実行を妨げる経路があった。
+通常タスクのclaim/retry、改善タスクの通常最大4実試行・最大8時間、lease、idempotencyはタスクの回復・重複実行・無限retryを防ぐライフサイクル制約であり、Workers AI利用量の独自上限とは区別する。Workers AIの日次quota待ちはattemptを消費せず、deadlineを次回実行可能時刻+1時間まで延長する。将来、実際のWorkflow stepsと失敗時の未使用分を精算できれば、予約見積もりを実消費に近づける。
 
-PR #174 で3件・60件の件数上限は撤去済み。今回の失敗精算PRでは次を修正する。
+D1 rows read/write、Workers requests、DO requests/GB-s、Workflow executionsなどはCloudflare側のFree quotaが最終ゲート。GraphQL Analyticsの全アカウント集計とWorker固有の計測を混ぜない。
 
-- Workers AI成功時は、usageが返る場合に予約を実トークンから計算したNeuronsへ精算する。
-- 応答なしの失敗時は、入力トークン推定分だけを実消費として計上し、出力予約分を戻す。失敗呼び出し数も別カウンターに記録する。
-- usageが返らない成功応答は過少計上を避け、予約を残す。
-- タスク別トークン予算も、成功時はprovider usage、応答なしの失敗時は入力推定分へ精算する。AI呼び出し回数は返金しない（実際に試行した回数だから）。
-- 改善タスクの一時障害は最大3回再試行（初回を含む合計最大4試行）、待機は1時間→3時間→3時間、最大経過時間8時間。AI呼び出し最大5回にはWorkflow stepの再試行も含める。
-- 失敗・キャンセルした依頼は、同じ本文のまま再投入しない。内容が変更されれば新しいcontent hash/idempotency keyとなり、再実行対象になる。
-- 恒久エラーは自動再試行しない。予算待ち状態の導入は次段階で扱う。
+## 5. 定期自己監査と改善実装
 
-## 3. 段階移行ロードマップ
+日次Cron（UTC 23:55）がbudget self-auditを実行する。対象はD1 task status、error class、Workflow予約steps、Workers AI telemetry。監査結果はapp_metaのUTC日単位キーで冪等保存する。
 
-| 段階 | 内容 | 状態 |
-|---|---|---|
-| (1) 調査 | 固定上限の定義箇所、7日GraphQL実績、AI計測の帰属可能性を確認 | 完了 |
-| (3) 失敗精算 | 失敗時のNeurons・タスクtoken精算、改善タスク再試行の修正 | このPR |
-| (2) 影子運用 | 資源別日次台帳、タスク試行記録、自前集計、GraphQL照合、予算判定の影子記録 | 次の独立PR |
-| (4) 新方式へ切替 | feature flag付きで実消費予算ゲートへ切替、巻き戻し経路を検証 | (2)の観測後 |
-| (5) 全体制御 | Workers/D1/DO/Workflows/YAOS共有資源のBG配分、時間あたり制御、`/api/budget`、予算待ち表示 | (4)の後 |
-| (6) 旧定数削除 | 1〜2週間の安定運用後、旧予約値・互換コードを削除 | 最後 |
+毎日Notes/改善/に自己監査ノートを作る。ノートはorigin: budget-audit、audit_generated: trueを持ち、通常の改善ノート起票・実装経路に渡る。自己監査の再帰起動は行わない。日次監査が同じ日に複数回ノートを作らない。
 
-影子運用では判定を記録するだけで、従来の動作を止めない。資源台帳はUTC日付×資源単位とし、自己集計とGraphQLアカウント実績を分けて保存する。GraphQLが3時間以上古い場合は節約側へ倒す。D1は `meta.rows_read/rows_written`、Workers AIはusage tokenとモデル単価、Workflowsは実行・step、DO/YAOSはbinding呼び出しとGraphQL値を記録する。GraphQLのアカウント全体値からBG実績を差し引き、前景確保量を算出する。
+改善エージェントはリポジトリ全体のコード・テスト・CI・migration・Wrangler設定を読み、根拠に基づいて必要な修正を計画する。許可された変更はPRにまとめ、関連する実装・テスト・pending migration・ドキュメントを分割して先送りしない。必要な変更がなければ無意味なPRを作らず、理由を記録する。
 
-### オーナー判断待ち・接続待ち
+実装可能範囲:
+- src/、scripts/、tests/、docs/、schema-snapshots/。
+- migrations/pending/への新規SQL。
+- wrangler.toml、package.json、package-lock.json、README.mdの既存ファイル更新。
+- 安全条件を満たす新規GitHub Actions workflowファイル（read-only権限のみ）。既存のauto-merge.yml、check.yml、deploy.ymlは保護する。
+- branch作成、ファイル作成・更新・unified diff適用、PR作成。
 
-- 暫定保険上限「15件/日＋3件/時」は未決定。実装しない。
-- GraphQL Analyticsの読み取り専用APIトークンはWorker用に未接続。オーナーが発行するまでは自前集計だけで影子運用し、GraphQL欠落時は安全側へ倒す。
-- Workers AI安全上限はPR #174で10,000の80%＝8,000 Neurons/日として導入済み。これは現行実装値であり、今後の配分設計で無断変更しない。
+実行禁止:
+- mainへの直接push、PR mergeの直接実行、release、deploy、本番migration適用、ファイル削除、権限変更。
+- protected workflowの変更。
+- write権限やsecrets参照を持つ自己生成workflow。
 
-## 4. 自己監査（段階(2)〜(4)完了後の別PR）
+## 6. Purge方式のsquash auto-merge
 
-自己監査は実装タスクとは別の低優先度タスクとし、同じ予算台帳・予算ゲートを使う。余剰予算があるときだけ動かし、実装タスクの枠を奪わない。
+.github/workflows/auto-merge.ymlはPurgeの設計を踏襲する。pull_request_targetでopened / reopened / ready_for_review / synchronizeを受け、Draftを除外し、PR作成者とイベント実行者を検証する。Dependabotはfetch-metadataのsemver update typeを確認し、既知のpatch/minor/majorだけ自動マージ対象とする。
 
-監査対象:
-- 日次台帳、タスク試行記録、失敗分類、見積もりと実績の乖離
-- 同じエラーの繰り返し、失敗の偏り、急な消費ペース上昇
-- 予算推移からの枯渇予測、GraphQLと自前集計の差
+自動マージはgh pr merge --auto --squashで要求し、必須status checksが成功するまでGitHubに待機させる。自己改善executorはGitHub GraphQL enablePullRequestAutoMerge(SQUASH)を呼ぶ。AI自身の自己評価をマージ許可の根拠にしない。branch protection / required checksが最終判定を行い、必須チェックを迂回しない。
 
-出力:
-- 短い監査報告は既存のagent task結果・checkpointを使い、認証済み `GET /api/agent-tasks` から読めるようにする。Vaultに状態ノートを常設しない。
-- 必要な場合だけ `Notes/改善/` に改善要望ノートを作る。監査起点であることをfrontmatter/本文に `origin: budget-audit` と `audit_generated: true` で明示し、オーナー起点の要望と区別する。実装は既存の改善タスク経路のみで行い、監査タスク自身はコード変更・ブランチ作成・PR作成をしない。
+## 7. Production rollout / 未完了事項
 
-暴走防止の提案値（実装PRで再確認）:
-- 監査タスクは最大2回/日。
-- 1回あたり最大300 Neurons。
-- 監査発の改善要望ノートは最大1件/日、未解決の監査発ノートは最大3件。
-- 監査タスクから監査タスクを起票する経路を持たせない。監査出力・監査発ノートを監査入力として再帰的に起動しない。
-- 監査起点の提案から作られるPRはオーナーのレビュー・マージ判断を残し、自動マージしない。
+- PR CIでnpm run check、Agent domain tests、Worker dry-run build、pending migration validationを実行する。
+- migrations/pending/にSQLが残っている間、deploy workflowはproduction deploymentを停止する。
+- production D1のmigration ledger/schemaがmainのmigration chainと一致することを別途照合する。
+- migration適用とWorker deployは、オーナーによるレビュー・承認を経て別手順で実行する。
+- GraphQL Analyticsのread-only tokenは未接続。D1 telemetryはCloudflareアカウント全体の完全な使用量計測ではない。
+- Workflow固定32-step予約は実消費量ではない。実消費量計測・予約精算は将来の改善候補として残す。
+- AI quota exhaustionのCloudflare provider error表現が変わった場合は、分類テストと自動再開判定を更新する。
 
-自己監査の実装は、予算の影子運用と新方式切替（段階(2)〜(4)）の完了後、別PRで行う。今回の先行PRには監査実行コードを含めない。
+## 8. 実装ブランチで追加した運用上の要件
+
+- 日次監査はUTC 23:55に毎日実行し、異常の有無にかかわらず自己監査ノートを1日1件作成する。定量メトリクスの警告と、コード・CI・migration・quota・回復経路のリポジトリ監査を同じノートで扱う。
+- 監査レポートは認証済みGET /api/budget-auditから取得できる。D1のworkers_ai_daily_usageが未適用でもAI処理は止めず、レポート上でtelemetry unavailableとして扱う。
+- 改善Inboxはupdated_at/idのkeyset cursorで30ノートずつ走査する。30件を超えるバックログも次回以降に巡回し、先頭30件だけを繰り返すstarvationを防ぐ。
+- Workflow日次予約2,700 stepsを使い切った場合、新しいタスクをfailedにせずqueuedとして保存する。next_attempt_atを翌UTC日00:01にし、deadlineも延長する。15分ごとのrecovery Cronが翌日の空き枠を予約してWorkflowを起動する。既存のdaily_workflow_budget_exhausted terminal rowも再キューできる。
+- Workers AIのmodel call count・tool call countにアプリ独自の上限を置かない。モデルcontext window、Cloudflare Workflow/D1の実クォータ、重複tool call検出、payloadサイズは実行環境と安全性の制約として残す。
+- 大きな既存ファイルを編集できるよう、github_read_fileはstart_line/end_lineによる行範囲読み取りをサポートする。apply_patchはblob SHAを照合した後にunified diffを適用し、巨大なsrc/index.jsを全量再生成しない。計画全体は最大500,000文字、1ファイル本文200,000文字、差分100,000文字。操作件数の固定上限は設けない。
+- .github/workflows/auto-merge.ymlはPurgeと同じpull_request_target + gh pr merge --auto --squash方式。Dependabotの既知semver更新と、作成者/イベント実行者がともにAkatuki1121である非Draft PRだけを対象にする。自己改善PRはexecutor側でもGraphQL auto-mergeを要求し、GitHub必須チェックとBranch Protectionを迂回しない。
+- 自己改善エージェントが変更できるのはsrc、scripts、tests、docs、schema-snapshots、migrations/pending、および明示許可したroot config。既存のauto-merge.yml/check.yml/deploy.ymlは保護し、新規workflowもread-only権限以外は禁止する。
+- 本番D1 migration 0016〜0018の適用・照合とWorker deployは別途オーナー承認が必要。pending migrationが残る間はDeploy workflowが本番deployを停止する。Workflow予約コードと本番D1の2000-step CHECK制約不一致は、0017適用まで残る既知の制約。
+
+UTC日跨ぎの通常再試行も同じ扱いにし、現在のWorkflow runを終了して翌日のWorkflow stepsを再予約する。

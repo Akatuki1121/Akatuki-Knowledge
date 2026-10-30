@@ -7,10 +7,6 @@ const base = {
   deadlineAtMs: 3_600_000,
   attempts: 1,
   maxAttempts: 4,
-  aiCallsUsed: 1,
-  maxAiCalls: 20,
-  aiTokensUsed: 100,
-  maxAiTokens: 40_000,
   errorClass: "network_error",
   retryable: true,
 };
@@ -22,6 +18,18 @@ assert.equal(first.delayMs, 30_000);
 assert.equal(first.retryAtMs, 40_000);
 
 const second = decideTaskRetry({ ...base, attempts: 2 });
+const dailyQuota = decideTaskRetry({ ...base, nowMs: Date.parse("2026-10-30T12:00:00.000Z"), deadlineAtMs: Date.parse("2026-10-30T13:00:00.000Z"), errorClass: "workers_ai_daily_quota_exhausted", retryable: true });
+assert.equal(dailyQuota.action, "retry");
+assert.equal(dailyQuota.retryAtMs, Date.parse("2026-10-31T00:01:00.000Z"));
+const quotaRetryAfterReset = decideTaskRetry({
+  ...base,
+  nowMs: Date.parse("2026-10-31T00:01:00.000Z"),
+  deadlineAtMs: Date.parse("2026-10-31T01:01:00.000Z"),
+  errorClass: "workers_ai_daily_quota_exhausted",
+  previousErrorClass: "workers_ai_daily_quota_exhausted",
+  retryable: true,
+});
+assert.equal(quotaRetryAfterReset.retryAtMs, Date.parse("2026-10-31T01:01:00.000Z"));
 assert.equal(second.delayMs, 60_000);
 const capped = decideTaskRetry({ ...base, attempts: 4, maxAttempts: 99 });
 assert.equal(capped.action, "stop");
@@ -38,7 +46,6 @@ for (const errorClass of [
   "unknown_tool",
   "tool_loop_detected",
   "tool_budget_exhausted",
-  "model_call_budget_exhausted",
   "tool_output_too_large",
   "web_research_not_enabled",
   "web_research_budget_exhausted",
@@ -46,7 +53,6 @@ for (const errorClass of [
   "web_research_sources_missing",
   "web_research_invalid_response",
   "web_research_provider_error",
-  "ai_token_budget_exhausted",
 ]) {
   const decision = decideTaskRetry({ ...base, errorClass });
   assert.equal(decision.action, "stop", errorClass);
@@ -66,30 +72,16 @@ assert.equal(
   "task_deadline_exceeded",
 );
 assert.equal(
-  decideTaskRetry({ ...base, aiCallsUsed: 20 }).stopReason,
-  "ai_call_budget_exhausted",
-);
-assert.equal(
-  decideTaskRetry({ ...base, aiTokensUsed: 40_000 }).stopReason,
-  "ai_token_budget_exhausted",
-);
-assert.equal(
   decideTaskRetry({ ...base, deadlineAtMs: 20_000 }).stopReason,
   "retry_would_exceed_task_deadline",
 );
 
-// Persisted row values cannot raise the hard ceilings.
+// AI call/token counters are telemetry only and cannot stop a task.
+assert.equal(decideTaskRetry({ ...base, aiCallsUsed: 1_000_000, aiTokensUsed: 9_000_000_000 }).action, "retry");
+// Persisted row values cannot raise the retry-attempt ceiling.
 assert.equal(
   decideTaskRetry({ ...base, attempts: 4, maxAttempts: 1_000 }).stopReason,
   "attempt_budget_exhausted",
-);
-assert.equal(
-  decideTaskRetry({ ...base, aiCallsUsed: 20, maxAiCalls: 1_000 }).stopReason,
-  "ai_call_budget_exhausted",
-);
-assert.equal(
-  decideTaskRetry({ ...base, aiTokensUsed: 40_000, maxAiTokens: 1_000_000 }).stopReason,
-  "ai_token_budget_exhausted",
 );
 const deadlineClamped = decideTaskRetry({
   ...base,
@@ -134,9 +126,8 @@ for (const fixed of [
   "web_research_sources_missing",
   "web_research_invalid_response",
   "web_research_provider_error",
-  "model_call_budget_exhausted",
   "tool_output_too_large",
-  "ai_token_budget_exhausted",
+  "workers_ai_daily_quota_exhausted",
 ]) {
   assert.equal(classifyAgentTaskError(new Error("failed: " + fixed)), fixed, fixed);
 }
@@ -144,10 +135,12 @@ for (const fixed of [
 // position inside the message) decides between multiple fixed classes.
 assert.equal(classifyAgentTaskError(new Error("credentials_detected (HTTP 429)")), "credentials_detected");
 assert.equal(
-  classifyAgentTaskError(new Error("ai_token_budget_exhausted then credentials_detected")),
+  classifyAgentTaskError(new Error("rate_limited then credentials_detected")),
   "credentials_detected",
 );
 // Regex classes, in evaluation order.
+assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: daily Neurons quota exhausted")), "workers_ai_daily_quota_exhausted");
+assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: WorkersAiError: account limited (code=3036)")), "workers_ai_daily_quota_exhausted");
 assert.equal(classifyAgentTaskError(new Error("HTTP 429 Too Many Requests")), "rate_limited");
 assert.equal(classifyAgentTaskError(new Error("Rate limit exceeded")), "rate_limited");
 assert.equal(classifyAgentTaskError(new Error("quota exhausted for this project")), "rate_limited");
@@ -179,8 +172,7 @@ const GUIDANCE = {
   task_deadline_exceeded: ["処理時間の上限に到達", "依頼を小さく分け、新しい /task として依頼してください。"],
   retry_would_exceed_task_deadline: ["処理時間の上限に到達するため再試行できない", "依頼を小さく分け、新しい /task として依頼してください。"],
   attempt_budget_exhausted: ["再試行回数の上限に到達", "依頼内容を絞り、新しい /task として依頼してください。"],
-  ai_call_budget_exhausted: ["AI 呼び出し上限に到達", "質問を一つに絞り、新しい /task として依頼してください。"],
-  ai_token_budget_exhausted: ["AI 利用量の上限に到達", "依頼文を短くし、対象範囲を絞って新しい /task として依頼してください。"],
+  workers_ai_daily_quota_exhausted: ["Workers AI の日次無料枠に到達", "Cloudflare の日次リセット（UTC 00:00）後に自動再開します。"],
   daily_workflow_budget_exhausted: ["本日の背景タスク上限に到達", "翌日以降に、必要な内容を絞って再依頼してください。"],
   credentials_detected: ["認証情報を検出", "認証情報を依頼文から削除してから再依頼してください。"],
   pii_masking_failed: ["個人情報を安全にマスキングできない", "個人を特定できる情報を除いてから再依頼してください。"],

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { callWorkersAi, WORKERS_AI_MODEL, WORKERS_AI_MAX_OUTPUT_TOKENS } from "../src/workers-ai-client.mjs";
 import { executeApprovedImprovementPlan } from "../src/agent-improvement-executor.mjs";
-import { validateImprovementPlan, improvementIdempotencyKey, IMPROVEMENT_AUTOMATION_LIMITS, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
+import { validateImprovementPlan, improvementIdempotencyKey, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
 import { hashGitHubWritePlan } from "../src/agent-github-tools.mjs";
 
 function createBudgetDb() {
@@ -43,7 +43,7 @@ const validPlan = () => ({
   ]
 });
 
-test("Workers AI client uses bounded tool-capable model and returns text", async () => {
+test("Workers AI client uses the model context window and returns text", async () => {
   let called;
   let usageSeen = null;
   const env = { DB: createBudgetDb(), AI: { run: async (...args) => { called = args; return {
@@ -57,9 +57,9 @@ test("Workers AI client uses bounded tool-capable model and returns text", async
   assert.equal(result, '{"action":"final","reply":"ok","source_ids":[]}');
   assert.equal(WORKERS_AI_MODEL, "@cf/zai-org/glm-4.7-flash");
   assert.equal(called[0], WORKERS_AI_MODEL);
-  assert.equal(called[1].max_tokens, 500);
+  assert.equal(called[1].max_completion_tokens, 500);
   assert.deepEqual(called[1].response_format, { type: "json_object" });
-  assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 1024);
+  assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 131072);
   assert.deepEqual(usageSeen, { prompt_tokens: 20, completion_tokens: 5 });
 });
 
@@ -128,12 +128,28 @@ test("Workers AI client truncates and redacts sanitized failure messages", async
   );
 });
 
-test("improvement plan rejects paths outside the three allowed roots", () => {
+test("improvement plan allows pending migrations and safe workflows but protects deployment controls", () => {
   const plan = validPlan();
   plan.operations[1].path = ".github/workflows/deploy.yml";
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
   plan.operations[1].path = "migrations/0014.sql";
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
+  plan.operations[1].path = "migrations/pending/0019_audit.sql";
+  assert.equal(validateImprovementPlan(plan).ok, true);
+  plan.operations[1].path = "tests/agent-improvement/new-check.mjs";
+  assert.equal(validateImprovementPlan(plan).ok, true);
+  plan.operations[1].path = ".github/workflows/audit-report.yml";
+  plan.operations[1].content = ["name: Audit", "on:", "  schedule:", "    - cron: 0 0 * * *", "permissions:", "  contents: read"].join("\n");
+  assert.equal(validateImprovementPlan(plan).ok, true);
+  plan.operations[1].content += "\n" + ["permissions:", "  contents: write"].join("\n");
+  assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
+  const patchPlan = validPlan();
+  patchPlan.operations[1] = {
+    type: "apply_patch", branch: "agent/fix-small-check", path: "src/index.js",
+    patch: "--- a/src/index.js\\n+++ b/src/index.js\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n",
+    message: "差分修正", sha: "a".repeat(40),
+  };
+  assert.equal(validateImprovementPlan(patchPlan).ok, true);
 });
 
 test("improvement request fixture uses current frontmatter-free heading format", async () => {
@@ -164,8 +180,9 @@ test("idempotency key is stable and bounded for sync UUID plus content hash", as
   assert.equal(first, await improvementIdempotencyKey("sync-uuid", hash));
   assert.notEqual(first, await improvementIdempotencyKey("other-uuid", hash));
   assert.ok(first.length <= 100);
-  assert.equal(Object.hasOwn(IMPROVEMENT_AUTOMATION_LIMITS, "maxTasksPerDay"), false);
-  assert.equal(IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask, 5);
+  const expanded = validPlan();
+  expanded.operations[1].path = "migrations/pending/0019_audit.sql";
+  assert.equal(validateImprovementPlan(expanded).ok, true);
 });
 
 test("eligible plan creates PR and enables squash auto-merge through mocked GitHub calls", async () => {
@@ -186,11 +203,36 @@ test("eligible plan creates PR and enables squash auto-merge through mocked GitH
   assert.ok(calls.some((call) => call.url.endsWith("/graphql") && call.body.variables.input.mergeMethod === "SQUASH"));
 });
 
+test("already-enabled squash auto-merge is idempotent", async () => {
+  const plan = validPlan();
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method || "GET" });
+    if (String(url).endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: "a".repeat(40) } });
+    if (String(url).endsWith("/git/refs")) return Response.json({ ref: "refs/heads/agent/fix-small-check" });
+    if (String(url).includes("/contents/src/example.mjs")) return Response.json({ content: { path: "src/example.mjs" }, commit: { sha: "b".repeat(40) } });
+    if (String(url).endsWith("/pulls") && options.method === "POST") return Response.json({ number: 43, html_url: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/43" });
+    if (String(url).endsWith("/pulls/43")) return Response.json({
+      node_id: "PR_node_id",
+      auto_merge: { enabled_at: "2026-10-30T00:00:00Z", merge_method: "squash" },
+    });
+    if (String(url).endsWith("/graphql")) throw new Error("GraphQL must not be called when auto-merge is already enabled");
+    throw new Error("unexpected_mock_request");
+  };
+  const result = await executeApprovedImprovementPlan({ plan, expectedPlanHash: await hashGitHubWritePlan(plan), token: "test-token", fetchImpl });
+  assert.deepEqual(result, {
+    ok: true,
+    pullRequestUrl: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/43",
+    autoMergeEnabled: true,
+  });
+  assert.equal(calls.some((call) => call.url.endsWith("/graphql")), false);
+});
+
 test("rejected plan and hash mismatch make no GitHub calls", async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; throw new Error("should_not_call"); };
   const plan = validPlan();
-  plan.operations[1].path = ".github/workflows/release.yml";
+  plan.operations[1].path = ".github/workflows/auto-merge.yml";
   assert.deepEqual(await executeApprovedImprovementPlan({ plan, expectedPlanHash: "unused", token: "test-token", fetchImpl }), { ok: false, reason: "changed_path_out_of_scope" });
   const allowed = validPlan();
   assert.deepEqual(await executeApprovedImprovementPlan({ plan: allowed, expectedPlanHash: "wrong-hash", token: "test-token", fetchImpl }), { ok: false, reason: "approved_plan_hash_mismatch" });
@@ -215,7 +257,9 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   const append = source.slice(appendStart, inboxStart);
   const inbox = source.slice(inboxStart, recoveryStart);
   assert.ok(append.includes('if (result?.status === "failed") return false;'));
-  assert.ok(inbox.includes('sameRequest && ["failed", "cancelled"].includes(previous?.status)'));
+  assert.ok(inbox.includes('sameRequest && previous?.status === "failed" && previous.stop_reason !== "daily_workflow_budget_exhausted"'));
+  assert.ok(inbox.includes("requeueAgentTaskAfterBudgetWait"));
+  assert.ok(inbox.includes("reserveQueuedAgentTaskBudget"));
   assert.ok(!inbox.includes('":retry:" + day'));
   assert.ok(inbox.includes("maxAttempts: 4"));
   assert.ok(inbox.includes("maxTaskAgeMs: 8 * 60 * 60 * 1000"));
@@ -244,4 +288,32 @@ test("manual and scheduled pulls share the same post-pull automation", async () 
   assert.ok(manual.includes("if (apply) await drainSyncOutbox(env, 10)"));
   assert.ok(scheduled.includes("runPostPullAutomation(env, improvementPullReady)"));
   assert.equal((source.match(/await runPostPullAutomation\(env,/gu) || []).length, 2);
+});
+
+
+test("new self-generated workflows require explicit read-only token permissions", () => {
+  const plan = validPlan();
+  plan.operations[1].path = ".github/workflows/readonly.yml";
+  plan.operations[1].content = [
+    "name: Read-only automation",
+    "on: push",
+    "permissions: read-all",
+    "jobs:",
+    "  inspect:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo inspect",
+    ""
+  ].join("\n");
+  assert.equal(validateImprovementPlan(plan).ok, true);
+
+  for (const unsafe of [
+    ["name: Missing permissions", "on: push", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", ""],
+    ["name: Write permission", "on: push", "permissions:", "  contents: write", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", ""],
+    ["name: Dangerous trigger", "on: pull_request_target", "permissions: read-all", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", ""],
+    ["name: Secret access", "on: push", "permissions: read-all", "jobs:", "  inspect:", "    runs-on: ubuntu-latest", "    env:", "      TOKEN: \${{ secrets.GITHUB_TOKEN }}", ""],
+  ]) {
+    plan.operations[1].content = unsafe.join("\n");
+    assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
+  }
 });

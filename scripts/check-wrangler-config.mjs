@@ -13,7 +13,7 @@ for (const required of [
   'name = "akatuki-knowledge"',
   'main = "src/index.js"',
   'compatibility_date = "2026-10-17"',
-  'crons = ["0 * * * *", "*/15 * * * *"]',
+  'crons = ["0 * * * *", "*/15 * * * *", "55 23 * * *"]',
   'binding = "DB"',
   'database_id = "e8c57dbe-0175-43d8-9c16-0501e0c1d5a6"',
   'name = "YJS_CLIENT"',

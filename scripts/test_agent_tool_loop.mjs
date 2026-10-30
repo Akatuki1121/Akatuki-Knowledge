@@ -67,7 +67,6 @@ const result = await runAgentToolLoop({
     assert.match(prompt, /信頼できない参照データ/);
     if (modelCall === 2) assert.match(prompt, /role":"tool"/);
     if (modelCall === 3) assert.match(prompt, /"name":"get_note"/);
-    assert.ok(toolCalls < AGENT_TOOL_LIMITS.maxToolCalls);
     return responses.shift();
   },
   executeTool: async (tool, args, state) => {
@@ -114,7 +113,7 @@ for (const [response, reason] of [
 for (const [raw, reason] of [
   ["The count is 12.", "model_response_not_json"],
   ["[1, 2]", "model_response_not_object"],
-  ["x".repeat(16_001), "model_response_size"],
+  ["x".repeat(524_289), "model_response_size"],
   [undefined, "model_response_size"],
 ]) {
   await assert.rejects(
@@ -264,21 +263,23 @@ assert.equal(repeatedExecutions, 1, "A repeated tool call must stop before its s
 
 let boundedCalls = 0;
 let boundedTools = 0;
-await assert.rejects(runAgentToolLoop({
-  initialPrompt: "Repeatedly search",
-  maxToolCalls: 2,
+const manyTurns = await runAgentToolLoop({
+  initialPrompt: "Continue investigating until enough evidence is collected",
   callModel: async ({ modelCall }) => {
     boundedCalls++;
-    return action("search_notes", { query: "search " + modelCall });
+    return modelCall <= 5
+      ? action("search_notes", { query: "search " + modelCall })
+      : final("Completed after several searches.");
   },
   executeTool: async () => {
     boundedTools++;
     return { notes: [] };
   },
   saveCheckpoint: async () => true,
-}), (error) => error.message === "tool_budget_exhausted");
-assert.equal(boundedCalls, 3);
-assert.equal(boundedTools, 2);
+});
+assert.equal(manyTurns.reply, "Completed after several searches.");
+assert.equal(boundedCalls, 6);
+assert.equal(boundedTools, 5);
 
 let resumedModelCalls = 0;
 let resumedToolCalls = 0;
@@ -415,9 +416,47 @@ await assert.rejects(runAgentToolLoop({
   saveCheckpoint: async () => true,
 }), (error) => error.message === "github_write_requires_complete_file_read");
 
+const patchPlan = {
+  repository: "example/project",
+  summary: "Patch a line in a large existing source file",
+  operations: [
+    { type: "create_branch", branch: "agent/patch-large-file", base_ref: "main" },
+    { type: "apply_patch", branch: "agent/patch-large-file", path: "src/index.js",
+      patch: "--- a/src/index.js\\n+++ b/src/index.js\\n@@ -20,1 +20,1 @@\\n-old\\n+new\\n",
+      message: "fix: update one line", sha: "b".repeat(40) },
+    { type: "create_pull_request", head: "agent/patch-large-file", base: "main",
+      title: "fix: update one line", body: "Apply a verified unified diff.", draft: false },
+  ],
+};
+const patchLoop = await runAgentToolLoop({
+  initialPrompt: "Patch a line in a large source file",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async ({ modelCall }) => {
+    if (modelCall === 1) return action("github_read_file", {
+      repository: "example/project", path: "src/index.js", ref: "main", start_line: 20, end_line: 30,
+    });
+    if (modelCall === 2 || modelCall === 3) return action("search_notes", { query: "distinct patch context " + modelCall });
+    if (modelCall === 4) return action("github_propose_write", patchPlan);
+    return final("A SHA-verified patch plan is ready.");
+  },
+  executeTool: async (tool) => {
+    if (tool === "github_read_file") {
+      return { repository: "example/project", path: "src/index.js", sha: "b".repeat(40), totalLines: 5000, startLine: 20, endLine: 30, truncated: true, content: "function target() {}" };
+    }
+    if (tool === "search_notes") return { notes: [] };
+    return { pendingGitHubWrite: { status: "pending", plan: patchPlan } };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(patchLoop.reply, "A SHA-verified patch plan is ready.");
+assert.equal(patchLoop.toolCalls[0].result.truncated, true);
+assert.equal(typeof patchLoop.toolCalls[0].result.content, "string", "Compacted file reads must retain SHA-bound diff evidence");
+assert.equal(patchLoop.toolCalls[3].tool, "github_propose_write");
+
 // A write plan whose shape fails validation is returned to the model as fixed feedback
-// (Issue #90) instead of killing the task: the model can re-propose within the
-// model-call budget, and only the corrected plan is executed and checkpointed.
+// (Issue #90) instead of killing the task: the model can correct a malformed plan;
+// an identical repeated invalid plan is rejected without a global call-count ceiling.
 const correctedBranchPlan = {
   repository: "example/project",
   summary: "Create a branch and add a note file",
@@ -466,8 +505,40 @@ for (const malformedPlan of malformedBranchPlans) {
   assert.ok(!prompts[1].includes(JSON.stringify(malformedPlan)), "Feedback must not echo the rejected plan back");
 }
 
-// A model that never fixes the plan exhausts the model-call budget and the task fails
-// with the reason-coded error, not the bare invalid_input that hid the failure point.
+// A model that never fixes the plan is stopped by repeated-invalid-plan detection,
+// not by an arbitrary global model-call limit.
+let historyCompactionCalls = 0;
+let compactedPrompt = "";
+const historyCheckpoints = [];
+const longHistory = await runAgentToolLoop({
+  initialPrompt: "Investigate a repository using several independent note searches",
+  callModel: async ({ modelCall, prompt }) => {
+    historyCompactionCalls++;
+    if (modelCall === 8) {
+      compactedPrompt = prompt;
+      return final("Investigation complete.", ["note-1", "note-7"]);
+    }
+    return action("search_notes", { query: "distinct query " + modelCall });
+  },
+  executeTool: async (_tool, args) => ({
+    notes: [{ id: "note-" + args.query.split(" ").at(-1), title: "Finding " + args.query, path: "Notes/Finding.md", excerpt: "evidence " + args.query }],
+  }),
+  saveCheckpoint: async (checkpoint) => { historyCheckpoints.push(checkpoint); return true; },
+});
+assert.equal(longHistory.modelCalls, 8);
+assert.equal(longHistory.toolCalls.length, 7);
+assert.match(compactedPrompt, /history_summary/);
+assert.match(compactedPrompt, /note-1/);
+assert.match(compactedPrompt, /note-7/);
+const compactedHistoryCheckpoint = historyCheckpoints.at(-2);
+assert.equal(compactedHistoryCheckpoint.toolCalls[0].result.notes[0].id, "note-1");
+assert.equal(typeof compactedHistoryCheckpoint.toolCalls[0].result.notes[0].text, "string");
+assert.equal(compactedHistoryCheckpoint.toolCalls[0].result.notes[0].excerpt, undefined);
+assert.deepEqual(
+  compactedHistoryCheckpoint.transcript.find((item) => item.role === "tool").result,
+  compactedHistoryCheckpoint.toolCalls[0].result,
+);
+
 let stubbornModelCalls = 0;
 let stubbornExecutions = 0;
 await assert.rejects(runAgentToolLoop({
@@ -481,7 +552,7 @@ await assert.rejects(runAgentToolLoop({
   executeTool: async () => { stubbornExecutions++; },
   saveCheckpoint: async () => true,
 }), (error) => error.message === "invalid_input:write_plan_shape");
-assert.equal(stubbornModelCalls, AGENT_TOOL_LIMITS.maxModelCalls, "Plan retries stay within the model-call budget");
+assert.equal(stubbornModelCalls, 2, "An identical invalid write plan must stop without a global model-call ceiling");
 assert.equal(stubbornExecutions, 0, "A rejected plan must never execute");
 
 // Safety rejections are not shape mistakes: a blocked path still fails immediately
@@ -504,3 +575,4 @@ await assert.rejects(runAgentToolLoop({
 }), (error) => error.message === "github_path_blocked");
 assert.equal(blockedModelCalls, 1, "A safety-blocked plan must fail on the first response, without feedback retries");
 console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
+

@@ -54,6 +54,8 @@ for (const required of [
   "AbortSignal.timeout(30_000)",
   "recordAgentTaskFailure",
   "recoverAgentTaskWorkflows",
+  "reserveQueuedAgentTaskBudget",
+  "requeueAgentTaskAfterBudgetWait",
   "allowRestart: true",
   'return "restart_deferred"',
   "allowRestart = false",
@@ -73,6 +75,12 @@ assert.ok(taskMigration.includes("budget_reserved INTEGER NOT NULL DEFAULT 0 CHE
 assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
 assert.ok(config.includes('class_name = "AgentTaskWorkflow"'));
 assert.ok(config.includes('"*/15 * * * *"'));
+assert.ok(config.includes('"55 23 * * *"'), "Daily system self-audit must be scheduled");
+assert.ok(source.includes('event.cron === BUDGET_AUDIT_CRON'), "Daily budget and system audit must be connected to Cron");
+assert.ok(source.includes('url.pathname === "/api/budget-audit"'), "Latest audit reports must be queryable through an authenticated API");
+assert.ok(source.includes('taskRow.budget_reserved !== 1'), "Workflow dispatch must wait for a reserved step budget");
+assert.ok(source.includes("failure.workflowBudgetReleased === true"), "UTC day rollover must end the current Workflow run");
+assert.ok(source.includes("workers_ai_daily_quota_exhausted"), "Cloudflare Workers AI quota exhaustion must wait for the UTC reset");
 const workflowStart = source.indexOf("class AgentTaskWorkflow extends WorkflowEntrypoint");
 const workflowEnd = source.indexOf('__name(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
 const workflowSource = source.slice(workflowStart, workflowEnd);
@@ -86,7 +94,7 @@ assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model cal
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
-assert.ok(toolLoop.includes("maxModelCalls: 5") && toolLoop.includes("maxToolCalls: 4"), "Agent loop budgets must remain bounded");
+assert.ok(!toolLoop.includes("maxModelCalls") && !toolLoop.includes("maxToolCalls"), "Agent model/tool turns must not have application-specific count caps");
 assert.ok(toolLoop.includes('search_notes: Object.freeze') && toolLoop.includes('get_note: Object.freeze'), "Only the explicit read-only tool allowlist may be exposed");
 assert.ok(toolLoop.includes('sideEffect: "external_read"'), "Web research must be distinguished from local read-only tools");
 assert.ok(toolLoop.includes("state.toolCalls.filter((call) => call.tool === \"web_research\")"), "Web research calls must have their own bounded budget");
@@ -139,6 +147,27 @@ const githubPromptEnd = source.indexOf("\n              : prepared.allowGitHubRe
 const githubPrompt = source.slice(githubPromptStart, githubPromptEnd);
 assert.ok(githubPrompt.includes("依頼文と会話文脈から一意に特定できない場合は、推測で補完せず"), "GitHub tasks must ask when the repository or required Issue/PR target is ambiguous");
 assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計画を作ったりする前に不足情報を短く質問"), "Ambiguous GitHub tasks must ask before tool execution or write planning");
+
+const improvementPromptStart = source.indexOf("あなたは日本語の改善依頼エージェントです。");
+const improvementPromptEnd = source.indexOf("\n              : prepared.allowGitHubRead", improvementPromptStart);
+const improvementPrompt = source.slice(improvementPromptStart, improvementPromptEnd);
+for (const required of [
+  "tests/",
+  "schema-snapshots/",
+  "migrations/pending/",
+  "wrangler.toml",
+  "package-lock.json",
+  "read-only permissions",
+  "auto-merge.yml",
+  "check.yml",
+  "deploy.yml",
+  "github_read_file",
+  "apply_patch",
+  "500000"
+]) {
+  assert.ok(improvementPrompt.includes(required), "Improvement agent prompt must disclose the expanded implementation scope: " + required);
+}
+assert.ok(!improvementPrompt.includes("変更対象は src/、scripts/、docs/ のみ"), "Improvement agent prompt must not retain the old reduced scope");
 
 // Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
 const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);

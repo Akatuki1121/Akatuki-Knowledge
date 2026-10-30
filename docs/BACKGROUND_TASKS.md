@@ -1,56 +1,81 @@
 # Background task architecture
 
-予算制御の調査・段階移行・自己監査の計画は [BACKGROUND_TASK_BUDGET_ROADMAP.md](BACKGROUND_TASK_BUDGET_ROADMAP.md) を参照。
+予算管理・自己監査の全体像と段階移行の履歴は [BACKGROUND_TASK_BUDGET_ROADMAP.md](BACKGROUND_TASK_BUDGET_ROADMAP.md) を参照。
 
-> 2026-10-26 の縮小で Telegram の入口 (`/task`、`/research`、`/task_status`、`/cancel`、`/github` コマンドと GitHub 変更計画のチャット承認) と、完了通知の Telegram 送信は廃止した。タスクの受付は `POST /api/agent-tasks` のみで、結果は `GET /api/agent-tasks` で取得する。本文書のうち Telegram に言及する部分は廃止時点の設計記録として残す。
+## 実行基盤
 
-## Chosen first executor
+- D1 がタスク状態、payload、checkpoint、試行回数、期限、エラー分類の正本。
+- Cloudflare Workflows が長時間タスクのdurable step、sleep、再開を担当する。
+- 受付APIは認証済み POST /api/agent-tasks、状態と結果は GET /api/agent-tasks および GET /api/agent-tasks/{id}。
+- Workflow ID は task ID と対応し、再起動してもD1のcheckpointと既存タスク状態を再利用する。
+- YAOS同期outboxとagent_tasksは別管理。AIタスクがノートを書き換える場合は、既存のnote correction APIと同期outboxを通す。
 
-The interactive Worker accepts a task, persists it in D1, starts a Cloudflare Workflow, and returns a task ID immediately. Workflow execution is independent of the chat request, so the caller can continue chatting while the task runs. GitHub Actions remains the execution path for repository/code work (checks and PR preparation), not the generic runtime for conversation tasks.
+## 状態と回復
 
-- D1 is the business source of truth for task state, checkpoint, attempt count, deadlines, usage budgets and stop reasons.
-- The dedicated `agent_tasks` table is separate from `yaos_sync_jobs`; the latter remains a delivery outbox for YAOS sync.
-- The `/api/agent-tasks` endpoint is protected by the existing `API_TOKEN` bearer authorization. It accepts a bounded read-only knowledge query, masks identifiers before storing it, and returns a task ID; `GET /api/agent-tasks/{id}` returns status and result without echoing the original prompt. The Workflow searches relevant notes, filters unsafe excerpts, composes a prompt, calls Gemini, and saves a result checkpoint. It never creates, appends, moves, or deletes notes. Telegram has `/task <query>` to search/summarize the knowledge base, `/research <query>` for explicitly opted-in web research, `/task_status <id>` to inspect progress/result, and `/cancel [task_id]` to cancel an active task (without an ID it targets the most recently updated active task in that chat); ordinary messages remain available while a Workflow runs. Cancellation atomically marks the task terminal, clears its lease, suppresses the worker's terminal notification, prevents later checkpoint/completion writes, and calls Cloudflare Workflows `terminate()` for the matching instance. If termination fails because the instance already ended or the binding is unavailable, the D1 terminal state still prevents recovery and result delivery. An external provider may still finish processing a request that was already sent.
-- Cloudflare Workflows handles durable step execution and sleeping. A 15-minute recovery Cron restarts errored/terminated/finished Workflow instances only when the D1 task is still eligible. The existing hourly sync/maintenance Cron remains separate.
-- Workflow IDs reuse the stable task ID. Restarting a Workflow never resets D1 attempt/usage budgets.
+queued → running → waiting → running → succeeded
 
-## State machine
+terminal stateは failed / cancelled。lease期限切れ時は、D1の期限・状態・budget reservationを再確認してからWorkflowを回復する。完了checkpointがある場合はAIを再実行せず、結果書き戻し・完了処理から再開する。pending tool actionはcheckpointに保存され、実行済みtool結果を二重実行しない。
 
-`queued -> running -> waiting -> running -> succeeded`
+通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは最大4試行・最大経過時間8時間。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは安全側で停止する。
 
-Terminal alternatives: `failed` and `cancelled`. Lease expiry permits recovery only if the deadline and budgets still allow it. A terminal task is not automatically re-enqueued.
+## Workers AIの利用方針
 
-## Hard retry and usage limits
+Workers AIの利用を止める独自のアプリ上限は設けない。
 
-- 通常タスク: 最大4回のclaim、最大経過時間1時間、backoff 30秒→60秒→120秒（最大30分）。
-- 改善タスク: 最大4試行（初回＋一時障害時の再試行3回）、待機1時間→3時間→3時間、最大経過時間8時間。Workflow step内の再試行もAI呼び出し回数に含める。
-- AI呼び出し上限: 通常タスク20回、改善タスク5回。トークン上限: 通常タスク40,000、改善タスク12,000。改善タスクの1回あたり最大出力は1,024 tokens。
-- 一時障害として再試行するのは network error、timeout、429/rate limit、upstream 5xx、executor interruption。認証・権限、入力不正、認証情報検出、PII masking、policy違反などは再試行しない。未知のエラーも安全側で停止する。
-- 改善依頼が失敗・キャンセルした場合、同じ本文のまま自動で新規タスクを作らない。内容を編集するとcontent hash/idempotency keyが変わり、新しい試行として受け付ける。失敗結果は改善ノートへ追記せず、成功結果だけを書き戻す。
-- AI呼び出し前にNeuronsとタスク別tokenを予約する。成功時にprovider usageが返れば実トークンから精算する。応答なしの失敗は入力token推定分だけを実消費として計上し、出力予約を戻す。usageがない成功応答は過少計上防止のため予約を残す。呼び出し回数は返金しない。
-- 日次Workflow予約は32 steps/タスク、最大2,700 reserved steps/UTC日。旧60件/日制限は撤去済み。Workers AIの日次予約上限は8,000 Neurons（無料枠10,000の80%）。この2つは現在のアプリ側ゲートであり、アカウント全体の全資源を測る完全な消費量制御ではない。
-- Workflow step予約はまだタスク単位の固定見積もりで、失敗時に実際に使わなかったstep分を精算していない。Workers/D1/DO/YAOSの共有利用量やGraphQL Analyticsとの照合も未実装。これらは影子運用の別PRで扱う。
-- Raw exception messages are not persisted. Only classified error codes are stored.
+- タスク単位のAI model call数上限・AI token総量上限・改善タスク固有の呼び出し回数上限は撤去。
+- 1回あたりの出力tokenはモデルのコンテキスト仕様に従う。GLM-4.7-Flashのコンテキスト上限と入力token数を考慮し、入力と出力の合計がモデル上限を超えないようにする。
+- Workers AIの無料枠はCloudflareアカウント全体で共有される10,000 Neurons/UTC日。実際の枠超過判定はCloudflare側を唯一の権威とし、アプリ内の予約台帳で利用可否を拒否しない。
+- D1のworkers_ai_daily_usageはモデル・推定Neurons・provider usage・成功/失敗回数を記録するbest-effort telemetry。テーブル未適用・記録失敗でもAI呼び出しを止めない。
+- Cloudflareが日次Neurons枠超過を返した場合はtaskをwaitingにし、次のUTC 00:00リセット後に自動再開する。リセット直後もCloudflare側の拒否が続く場合は、1時間ごとに再確認して利用可能になり次第再開する。その他のrate limitやupstream errorは通常の一時障害分類に従う。
+- provider usageが返る場合は実績を記録する。応答なしの失敗は入力token推定分だけを記録し、出力分は計上しない。usageなし成功は過少計上を避けるため予約を残す。
+- モデル自体の入力・出力コンテキスト上限、Cloudflare Freeの実際のNeurons枠、Workers AI以外のCloudflareサービスquotaは引き続き有効。
 
-## Safety invariants
+Neurons台帳は観測と監査に使う。Cloudflareの実枠を超えて処理を継続できる保証はなく、無料枠の外で課金を有効にするものでもない。
 
-- Inspect AI-bound content immediately before the provider call. Credential detection blocks the call.
-- Agent tool-loop calls request Gemini JSON output explicitly and validate the returned action shape before running any tool or accepting a result.
-- Redact direct identifiers such as email, phone, address and account/card identifiers before sending.
-- Health/financial/location-sensitive content that the current redactor cannot safely mask is blocked rather than sent unredacted.
-- No `ai_allowed` switch or per-operation AI permission gate is added.
-- The API endpoint is authenticated and bounds request size, prompt length and output tokens.
+## Workers / Workflow / D1などの別枠
 
-## Cloudflare Free-plan constraints checked 2026-10-30
+Workers AIとは別に、Cloudflare FreeのWorkflows step枠を超えないよう日次予約を行う。現在は1タスクあたり32 stepsを予約し、UTC日あたり2,700 stepsまで受け付ける。Cloudflare Freeの3,000 steps/日に対して300 stepsを他用途・変動分として残す設計であり、これはAI利用上限ではない。実消費量による予約精算は今後の改善対象。タスク数の独立した固定上限は設けない。枠に入らないタスクはD1のqueued状態で保持し、次のUTC日次リセット後（00:01 UTC）に予約を取り直して自動実行する。旧実装でdaily_workflow_budget_exhaustedとしてterminal化されたタスクも、同じ依頼の冪等キーを保ったまま再キューする。
 
-Official docs (quotas reset at 00:00 UTC where applicable):
-- Workers: 100,000 requests/day; Workflow executions share this request quota.
-- D1: 5 million rows read/day and 100,000 rows written/day.
-- Durable Objects: 100,000 requests/day and 13,000 GB-s/day.
-- Workers AI: 10,000 Neurons/day.
-- Workflows: 100,000 executions/day shared with Workers and 3,000 steps/day.
+D1、Workers requests、Durable Objects、Workflows executionなどもCloudflare側のquotaが最終的な制約となる。各種計測値はアカウント全体の利用量と混在する場合があるため、Akatuki-Knowledge単体の消費量と誤認しない。
 
-References:
+## 改善ノートからの自動実装
+
+毎時のVault pull成功後、Notes/改善/配下の生存D1ノートを走査する。フォルダ説明ノートは対象外。sync_uuidとcontent_hashを冪等キーに使い、同一依頼の重複起票を防ぐ。AI実行結果は元ノートに追記されるが、結果ブロックを除いた元依頼本文と同じものを再起票しない。
+
+改善エージェントはWorkers AIを使い、リポジトリ Akatuki1121/Akatuki-Knowledge のmainを読み取り、必要なコード・テスト・ドキュメント・pending migration・設定変更を計画する。plan hashを保存・再検証し、対象リポジトリ・ブランチ・ファイル・操作順を検証してから実行する。現在の許可範囲は以下。
+
+- 変更可能: src/、scripts/、tests/、docs/、schema-snapshots/、migrations/pending/。
+- ルート設定: wrangler.toml、package.json、package-lock.json、README.md（既存ファイルの更新のみ）。
+- GitHub Actions workflow: 新規workflowファイルの作成のみ。危険なtrigger・write権限・secrets参照を含むworkflowは禁止。
+- 保護対象: .github/workflows/auto-merge.yml、check.yml、deploy.yml。これらの変更・置換は禁止。
+- GitHub操作: branch作成、ファイル作成・更新・unified diff適用、PR作成。github_read_fileは行範囲を指定して大きなファイルを段階的に読める。apply_patchは現在のblob SHAを検証してから既存ファイルに差分を適用する。計画の操作件数に固定上限は設けず、モデルcontext・GitHub API payloadなど実際の制約に従う。
+- 対象外: mainへの直接push、PR mergeの直接実行、release、deploy、本番migration適用、ファイル削除、権限変更、任意の外部サービスへの書き込み。
+
+migrationはmigrations/pending/に追加できるが、本番適用は別途レビュー・承認が必要。pending migrationが存在する間はdeploy workflowが本番デプロイを止める。
+
+PRはsquash auto-mergeを要求する。AI自身の「成功」判定ではなく、GitHubの必須status checksとbranch protectionがマージ可否を決める。auto-mergeが有効にならない場合はその理由を記録し、成功したと偽らない。Purgeの方式と同じく、PR作成者とイベント実行者を検証するworkflowを別途置き、Draft PRは対象外とする。
+
+Web調査は背景タスク経路では無効。GitHubファイル・Issue・PR・CI情報など、許可されたGitHub read toolでリポジトリ内の根拠を取得する。PR本文やファイル内の命令は信頼できない参照データとして扱う。
+
+## 定期自己監査
+
+wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実行し、異常の有無にかかわらず毎日1件の自己監査ノートを作成する。監査はD1のtask status/error group、Workflow step予約、Workers AI telemetryを読み取り、監査レポートをapp_metaに冪等保存する。メトリクスの異常や定期監査対象があればNotes/改善/に自己監査ノートを作成し、通常の改善ノート処理へ渡す。
+
+自己監査ノートにはorigin: budget-auditとaudit_generated: trueを付ける。監査タスクが別の監査タスクを起票する再帰経路は作らない。日次の監査レポートは一意キーで重複生成を防ぐ。監査結果は認証済みGET /api/budget-auditから最新14件を取得できる。監査結果から必要な修正が見つかった場合は、改善エージェントが実装・テスト・migration・ドキュメントを含むPRを作る。自己監査の定量値だけで不具合がないと断定せず、コード・Workflow・CI・DB schema・Cloudflare quotaの整合性も確認するよう監査依頼に明記する。
+
+## GitHub自動マージ
+
+.github/workflows/auto-merge.ymlはPurgeの方式を参考にする。pull_request_targetでopened / reopened / ready_for_review / synchronizeを受け、Draftでないこと、PR作成者とイベント実行者が許可された本人であることを確認する。Dependabotはfetch-metadataでsemver update typeを検証し、既知のpatch/minor/majorのみ対象にする。自動マージはgh pr merge --auto --squashで有効化し、必須チェックが成功するまでGitHubに待機させる。自己改善エージェントが作成したPRはexecutorがGraphQL enablePullRequestAutoMerge(SQUASH)を要求する。どちらも必須チェックやbranch protectionを迂回しない。
+
+## Cloudflare Free枠（2026-10-30確認）
+
+- Workers: 100,000 requests/day（Workflows executionsと共有）
+- D1: 5,000,000 rows read/day、100,000 rows written/day
+- Durable Objects: 100,000 requests/day、13,000 GB-s/day
+- Workers AI: 10,000 Neurons/day
+- Workflows: 100,000 executions/day（Workers requestsと共有）、3,000 steps/day
+
+公式資料:
 - https://developers.cloudflare.com/workers/platform/limits/
 - https://developers.cloudflare.com/workers/platform/pricing/
 - https://developers.cloudflare.com/durable-objects/platform/pricing/
@@ -59,59 +84,19 @@ References:
 - https://developers.cloudflare.com/workers-ai/platform/pricing/
 - https://developers.cloudflare.com/d1/observability/metrics-analytics/
 
-Seven-day account-level GraphQL Analytics observations and the staged budget redesign are documented in [BACKGROUND_TASK_BUDGET_ROADMAP.md](BACKGROUND_TASK_BUDGET_ROADMAP.md). The observations are account-wide and must not be interpreted as Akatuki-only consumption where the dataset has no worker-level attribution. GraphQL Analytics runtime ingestion is not connected to this Worker yet; it requires an owner-issued read-only Account Analytics token.
+## Rollout / production boundary
 
-## Current task-type boundary
+- PRのCIでnpm run check、Worker dry-run build、関連migration検査を実行する。
+- migrations/pending/にSQLが残っている場合、本番deploy workflowは停止する。
+- この実装はPR作成までであり、Cloudflare本番migration適用、Worker deploy、secret変更は行わない。
+- production D1のmigration ledgerとschemaが一致することを別途確認してから、migration適用・deployを実施する。
+- GraphQL Analyticsのread-only tokenはWorkerに接続されていない。D1 telemetryの値をアカウント全体の正確な実消費量と扱わない。
 
-The first task type is `knowledge_query`: a read-only multi-stage note search and summarization. A `github_query` task is available through Telegram `/github <request>` or natural-language requests that clearly mention GitHub/Issue/PR/repository/CI work plus an action. It uses a GitHub-only prompt and GET-only read tools for issues, pull requests, latest PR check-run statuses, and bounded public text files; unrelated personal notes are not injected. If a change is needed, the model may create a structured proposal only: branch creation, file create/update, issue creation, issue comment, and PR creation are represented as an ordered plan. No write happens until the same Telegram chat explicitly sends `/github approve <task_id>`. `/github reject <task_id>` rejects a pending plan. The complete normalized plan is hash-bound, stored in the completed task checkpoint, displayed in Telegram in bounded chunks, expires after 24 hours, and is atomically claimed once to prevent duplicate execution. The Worker requires a `GITHUB_TOKEN` secret with the minimum Contents/Issues/Pull requests permissions to execute approvals; read-only public access does not require it. Merge, release, deployment, deletion, and permission changes are not supported by this write plan. The proposal tool definition discloses each operation type's required keys so the model can meet the strict plan validator. A proposal whose shape fails validation is not saved or executed; the loop returns a fixed validation error (reason code `write_plan_shape`, without the rejected plan) to the model so it can re-propose within the model-call budget, and if the budget runs out the task fails with `invalid_input:write_plan_shape`. Note writes are intentionally excluded until their D1/YAOS side effects have explicit idempotency keys, operation-bound approvals, and restart tests. The Workflow stores `context_ready`, `prompt_ready`, `agent_loop`, and `completed` checkpoints; a restart reuses saved context/prompt, replays only a pending safe read action, and completes from an existing output rather than issuing another AI call.
+## Quota待機中のタスク再開
 
-Web research is a separate explicit opt-in on `/research <query>` or authenticated `POST /api/agent-tasks` with `"allowWebResearch": true`; ordinary `/task` requests cannot use it. The Worker must also have `GEMINI_WEB_RESEARCH_ENABLED=true`. That switch is intentionally absent from the default Wrangler config: Google Search grounding is unavailable on Gemini's Free tier. The pricing page lists a shared allowance of 5,000 grounding requests per month for Gemini 3+ Paid tier, then $14 per 1,000 requests (checked 2026-10-22); an interaction can issue multiple provider-side queries, so each interaction strictly caps search queries (`maxSearchQueriesPerCall: 4`) and interactions per task (`maxCalls: 2`) to prevent unbounded provider queries. Google's terms say Unpaid Services may use prompts and responses to improve products and allow human review, while Paid Services do not use prompts/responses for product improvement but may retain limited safety logs. `store: false` only opts out of Interactions API storage; it does not change the account's paid/unpaid data-use terms. Confirm the Cloud Project billing state and terms before enabling web research. Requests require both Google Search and URL Context evidence, screen outgoing queries and returned text, and treat page instructions as untrusted. At most two interactions are allowed per task; each reserves at least 13,200 estimated AI tokens before contacting the provider, and only three cited sources are returned in the final Telegram message. Account-level request/cost monitoring remains part of #42. Gemini Search, URL Context, pricing, and terms documentation were checked on 2026-10-22.
+- Workers AIがCloudflareの日次Neurons枠に到達した場合、エラー3036をworkers_ai_daily_quota_exhaustedとして扱う。現在のWorkflow runを終了し、タスクをwaitingにしてattemptを消費せず、Workflow予約を翌UTC日へ移す。
+- 次のUTC日00:01以降、15分ごとのrecovery Cronが空きWorkflow stepsを予約し、完了済みWorkflow instanceを再起動する。これによりAI枠のリセット待ちでWorkflow runを長時間sleepさせず、翌日分のWorkflow枠も再予約する。
+- Workflowsの日次予約が満杯で新規タスクを受け付けられない場合も、タスクをfailedにせずqueuedに残す。next_attempt_atとdeadline_atを翌日枠に合わせ、recovery Cronが空き枠を予約する。古い実装でdaily_workflow_budget_exhaustedとしてfailedになったタスクも再キュー可能。
+- この待機はWorkers AIの独自上限ではなく、Cloudflare FreeのWorkers AI/Workflows各サービスが持つ別々の日次枠に対する回復処理。AI呼び出し回数・token数にアプリ独自の上限は設けない。
 
-The deterministic agent safety evaluation set runs as part of `npm run check` (`scripts/test_agent_evaluation_set.mjs`). It uses synthetic note and provider responses only; it makes no external requests and checks instruction-injection boundaries, citation filtering, denied side effects, evidence requirements, memory trust derivation, and retry fail-closed behavior. This complements the lower-level contract tests; it does not measure model answer quality or account-level provider usage.
-
-## Issue 35 operation inventory
-
-| Operation | Entry point | Side effects | Background status |
-| --- | --- | --- | --- |
-| Search and summarize approved notes | Telegram `/task <query>` or authenticated `POST /api/agent-tasks` | Reads D1 notes; calls Gemini after privacy checks; stores task checkpoints/result in D1; Telegram tasks send a terminal notification | Enabled as `knowledge_query`; read-only with respect to notes |
-| Inspect GitHub and propose approved writes | Telegram natural language or `/github <request>`; approve with `/github approve <task_id>` or reject with `/github reject <task_id>` | Reads are GET-only; write plans are stored in the task checkpoint and hashed; only the explicit approval handler executes the allowlisted write operations | `github_query`; writes require a valid plan, same-chat approval, unexpired status, and `GITHUB_TOKEN`; merge/deploy/delete/permission changes excluded |
-| Search notes from an agent step | Internal `search_notes` allowlisted tool | Reads only AI-approved, credential-screened notes and returns masked, bounded excerpts | Enabled; at most four tool calls and five model calls per Workflow run |
-| Read a search result | Internal `get_note` allowlisted tool | Returns one bounded result previously returned by `search_notes`; no new access outside the task's retrieved result set | Enabled |
-| Search and inspect public web pages | Explicit `/research` task or authenticated API opt-in; internal `web_research` tool | Uses Gemini Google Search grounding and URL Context; stores bounded report, cited URL/title/evidence, and retrieval timestamp in the task checkpoint | Disabled unless `GEMINI_WEB_RESEARCH_ENABLED=true`; at most two provider interactions per task, capped at 4 search queries per interaction |
-| Inspect one task | Telegram `/task_status <id>` or authenticated `GET /api/agent-tasks/{id}` | Reads task metadata/checkpoint/result; no note or AI side effect | Enabled |
-| List tasks | Telegram `/tasks` or authenticated `GET /api/agent-tasks?status=...` | Reads bounded task metadata; no note or AI side effect | Enabled |
-| Create, append, correct, move, archive, or restore a note | Existing synchronous note/API flows | Mutates D1 and may enqueue a YAOS outbox delivery | Not connected to the generic background Workflow |
-
-The generic Workflow accepts only `knowledge_query` and `github_query`; the latter requires server-created read permission and can enable proposal-only write planning. Telegram cannot submit arbitrary API endpoints or execute writes directly. Actual writes are dispatched only by the separate same-chat approval handler after plan hash, expiry, and one-time claim checks. Its tool allowlist is read-only for notes; external web research is separately permission-gated and cost-bounded. Schemas reject unknown tools, extra arguments, and malformed responses. In particular, note mutations, external messages and deletion are not background tools and have no approval-bypass path. Keep them disabled until a separate design specifies operation-bound approvals, before-state checks and idempotent side-effect keys.
-
-For the enabled query, the durable stages are `context_ready` (filtered note IDs and excerpts), `prompt_ready` (privacy-inspected assembled prompt and reserved estimate), `agent_loop` (bounded transcript, tool arguments/results and any pending action), and `completed` (bounded answer and cited IDs). Every model request is screened before sending; every response is checked before parsing; each model call reserves task AI/token budget. Tool results are treated as untrusted reference data. Repeated tool signatures, invalid/unknown tools, oversize results, step exhaustion, and budget exhaustion stop closed. The sanitized task payload also stores a SHA-256 input hash. Reusing an idempotency key with the same input returns the existing task without another reservation; reusing it with different input is rejected. A retry reuses the earliest valid checkpoint and must not repeat a completed task. An expired lease may be claimed by one executor; the previous lease token can no longer save a checkpoint or complete the task. Deadline and budget exhaustion are terminal and retain the checkpoint for diagnosis.
-
-## Implementation / rollout boundary
-
-- Retry policy, pending D1 schema, claim/lease/checkpoint store, and Workflow/API wiring are developed on a feature branch and validated with Actions.
-- `migrations/0011_agent_tasks.sql` is recorded in the production ledger (applied 2026-10-21) and the live schema matched it on 2026-10-22.
-- No production D1 migration, Worker deployment, secret change, or live note mutation is performed by this PR.
-- Schema rollout is done; before enabling more task types, run an authenticated smoke test and document rollback.
-
-
-## Terminal notification and recovery
-
-Telegram-originated tasks persist their notification target and delivery state in D1. The Workflow sends a terminal result immediately; the 15-minute recovery Cron also scans terminal tasks whose notification is pending or whose sending lease expired. Delivery retries use bounded exponential backoff and stop after eight attempts. A notification failure never re-runs the AI task or resets its execution budget. HTTP-created tasks without a Telegram target do not send Telegram messages.
-
-`/task_status <id>` and the authenticated status API expose notification delivery separately from task execution. A task can be complete while its notification is pending; the recovery path handles that state without repeating the task.
-
-
-## Discovering unfinished work
-
-Authenticated `GET /api/agent-tasks?status=active` lists queued, running, and waiting tasks without returning their original prompts. Use `status=terminal` or `status=all` for a bounded audit of task state. Telegram `/tasks` lists the current chat's unfinished tasks, so task IDs and checkpoint stages remain discoverable even if the original conversation is no longer available. Send `/cancel` to stop the latest active task in that chat, or `/cancel <task_id>` to target a specific task. Individual results remain available through `/task_status <id>` or `GET /api/agent-tasks/{id}`.
-
-
-## 改善フォルダからの自動 GitHub 作業
-
-毎時の定期処理は、Vault pull が成功した後に `Notes/改善/` 配下の生存 D1 ノートを走査します。`このフォルダについて.md` は対象外です。起票の冪等キーはノートの `sync_uuid` と `content_hash` から生成し、処理済みハッシュは `app_meta` に記録します。結果追記後に変わったハッシュも処理済みとして記録するため、エージェント自身の結果追記で再起票されません。依頼本文が変われば新しいハッシュとして再評価されます。
-
-Workers AI のモデルは `@cf/meta/llama-3.1-8b-instruct` です。出力上限は 1024 tokens、既存の tool loop は最大 5 モデル呼び出し/タスク、改善依頼は最大 3 タスク/日です。Workers AI の無料枠はアカウントや時点で変わりうるため、この上限は無制限利用を防ぐ運用上のガードであり、無料利用を保証するものではありません。
-
-自動実行は計画ハッシュを再計算し、保存された計画と一致する場合だけ許可します。操作はブランチ作成、`src/`・`scripts/`・`docs/` 内のファイル作成/更新、最後の PR 作成に限定されます。`.github/workflows/`、`migrations/`、その他のパス、Issue・コメント、削除、権限変更、リリース、デプロイは対象外です。範囲外の計画は PR 作成前に停止し、理由を元ノートへ追記します。範囲内の PR は squash 自動マージを要求し、GitHub の必須チェックが成功するまでマージを待機します。
-
-処理結果（PR URL、自動マージの有効化状態、停止理由、失敗コード）は元ノートへ通常の correction API と同期 outbox 経由で追記されます。Web 調査は本経路では利用できず、一般の `POST /api/agent-tasks` からの Web 調査指定も拒否します。
+UTC日跨ぎの通常再試行も同じ扱いにし、現在のWorkflow runを終了して翌日のWorkflow stepsを再予約する。

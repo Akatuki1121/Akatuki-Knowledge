@@ -1,0 +1,61 @@
+name: 自動マージ設定
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot:
+    # PRの作成者を検証する。イベント実行者だけでは判定しない。
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dependabotのメタデータ取得
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 日本語の説明コメントを投稿
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          NAMES: ${{ steps.meta.outputs.dependency-names }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          set -euo pipefail
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch) KIND="パッチ更新(自動マージ候補)" ;;
+            version-update:semver-minor) KIND="マイナー更新(自動マージ候補)" ;;
+            version-update:semver-major) KIND="メジャー更新(自動マージ候補)" ;;
+            *) KIND="不明(手動確認)" ;;
+          esac
+          gh pr comment "$PR_URL" --body "Dependabotの依存関係更新PRです。
+          - 対象: ${NAMES}
+          - 更新種別: ${KIND}
+          - 既知の更新種別は、必須チェック通過後に自動マージします。不明な更新種別は自動マージしません。"
+
+      - name: 既知の更新種別は自動マージを有効化
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' || steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+  own:
+    # 作成者とイベント実行者の両方が本人の場合だけ対象にする。
+    # 自己改善エージェントのPRは executor 側でも同じ squash auto-merge を要求する。
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login == 'Akatuki1121' && github.actor == 'Akatuki1121'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 必須チェック通過後の自動マージを有効化
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

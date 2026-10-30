@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, GITHUB_READ_TOOLS, GITHUB_WRITE_PROPOSAL_TOOL } from "../src/agent-github-tools.mjs";
+import { executeGitHubReadTool, executeGitHubWritePlan, hashGitHubWritePlan, validateGitHubWritePlan, applyUnifiedPatch, GITHUB_READ_TOOLS, GITHUB_WRITE_PROPOSAL_TOOL } from "../src/agent-github-tools.mjs";
 
 const calls = [];
 const response = (status, body, headers = {}) => new Response(JSON.stringify(body), {
@@ -67,6 +67,11 @@ const file = await executeGitHubReadTool("github_read_file", {
 }, { fetchImpl });
 assert.equal(file.content, "# Hello\nWorld");
 assert.equal(file.truncated, false);
+const secondLine = await executeGitHubReadTool("github_read_file", {
+  repository: "example/project", path: "README.md", ref: "main", start_line: 2, end_line: 2,
+}, { fetchImpl });
+assert.equal(secondLine.content, "World");
+assert.equal(secondLine.startLine, 2);
 
 await assert.rejects(executeGitHubReadTool("github_read_file", {
   repository: "example/project", path: ".env", ref: "",
@@ -134,11 +139,59 @@ assert.equal(writes.results.length, 3);
 assert.equal(writes.results[2].url, "https://github.com/example/project/pull/9");
 assert.ok(writeCalls.every((call) => call.init.headers.authorization === "Bearer test-token"));
 assert.deepEqual(writeCalls.map((call) => call.init.method), ["GET", "POST", "PUT", "POST"]);
-assert.throws(() => validateGitHubWritePlan({
-  repository: "example/project", summary: "too many", operations: Array.from({ length: 6 }, () => ({
+const manyOperations = validateGitHubWritePlan({
+  repository: "example/project", summary: "many independent changes", operations: Array.from({ length: 51 }, () => ({
     type: "create_issue", title: "x", body: "",
   })),
-}), /invalid_input/);
+});
+assert.equal(manyOperations.operations.length, 51, "GitHub plans must not have an arbitrary operation-count ceiling");
+
+const newline = String.fromCharCode(10);
+const original = ["alpha", "beta", "gamma", ""].join(newline);
+const unifiedDiff = [
+  "--- a/docs/agent.md",
+  "+++ b/docs/agent.md",
+  "@@ -2,1 +2,1 @@",
+  "-beta",
+  "+BETA",
+  "",
+].join(newline);
+assert.equal(applyUnifiedPatch(original, unifiedDiff, "docs/agent.md"), ["alpha", "BETA", "gamma", ""].join(newline));
+assert.throws(() => applyUnifiedPatch(original, unifiedDiff, "docs/other.md"), /github_patch_path_mismatch/);
+assert.throws(() => applyUnifiedPatch(original, unifiedDiff.replace("-beta", "-wrong"), "docs/agent.md"), /github_patch_context_mismatch/);
+
+const patchSha = "d".repeat(40);
+let patchedContent = null;
+const patchFetch = async (url, init = {}) => {
+  if (init.method === "GET" && String(url).endsWith("/git/ref/heads/main")) {
+    return response(200, { object: { sha: "a".repeat(40) } });
+  }
+  if (init.method === "POST" && String(url).endsWith("/git/refs")) {
+    return response(201, { ref: "refs/heads/bot/patch" });
+  }
+  if (init.method === "GET" && String(url).includes("/contents/docs/agent.md?ref=bot%2Fpatch")) {
+    return response(200, { type: "file", encoding: "base64", size: original.length, sha: patchSha, content: btoa(original) });
+  }
+  if (init.method === "PUT" && String(url).endsWith("/contents/docs/agent.md")) {
+    patchedContent = atob(JSON.parse(init.body).content);
+    return response(200, { content: { path: "docs/agent.md" }, commit: { sha: "e".repeat(40) } });
+  }
+  if (init.method === "POST" && String(url).endsWith("/pulls")) {
+    return response(201, { number: 10, html_url: "https://github.com/example/project/pull/10" });
+  }
+  return response(404, { message: "Not Found" });
+};
+const patchPlan = {
+  repository: "example/project",
+  summary: "Patch a line in an existing source file",
+  operations: [
+    { type: "create_branch", branch: "bot/patch", base_ref: "main" },
+    { type: "apply_patch", branch: "bot/patch", path: "docs/agent.md", patch: unifiedDiff, message: "patch: update line", sha: patchSha },
+    { type: "create_pull_request", head: "bot/patch", base: "main", title: "patch: update line", body: "Patch existing file", draft: false },
+  ],
+};
+await executeGitHubWritePlan(patchPlan, { token: "test-token", fetchImpl: patchFetch });
+assert.equal(patchedContent, ["alpha", "BETA", "gamma", ""].join(newline));
 
 // The tool definition shown to the model must disclose exactly the keys the validator
 // requires (Issue #90): for every operation type, a plan built from exactly the
@@ -148,6 +201,7 @@ const sampleOperations = {
   create_branch: { type: "create_branch", branch: "bot/task", base_ref: "main" },
   create_file: { type: "create_file", branch: "bot/task", path: "docs/note.md", content: "# Note\n", message: "docs: add note" },
   update_file: { type: "update_file", branch: "bot/task", path: "docs/note.md", content: "# Note\n", message: "docs: update note", sha: "a".repeat(40) },
+  apply_patch: { type: "apply_patch", branch: "bot/task", path: "src/index.js", patch: "--- a/src/index.js\\n+++ b/src/index.js\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n", message: "patch: update index", sha: "a".repeat(40) },
   create_issue: { type: "create_issue", title: "Issue title", body: "Issue body" },
   add_issue_comment: { type: "add_issue_comment", number: 1, body: "Comment body" },
   create_pull_request: { type: "create_pull_request", head: "bot/task", base: "main", title: "PR title", body: "PR body", draft: true },
@@ -170,5 +224,16 @@ for (const [type, keys] of Object.entries(GITHUB_WRITE_PROPOSAL_TOOL.operationAr
 assert.throws(() => validateGitHubWritePlan({
   repository: "example/project", summary: "undisclosed operation", operations: [{ type: "delete_file", path: "docs/note.md" }],
 }), /unknown_tool/, "Operation types absent from the disclosure must stay unsupported");
+
+const expandedPlan = validateGitHubWritePlan({
+  repository: "example/project",
+  summary: "A multi-operation plan is not cut off by an arbitrary operation count",
+  operations: Array.from({ length: 51 }, (_, index) => ({
+    type: "create_issue",
+    title: "Issue " + index,
+    body: "Issue body " + index,
+  })),
+});
+assert.equal(expandedPlan.operations.length, 51, "Operation count is bounded by the serialized plan size, not an arbitrary count");
 
 console.log("GitHub tools tests passed: read allowlist, bounded writes, approval-plan validation, hashing, path blocking, API failures, and write-plan schema disclosure consistency.");

@@ -38,13 +38,12 @@ jobs:
       test_harness: ${{ steps.filter.outputs.test_harness }}
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
-      # One full checkout serves both events: pull-request filtering uses
-      # the GitHub API, while push filtering diffs against the previous
-      # commit and needs the history. The repository is small, so keeping
-      # the history costs little.
+      # Pull-request filtering uses the GitHub API and needs no history.
+      # Push filtering compares against the previous commit, so only main
+      # push runs fetch full history.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ github.event_name == 'push' && 0 || 1 }}
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -80,11 +79,13 @@ jobs:
               - 'scripts/classify_yaos_integration.mjs'
               - '.github/workflows/check.yml'
             agent_tests:
-              - 'src/index.js'
+              - 'src/**'
               - 'src/reply-text.mjs'
               - 'src/note-search-text.mjs'
               - 'src/bot-alerts.mjs'
               - 'src/background-task-policy.mjs'
+              - 'src/budget-self-audit.mjs'
+              - 'scripts/test_budget_self_audit.mjs'
               - 'scripts/test_agent_*.mjs'
               - 'scripts/test_agent_*.py'
               - 'scripts/check-agent-*.mjs'
@@ -112,7 +113,7 @@ jobs:
               - 'scripts/test_reconstructed_baseline.py'
               - 'scripts/test_worker_sql_compatibility.py'
             deploy:
-              - 'src/index.js'
+              - 'src/**'
               - 'src/reply-text.mjs'
               - 'src/note-search-text.mjs'
               - 'src/bot-alerts.mjs'
@@ -135,8 +136,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - name: Run the full npm run check suite
-        run: npm run check
+      # Agent and sync suites run in their own parallel jobs below.
+      # Keep only the non-overlapping core group here to avoid executing
+      # the same tests again in multiple jobs.
+      - name: Run core checks
+        run: npm run check:core
 
   agent-domain-tests:
     needs: changed-files
