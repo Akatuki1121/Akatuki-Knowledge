@@ -700,7 +700,7 @@ export async function recordAgentTaskFailure(db, input) {
           AND EXISTS (
             SELECT 1 FROM agent_tasks
             WHERE task_id = ? AND status = 'waiting' AND budget_reserved = 0
-              AND last_error_class = 'workers_ai_daily_quota_exhausted'
+               
           )
       `).bind(retryDay, input.taskId, input.taskId),
     ]);
