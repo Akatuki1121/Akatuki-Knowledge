@@ -164,8 +164,8 @@ export function classifyAgentTaskError(error) {
   }
   if (/workers_ai_request_failed/i.test(message) && (/(daily|neuron|quota|allocation)/i.test(message) || /code=3036\b/iu.test(message))) return "workers_ai_daily_quota_exhausted";
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
-  if (/Gemini API returned 5\d\d/i.test(message)
-    || /workers_ai_request_failed[\s\S]{0,180}\b5\d\d\b/i.test(message)) return "upstream_5xx";
+  if (/\b5\d\d\b/i.test(message)
+    || /Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
   if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
   if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
   return "unknown";
