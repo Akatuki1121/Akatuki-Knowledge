@@ -73,6 +73,10 @@ assert.ok(taskMigration.includes("budget_reserved INTEGER NOT NULL DEFAULT 0 CHE
 assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
 assert.ok(config.includes('class_name = "AgentTaskWorkflow"'));
 assert.ok(config.includes('"*/15 * * * *"'));
+assert.ok(config.includes('"55 23 * * *"'), "Daily system self-audit must be scheduled");
+assert.ok(source.includes('event.cron === BUDGET_AUDIT_CRON'), "Daily budget and system audit must be connected to Cron");
+assert.ok(source.includes('url.pathname === "/api/budget-audit"'), "Latest audit reports must be queryable through an authenticated API");
+assert.ok(source.includes("workers_ai_daily_quota_exhausted"), "Cloudflare Workers AI quota exhaustion must wait for the UTC reset");
 const workflowStart = source.indexOf("class AgentTaskWorkflow extends WorkflowEntrypoint");
 const workflowEnd = source.indexOf('__name(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
 const workflowSource = source.slice(workflowStart, workflowEnd);
@@ -86,7 +90,7 @@ assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model cal
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
-assert.ok(toolLoop.includes("maxModelCalls: 5") && toolLoop.includes("maxToolCalls: 4"), "Agent loop budgets must remain bounded");
+assert.ok(!toolLoop.includes("maxModelCalls") && !toolLoop.includes("maxToolCalls"), "Agent model/tool turns must not have application-specific count caps");
 assert.ok(toolLoop.includes('search_notes: Object.freeze') && toolLoop.includes('get_note: Object.freeze'), "Only the explicit read-only tool allowlist may be exposed");
 assert.ok(toolLoop.includes('sideEffect: "external_read"'), "Web research must be distinguished from local read-only tools");
 assert.ok(toolLoop.includes("state.toolCalls.filter((call) => call.tool === \"web_research\")"), "Web research calls must have their own bounded budget");
