@@ -179,6 +179,23 @@ row = sqlite.prepare("SELECT status, budget_reserved, stop_reason FROM agent_tas
 assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 0, stop_reason: null });
 
 
+// Every AI reservation also renews a still-valid lease, so multiple model
+// calls cannot consume the original 120-second lease without refreshing it.
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, lease_token, lease_expires_at, deadline_at,
+    created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  "renew-on-ai-reservation", "github_query", "running", "renew-token",
+  toSqliteDateTime(staleAt + 5_000), staleDeadline, staleExpiry, staleExpiry,
+);
+assert.equal(await reserveAgentAiBudget(db, {
+  taskId: "renew-on-ai-reservation", leaseToken: "renew-token", estimatedTokens: 100, nowMs: staleAt
+}), true);
+row = sqlite.prepare("SELECT lease_expires_at FROM agent_tasks WHERE task_id = 'renew-on-ai-reservation'").get();
+assert.equal(row.lease_expires_at, toSqliteDateTime(staleAt + 120_000));
+
 // Expired leases must not discard provider settlement or the final failure.
 // The lease token is the fencing value: expiry alone does not mean a new
 // workflow has claimed the task.
