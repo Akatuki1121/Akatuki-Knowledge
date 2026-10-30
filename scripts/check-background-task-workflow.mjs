@@ -205,6 +205,6 @@ assert.ok(autoMergeDeploy.includes("github.event.workflow_run.head_sha"), "The d
 assert.ok(autoMergeDeploy.includes("commits/$HEAD_SHA/pulls"), "The deploy watcher must resolve the PR from the commit SHA");
 assert.ok(autoMergeDeploy.includes('gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/dispatches" -f ref=main'), "The deploy watcher must use the explicit workflow_dispatch API");
 assert.ok(autoMergeDeploy.includes("timeout-minutes: 35"), "The merge watcher must have a bounded wait");
-assert.ok(!/deploy-on-merge\\.yml/.test(autoMergeDeploy), "The old pull_request.closed dispatch workflow must not be reintroduced");
+assert.ok(!autoMergeDeploy.includes("deploy-on-merge.yml"), "The old pull_request.closed dispatch workflow must not be reintroduced");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, retry, and deploy-dispatch contracts passed.");
