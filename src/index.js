@@ -12013,7 +12013,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           );
           output.reply = executionResult.status === "completed"
             ? "改善依頼の PR を作成しました: " + executionResult.pullRequestUrl
-              + (executionResult.autoMergeEnabled ? "\\n自動マージ（squash）を有効化しました。CI が成功するまで GitHub 側で待機します。" : "\\n自動マージは有効化できませんでした: " + (executionResult.reason || "unknown"))
+              + (executionResult.autoMergeEnabled ? "\n自動マージが有効です。" : "\n自動マージは無効です。レビューとマージはオーナー判断です。")
             : "改善依頼を停止しました。理由: " + (executionResult.reason || executionResult.status);
           output.pendingGitHubWrite = null;
         }
