@@ -25,6 +25,8 @@ The operation is limited to live Obsidian notes and fails closed when the source
 
 This API is repository-only until reviewed, merged, and deployed. No YAOS-side protocol change or migration is required.
 
+When the note has no identity mapping yet, as for a note created through `POST /api/notes` before any pull, the caller may additionally pass `fileId`: the Vault fileId for the note's current path, as observed through `GET /sync/diff`, without running a pull. The Worker verifies that the declared `fileId`, the note's `note_id` and `sync_uuid`, the current path, and the destination path are not claimed by any other mapping or note, and that the note is live; on any mismatch it still fails closed with `sync_identity_mapping_conflict` and never creates a substitute file. On success the mapping (`file_id`, `sync_uuid`, `note_id`, `last_path` = destination path) is established in the same D1 batch as the move, so later operations treat it exactly like a pull-established mapping. Omitting `fileId` leaves the previous behavior unchanged.
+
 ## Note addressing and complete manifest (repository change, not yet deployed)
 
 - `GET /api/notes/<URL-encoded-path>` returns one live Obsidian note by its current `notes.path`, including `content`, `contentHash`, `syncUuid`, timestamps, and note metadata. Archived notes and unknown paths return 404. The route uses the existing API Bearer authentication.
