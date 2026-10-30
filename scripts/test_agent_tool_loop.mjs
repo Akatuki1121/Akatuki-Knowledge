@@ -416,9 +416,40 @@ await assert.rejects(runAgentToolLoop({
   saveCheckpoint: async () => true,
 }), (error) => error.message === "github_write_requires_complete_file_read");
 
+const patchPlan = {
+  repository: "example/project",
+  summary: "Patch a line in a large existing source file",
+  operations: [
+    { type: "create_branch", branch: "agent/patch-large-file", base_ref: "main" },
+    { type: "apply_patch", branch: "agent/patch-large-file", path: "src/index.js",
+      patch: "--- a/src/index.js\\n+++ b/src/index.js\\n@@ -20,1 +20,1 @@\\n-old\\n+new\\n",
+      message: "fix: update one line", sha: "b".repeat(40) },
+    { type: "create_pull_request", head: "agent/patch-large-file", base: "main",
+      title: "fix: update one line", body: "Apply a verified unified diff.", draft: false },
+  ],
+};
+const patchLoop = await runAgentToolLoop({
+  initialPrompt: "Patch a line in a large source file",
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  callModel: async ({ modelCall }) => {
+    if (modelCall === 1) return action("github_read_file", {
+      repository: "example/project", path: "src/index.js", ref: "main", start_line: 20, end_line: 30,
+    });
+    if (modelCall === 2) return action("github_propose_write", patchPlan);
+    return final("A SHA-verified patch plan is ready.");
+  },
+  executeTool: async (tool) => tool === "github_read_file"
+    ? { repository: "example/project", path: "src/index.js", sha: "b".repeat(40), totalLines: 5000, startLine: 20, endLine: 30, truncated: true, content: "function target() {}" }
+    : { pendingGitHubWrite: { status: "pending", plan: patchPlan } },
+  saveCheckpoint: async () => true,
+});
+assert.equal(patchLoop.reply, "A SHA-verified patch plan is ready.");
+assert.equal(patchLoop.toolCalls[1].tool, "github_propose_write");
+
 // A write plan whose shape fails validation is returned to the model as fixed feedback
-// (Issue #90) instead of killing the task: the model can re-propose within the
-// model-call budget, and only the corrected plan is executed and checkpointed.
+// (Issue #90) instead of killing the task: the model can correct a malformed plan;
+// an identical repeated invalid plan is rejected without a global call-count ceiling.
 const correctedBranchPlan = {
   repository: "example/project",
   summary: "Create a branch and add a note file",
