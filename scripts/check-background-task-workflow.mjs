@@ -147,6 +147,27 @@ const githubPrompt = source.slice(githubPromptStart, githubPromptEnd);
 assert.ok(githubPrompt.includes("依頼文と会話文脈から一意に特定できない場合は、推測で補完せず"), "GitHub tasks must ask when the repository or required Issue/PR target is ambiguous");
 assert.ok(githubPrompt.includes("GitHubツールを呼び出したり変更計画を作ったりする前に不足情報を短く質問"), "Ambiguous GitHub tasks must ask before tool execution or write planning");
 
+const improvementPromptStart = source.indexOf("あなたは日本語の改善依頼エージェントです。");
+const improvementPromptEnd = source.indexOf("\n              : prepared.allowGitHubRead", improvementPromptStart);
+const improvementPrompt = source.slice(improvementPromptStart, improvementPromptEnd);
+for (const required of [
+  "tests/",
+  "schema-snapshots/",
+  "migrations/pending/",
+  "wrangler.toml",
+  "package-lock.json",
+  "read-only permissions",
+  "auto-merge.yml",
+  "check.yml",
+  "deploy.yml",
+  "github_read_file",
+  "apply_patch",
+  "500000"
+]) {
+  assert.ok(improvementPrompt.includes(required), "Improvement agent prompt must disclose the expanded implementation scope: " + required);
+}
+assert.ok(!improvementPrompt.includes("変更対象は src/、scripts/、docs/ のみ"), "Improvement agent prompt must not retain the old reduced scope");
+
 // Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
 const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
 // Telegram 通知ステップ5件の廃止で 17 から 12 に減った。PR #169 で改善計画の実行と結果書き戻しの2ステップが加わり、14になった。
