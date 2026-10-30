@@ -12241,6 +12241,35 @@ __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/budget-audit/run" && request.method === "POST") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      try {
+        const audit = await runBudgetSelfAudit(env, Date.now(), {
+          includeSystemAudit: true,
+          createNote: async (note) => createNote(new Request("https://internal/api/notes", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(note),
+          }), env),
+        });
+        return Response.json({
+          ok: audit.ok === true,
+          report: audit.report ?? null,
+          noteCreated: audit.noteCreated === true || audit.report?.noteCreated === true,
+          recorded: audit.recorded === true,
+        }, { status: audit.ok ? 200 : 503, headers: JSON_HEADERS2 });
+      } catch (error) {
+        console.error(JSON.stringify({ budgetSelfAudit: { ok: false }, failure: describeSafeFailure("budget_self_audit_failed", error) }));
+        return Response.json({
+          ok: false,
+          report: null,
+          noteCreated: false,
+          recorded: false,
+          error: "budget_audit_failed",
+        }, { status: 502, headers: JSON_HEADERS2 });
+      }
+    }
+
     if (url.pathname === "/api/budget-audit" && request.method === "GET") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       if (!env.DB) return Response.json({ error: "audit_database_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
