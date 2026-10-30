@@ -133,13 +133,13 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
     } else if (response.tool === "github_read_file") {
       if (typeof args.path !== "string" || !args.path.trim() || args.path.length > 240
         || typeof args.ref !== "string" || args.ref.length > 120) throw invalidInput("github_read_file_args");
-      if (args.start_line !== undefined && (!Number.isSafeInteger(args.start_line) || args.start_line < 1 || args.start_line > 1_000_000)) {
+      if (args.start_line != null && (!Number.isSafeInteger(args.start_line) || args.start_line < 1 || args.start_line > 1_000_000)) {
         throw invalidInput("github_read_file_range");
       }
-      if (args.end_line !== undefined && (!Number.isSafeInteger(args.end_line) || args.end_line < 1 || args.end_line > 1_000_000)) {
+      if (args.end_line != null && (!Number.isSafeInteger(args.end_line) || args.end_line < 1 || args.end_line > 1_000_000)) {
         throw invalidInput("github_read_file_range");
       }
-      if (args.start_line !== undefined && args.end_line !== undefined
+      if (args.start_line != null && args.end_line != null
         && (args.end_line < args.start_line || args.end_line - args.start_line > 999)) {
         throw invalidInput("github_read_file_range");
       }
