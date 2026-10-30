@@ -669,7 +669,6 @@ export async function recordAgentTaskFailure(db, input) {
 
   if (decision.action === "retry") {
     const retryAt = toSqliteDateTime(decision.retryAtMs);
-    const isWorkersAiQuotaWait = input.errorClass === "workers_ai_daily_quota_exhausted";
     const retryDay = retryAt.slice(0, 10);
     const releaseWorkflowBudget = retryDay !== now.slice(0, 10);
     const updateTask = db.prepare(`
