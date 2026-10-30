@@ -498,8 +498,8 @@ for (const malformedPlan of malformedBranchPlans) {
   assert.ok(!prompts[1].includes(JSON.stringify(malformedPlan)), "Feedback must not echo the rejected plan back");
 }
 
-// A model that never fixes the plan exhausts the model-call budget and the task fails
-// with the reason-coded error, not the bare invalid_input that hid the failure point.
+// A model that never fixes the plan is stopped by repeated-invalid-plan detection,
+// not by an arbitrary global model-call limit.
 let historyCompactionCalls = 0;
 let compactedPrompt = "";
 const longHistory = await runAgentToolLoop({
