@@ -19,10 +19,18 @@ class D1Database {
   constructor(sqlite) { this.sqlite = sqlite; }
   prepare(sql) { return new D1Statement(this.sqlite, sql); }
   batch(statements) {
-    return this.sqlite.transaction(() => statements.map((statement) => {
-      const result = this.sqlite.prepare(statement.sql).run(...statement.values);
-      return { meta: { changes: Number(result.changes) } };
-    }))();
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const results = statements.map((statement) => {
+        const result = this.sqlite.prepare(statement.sql).run(...statement.values);
+        return { meta: { changes: Number(result.changes) } };
+      });
+      this.sqlite.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
 }
 
