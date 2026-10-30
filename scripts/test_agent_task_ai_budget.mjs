@@ -168,7 +168,7 @@ row = sqlite.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task
 assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 1 });
 
 const nextDayBudget = sqlite.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = '2026-11-01'").get();
-assert.deepEqual({ ...nextDayBudget }, { tasks_reserved: 1, workflow_steps_reserved: 32 });
+assert.deepEqual({ ...nextDayBudget }, { tasks_reserved: 2, workflow_steps_reserved: 64 });
 
 sqlite.prepare(`
   INSERT INTO agent_tasks (task_id, task_type, status, stop_reason, deadline_at, next_attempt_at, created_at, updated_at)
