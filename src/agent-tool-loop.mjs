@@ -323,7 +323,7 @@ function compactToolResultForCheckpoint(call, keepRaw) {
       endLine: result.endLine,
       totalLines: result.totalLines,
       truncated: true,
-      excerpt: String(result.content ?? "").slice(0, 500),
+      content: String(result.content ?? "").slice(0, 500),
     };
   }
   const serialized = JSON.stringify(result);
