@@ -179,6 +179,9 @@ row = sqlite.prepare("SELECT status, budget_reserved, stop_reason FROM agent_tas
 assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 0, stop_reason: null });
 
 
+const staleAt = Date.parse("2026-10-31T14:00:00.000Z");
+const staleExpiry = toSqliteDateTime(staleAt - 60_000);
+const staleDeadline = toSqliteDateTime(staleAt + 60 * 60 * 1000);
 // Every AI reservation also renews a still-valid lease, so multiple model
 // calls cannot consume the original 120-second lease without refreshing it.
 sqlite.prepare(`
@@ -199,9 +202,6 @@ assert.equal(row.lease_expires_at, toSqliteDateTime(staleAt + 120_000));
 // Expired leases must not discard provider settlement or the final failure.
 // The lease token is the fencing value: expiry alone does not mean a new
 // workflow has claimed the task.
-const staleAt = Date.parse("2026-10-31T14:00:00.000Z");
-const staleExpiry = toSqliteDateTime(staleAt - 60_000);
-const staleDeadline = toSqliteDateTime(staleAt + 60 * 60 * 1000);
 sqlite.prepare(`
   INSERT INTO agent_tasks (
     task_id, task_type, status, payload_json, attempts, max_attempts,
