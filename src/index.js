@@ -314,7 +314,7 @@ async function runPostPullAutomation(env, pullSucceeded) {
     if (!response.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0
       || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0
       || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
-      console.log(JSON.stringify({ safeNoteIdRecovery: result.reconciliation }));
+      console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
     }
   } catch (error) {
     result.reconciliation = { ok: false };
