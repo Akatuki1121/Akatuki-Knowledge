@@ -13,14 +13,14 @@ const PROTECTED_WORKFLOWS = new Set([
   ".github/workflows/check.yml",
   ".github/workflows/deploy.yml",
 ]);
-const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "create_pull_request"]);
+const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "apply_patch", "create_pull_request"]);
 
 function validRepositoryPath(path, operationType) {
   if (typeof path !== "string" || !path || path.length > 240
     || path.startsWith("/") || path.includes("\\")
     || path.split("/").some((part) => part === ".." || part === "." || part === "")) return false;
   if (ALLOWED_FILE_ROOTS.some((root) => path.startsWith(root))) return true;
-  if (ALLOWED_ROOT_FILES.has(path)) return operationType === "update_file";
+  if (ALLOWED_ROOT_FILES.has(path)) return operationType === "update_file" || operationType === "apply_patch";
   if (path.startsWith(".github/workflows/")) {
     return operationType === "create_file" && !PROTECTED_WORKFLOWS.has(path)
       && /^[a-z0-9][a-z0-9._-]*\\.ya?ml$/iu.test(path.slice(".github/workflows/".length));
@@ -38,17 +38,19 @@ export function validateImprovementPlan(plan) {
   }
 
   const fileOperations = plan.operations.filter((operation) =>
-    operation.type === "create_file" || operation.type === "update_file");
+    operation.type === "create_file" || operation.type === "update_file" || operation.type === "apply_patch");
   if (fileOperations.length === 0) return { ok: false, reason: "no_file_changes" };
   for (const operation of fileOperations) {
     if (!validRepositoryPath(operation.path, operation.type)) {
       return { ok: false, reason: "changed_path_out_of_scope" };
     }
-    if (operation.type === "update_file"
+    if ((operation.type === "update_file" || operation.type === "apply_patch")
       && (typeof operation.sha !== "string" || !/^[a-f0-9]{40}$/iu.test(operation.sha))) {
       return { ok: false, reason: "existing_file_sha_required" };
     }
-    if (typeof operation.content !== "string" || operation.content.length > 200_000) {
+    const filePayload = operation.type === "apply_patch" ? operation.patch : operation.content;
+    const maxFilePayload = operation.type === "apply_patch" ? 100_000 : 200_000;
+    if (typeof filePayload !== "string" || filePayload.length > maxFilePayload) {
       return { ok: false, reason: "file_content_invalid_or_too_large" };
     }
   }
