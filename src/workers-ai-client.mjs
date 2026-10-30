@@ -1,4 +1,9 @@
-import { reserveWorkersAiBudget, settleWorkersAiBudget } from "./workers-ai-budget.mjs";
+import {
+  estimateWorkersAiPromptTokens,
+  reserveWorkersAiBudget,
+  settleWorkersAiBudget,
+  settleWorkersAiBudgetFailure,
+} from "./workers-ai-budget.mjs";
 
 // GLM-4.7-Flash remains available on Workers Free and supports multilingual tool-calling.
 export const WORKERS_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -75,11 +80,29 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options 
       ...(options.responseMimeType === "application/json" ? { response_format: { type: "json_object" } } : {})
     });
   } catch (error) {
+    // A response-less failure is charged for estimated input only. The reserved
+    // output allowance is released; no output tokens are invented.
+    const inputTokens = estimateWorkersAiPromptTokens(prompt);
+    try {
+      await settleWorkersAiBudgetFailure(env.DB, budgetReservation, inputTokens);
+      if (typeof options.onFailure === "function") await options.onFailure({ inputTokens });
+    } catch (settlementError) {
+      const failure = new Error("workers_ai_failure_settlement_failed");
+      failure.cause = settlementError;
+      failure.workersAiError = describeWorkersAiFailure(error);
+      throw failure;
+    }
     throw createWorkersAiRequestFailure(error);
   }
-  // Provider usage is authoritative when present. If omitted, keep the pre-call
-  // reservation so missing telemetry cannot silently undercount consumption.
-  await settleWorkersAiBudget(env.DB, budgetReservation, result?.usage).catch(() => {});
+  // Provider usage is authoritative when present. If omitted, keep both
+  // reservations so missing telemetry cannot silently undercount consumption.
+  const promptTokens = Number(result?.usage?.prompt_tokens);
+  const completionTokens = Number(result?.usage?.completion_tokens);
+  if (Number.isSafeInteger(promptTokens) && promptTokens >= 0
+    && Number.isSafeInteger(completionTokens) && completionTokens >= 0) {
+    await settleWorkersAiBudget(env.DB, budgetReservation, result.usage);
+    if (typeof options.onUsage === "function") await options.onUsage(result.usage);
+  }
   const response = typeof result?.response === "string" ? result.response : "";
   if (!response.trim() || response.length > 16_000) throw new Error("workers_ai_invalid_response");
   return response;
