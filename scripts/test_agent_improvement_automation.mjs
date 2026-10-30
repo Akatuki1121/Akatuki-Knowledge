@@ -43,7 +43,7 @@ const validPlan = () => ({
   ]
 });
 
-test("Workers AI client uses bounded tool-capable model and returns text", async () => {
+test("Workers AI client uses the model context window and returns text", async () => {
   let called;
   let usageSeen = null;
   const env = { DB: createBudgetDb(), AI: { run: async (...args) => { called = args; return {
@@ -128,12 +128,28 @@ test("Workers AI client truncates and redacts sanitized failure messages", async
   );
 });
 
-test("improvement plan rejects paths outside the three allowed roots", () => {
+test("improvement plan allows pending migrations and safe workflows but protects deployment controls", () => {
   const plan = validPlan();
   plan.operations[1].path = ".github/workflows/deploy.yml";
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
   plan.operations[1].path = "migrations/0014.sql";
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
+  plan.operations[1].path = "migrations/pending/0019_audit.sql";
+  assert.equal(validateImprovementPlan(plan).ok, true);
+  plan.operations[1].path = "tests/agent-improvement/new-check.mjs";
+  assert.equal(validateImprovementPlan(plan).ok, true);
+  plan.operations[1].path = ".github/workflows/audit-report.yml";
+  plan.operations[1].content = "name: Audit\\non:\\n  schedule:\\n    - cron: '0 0 * * *'\\npermissions:\\n  contents: read\\n";
+  assert.equal(validateImprovementPlan(plan).ok, true);
+  plan.operations[1].content += "\\npermissions:\\n  contents: write\\n";
+  assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
+  const patchPlan = validPlan();
+  patchPlan.operations[1] = {
+    type: "apply_patch", branch: "agent/fix-small-check", path: "src/index.js",
+    patch: "--- a/src/index.js\\n+++ b/src/index.js\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n",
+    message: "差分修正", sha: "a".repeat(40),
+  };
+  assert.equal(validateImprovementPlan(patchPlan).ok, true);
 });
 
 test("improvement request fixture uses current frontmatter-free heading format", async () => {
@@ -216,7 +232,9 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   const append = source.slice(appendStart, inboxStart);
   const inbox = source.slice(inboxStart, recoveryStart);
   assert.ok(append.includes('if (result?.status === "failed") return false;'));
-  assert.ok(inbox.includes('sameRequest && ["failed", "cancelled"].includes(previous?.status)'));
+  assert.ok(inbox.includes('sameRequest && previous?.status === "failed" && previous.stop_reason !== "daily_workflow_budget_exhausted"'));
+  assert.ok(inbox.includes("requeueAgentTaskAfterBudgetWait"));
+  assert.ok(inbox.includes("reserveQueuedAgentTaskBudget"));
   assert.ok(!inbox.includes('":retry:" + day'));
   assert.ok(inbox.includes("maxAttempts: 4"));
   assert.ok(inbox.includes("maxTaskAgeMs: 8 * 60 * 60 * 1000"));
