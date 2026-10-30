@@ -323,7 +323,7 @@ async function runPostPullAutomation(env, pullSucceeded) {
   if (pullSucceeded) {
     try {
       result.improvementInbox = await runImprovementInbox(env);
-      console.log(JSON.stringify({ improvementInbox: result.improvementInbox }));
+      console.log(JSON.stringify({ improvementInbox: { scanned: Number(result.improvementInbox?.scanned || 0), queued: Number(result.improvementInbox?.queued || 0), skipped: safeErrorCode(result.improvementInbox?.skipped) } }));
     } catch (error) {
       result.improvementInbox = { ok: false };
       console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
