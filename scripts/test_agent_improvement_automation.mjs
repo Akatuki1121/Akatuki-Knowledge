@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { callWorkersAi, WORKERS_AI_MODEL, WORKERS_AI_MAX_OUTPUT_TOKENS } from "../src/workers-ai-client.mjs";
 import { executeApprovedImprovementPlan } from "../src/agent-improvement-executor.mjs";
-import { validateImprovementPlan, improvementIdempotencyKey, IMPROVEMENT_AUTOMATION_LIMITS } from "../src/agent-improvement-policy.mjs";
+import { validateImprovementPlan, improvementIdempotencyKey, IMPROVEMENT_AUTOMATION_LIMITS, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
 import { hashGitHubWritePlan } from "../src/agent-github-tools.mjs";
 
 const validPlan = () => ({
@@ -139,4 +140,30 @@ test("rejected plan and hash mismatch make no GitHub calls", async () => {
   const allowed = validPlan();
   assert.deepEqual(await executeApprovedImprovementPlan({ plan: allowed, expectedPlanHash: "wrong-hash", token: "test-token", fetchImpl }), { ok: false, reason: "approved_plan_hash_mismatch" });
   assert.equal(calls, 0);
+});
+
+test("improvement result blocks are removed before retrying the original request", () => {
+  const original = "## 困っていること\\n\\n確認してほしい。";
+  const withResult = original + "\\n\\n<!-- akatuki-improvement-result:task-1 -->\\n### 改善エージェント実行結果\\n\\n\\x60\\x60\\x60json\\n{\\"status\\":\\"failed\\"}\\n\\x60\\x60\\x60\\n";
+  const withTwoResults = withResult + "\\n<!-- akatuki-improvement-result:task-2 -->\\n### 改善エージェント実行結果\\n\\n\\x60\\x60\\x60json\\n{\\"status\\":\\"failed\\"}\\n\\x60\\x60\\x60\\n";
+  assert.equal(stripImprovementResults(withResult), original);
+  assert.equal(stripImprovementResults(withTwoResults), original);
+  assert.equal(stripImprovementResults(original), original);
+});
+
+test("failed improvement tasks remain eligible and retries are idempotent per day", async () => {
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const appendStart = source.indexOf("async function appendImprovementResult");
+  const inboxStart = source.indexOf("async function runImprovementInbox", appendStart);
+  const recoveryStart = source.indexOf("async function recoverAgentTaskWorkflows", inboxStart);
+  assert.ok(appendStart >= 0 && inboxStart > appendStart && recoveryStart > inboxStart);
+  const append = source.slice(appendStart, inboxStart);
+  const inbox = source.slice(inboxStart, recoveryStart);
+  assert.ok(append.includes('if (result?.status === "failed") return false;'));
+  assert.ok(inbox.includes('["failed", "cancelled"].includes(previous?.status)'));
+  assert.ok(inbox.includes('":retry:" + day'));
+  assert.ok(inbox.includes('["queued", "running", "waiting"].includes(previous.status)'));
+  assert.ok(!/await markImprovementSeen\\(env, note\\.sync_uuid, note\\.content_hash\\);\\s*const task = admitted\\.task/u.test(inbox),
+    "Queue admission must not mark an improvement request as seen");
+  assert.ok(inbox.includes("Leave the note un-seen. A later scheduled scan can try again."));
 });
