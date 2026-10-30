@@ -279,7 +279,8 @@ export async function enqueueAgentTask(db, input) {
         : await sha256Hex(safeJson(existingPayload, "payload"));
       if (existingInputHash !== inputHash) throw new Error("idempotency_key_conflict");
       if (existing.status === "failed" && existing.stop_reason === "daily_workflow_budget_exhausted") {
-        const nextResetMs = Date.UTC(nowMsDate(nowMs).getUTCFullYear(), nowMsDate(nowMs).getUTCMonth(), nowMsDate(nowMs).getUTCDate() + 1, 0, 1, 0);
+        const currentDate = new Date(nowMs);
+        const nextResetMs = Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth(), currentDate.getUTCDate() + 1, 0, 1, 0);
         const retryAt = toSqliteDateTime(nextResetMs);
         const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
         await db.prepare(`
