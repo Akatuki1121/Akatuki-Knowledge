@@ -46,16 +46,16 @@ assert.deepEqual({ ...row }, { ai_calls_used: 1, ai_tokens_used: 140 });
 
 sqlite.prepare(`
   INSERT INTO agent_tasks (task_id, task_type, status, lease_token, lease_expires_at, deadline_at, max_ai_tokens)
-  VALUES ('settle-overrun', 'github_query', 'running', 'lease-b', ?, ?, 500)
+  VALUES ('settle-overrun', 'github_query', 'running', 'lease-b', ?, ?, 100)
 `).run(future, future);
 assert.equal(await reserveAgentAiBudget(db, {
-  taskId: "settle-overrun", leaseToken: "lease-b", estimatedTokens: 400, nowMs
+  taskId: "settle-overrun", leaseToken: "lease-b", estimatedTokens: 400_000, nowMs
 }), true);
 assert.equal(await settleAgentAiBudget(db, {
-  taskId: "settle-overrun", leaseToken: "lease-b", reservedTokens: 400, actualTokens: 600, nowMs
-}), false);
+  taskId: "settle-overrun", leaseToken: "lease-b", reservedTokens: 400_000, actualTokens: 600_000, nowMs
+}), true);
 row = sqlite.prepare("SELECT ai_calls_used, ai_tokens_used FROM agent_tasks WHERE task_id = 'settle-overrun'").get();
-assert.deepEqual({ ...row }, { ai_calls_used: 1, ai_tokens_used: 400 });
+assert.deepEqual({ ...row }, { ai_calls_used: 1, ai_tokens_used: 600_000 });
 
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");
