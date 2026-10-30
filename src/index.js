@@ -12135,14 +12135,18 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
         }
         if (failure.decision?.action === "retry") {
-          if (errorClass === "workers_ai_daily_quota_exhausted") {
-            // End this Workflow run. The daily Workflow reservation is moved to
-            // the next UTC day and recovery Cron will reserve fresh steps then.
+          const retryAt = new Date(failure.decision.retryAtMs).toISOString();
+          const retryDay = retryAt.slice(0, 10);
+          const currentUtcDay = new Date().toISOString().slice(0, 10);
+          if (errorClass === "workers_ai_daily_quota_exhausted" || retryDay !== currentUtcDay) {
+            // End this Workflow run when a retry crosses UTC midnight. The
+            // daily reservation moves with it; recovery Cron reserves fresh
+            // steps on the retry day before restarting the task.
             return {
               taskId,
               status: "waiting",
-              stopReason: "workers_ai_daily_quota_exhausted",
-              retryAt: new Date(failure.decision.retryAtMs).toISOString(),
+              stopReason: errorClass,
+              retryAt,
             };
           }
           await step.sleepUntil("retry-" + attempt, failure.decision.retryAtMs);
