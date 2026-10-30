@@ -239,6 +239,7 @@ export async function runAgentToolLoop(input) {
   // validation, appended to the next prompt, and cleared once a response validates.
   // It is never written into checkpoints, so a resumed loop re-derives it from scratch.
   let writePlanFeedback = null;
+  let rejectedWritePlanSignature = null;
 
   while (true) {
     let action = state.pendingAction;
@@ -279,7 +280,7 @@ export async function runAgentToolLoop(input) {
       } catch (error) {
         // A github_propose_write response whose plan fails validateGitHubWritePlan with
         // the bare "invalid_input" is a shape mistake the model can fix: hand back the
-        // fixed feedback and let it re-propose within the model-call budget (Issue #90).
+        // fixed feedback and let it re-propose while avoiding an identical invalid-plan retry loop (Issue #90).
         // At this point in validation the only bare "invalid_input" source for such a
         // response is the plan validator; other validator errors (github_path_blocked,
         // github_write_plan_too_large, unknown_tool) keep their messages and rethrow,
@@ -291,11 +292,14 @@ export async function runAgentToolLoop(input) {
           || error.message !== "invalid_input") {
           throw error;
         }
-        if (state.modelCalls >= maxModelCalls) throw invalidInput("write_plan_shape");
+        const rejectedSignature = JSON.stringify(parsed);
+        if (rejectedWritePlanSignature === rejectedSignature) throw invalidInput("write_plan_shape");
+        rejectedWritePlanSignature = rejectedSignature;
         writePlanFeedback = AGENT_GITHUB_WRITE_PLAN_FEEDBACK;
         continue;
       }
       writePlanFeedback = null;
+      rejectedWritePlanSignature = null;
 
       if (action.action === "final") {
         const allowedIds = noteIdsFromTranscript(state.transcript, input.contextNotes);
