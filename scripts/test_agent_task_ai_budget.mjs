@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, toSqliteDateTime } from "../src/background-task-store.mjs";
+import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
@@ -92,6 +92,46 @@ row = sqlite.prepare("SELECT status, budget_reserved, next_attempt_at FROM agent
 assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 1, next_attempt_at: "2026-10-31 00:02:00" });
 const budgetRow = sqlite.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = '2026-10-31'").get();
 assert.deepEqual({ ...budgetRow }, { tasks_reserved: 1, workflow_steps_reserved: 32 });
+
+const quotaAt = Date.parse("2026-10-31T12:00:00.000Z");
+sqlite.prepare(`
+  UPDATE agent_tasks
+  SET status = 'running', lease_token = 'quota-lease',
+      lease_expires_at = '2026-10-31 13:00:00',
+      deadline_at = '2026-10-31 20:00:00',
+      attempts = 1, started_at = '2026-10-31 00:02:00'
+  WHERE task_id = 'queued-for-workflow-budget'
+`).run();
+const quotaFailure = await recordAgentTaskFailure(db, {
+  taskId: "queued-for-workflow-budget",
+  leaseToken: "quota-lease",
+  errorClass: "workers_ai_daily_quota_exhausted",
+  errorDetail: "Cloudflare Workers AI daily free allocation reached",
+  retryable: true,
+  nowMs: quotaAt,
+});
+assert.equal(quotaFailure.applied, true);
+assert.equal(quotaFailure.decision.action, "retry");
+assert.equal(quotaFailure.decision.retryAtMs, Date.parse("2026-11-01T00:01:00.000Z"));
+row = sqlite.prepare("SELECT status, budget_reserved, attempts, last_error_class, next_attempt_at, deadline_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.deepEqual({ ...row }, {
+  status: "waiting",
+  budget_reserved: 0,
+  attempts: 0,
+  last_error_class: "workers_ai_daily_quota_exhausted",
+  next_attempt_at: "2026-11-01 00:01:00",
+  deadline_at: "2026-11-01 01:01:00",
+});
+const quotaReservation = sqlite.prepare("SELECT budget_day, counted FROM agent_task_budget_reservations WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.deepEqual({ ...quotaReservation }, { budget_day: "2026-11-01", counted: 0 });
+const nextDayReservation = await reserveQueuedAgentTaskBudget(db, {
+  nowMs: Date.parse("2026-11-01T00:02:00.000Z"),
+});
+assert.equal(nextDayReservation.reserved, 1);
+row = sqlite.prepare("SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.deepEqual({ ...row }, { status: "waiting", budget_reserved: 1, next_attempt_at: "2026-11-01 00:02:00" });
+const nextDayBudget = sqlite.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = '2026-11-01'").get();
+assert.deepEqual({ ...nextDayBudget }, { tasks_reserved: 1, workflow_steps_reserved: 32 });
 
 sqlite.prepare(`
   INSERT INTO agent_tasks (task_id, task_type, status, stop_reason, deadline_at, next_attempt_at, created_at, updated_at)
