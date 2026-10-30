@@ -101,6 +101,20 @@ assert.equal(deadlineClamped.stopReason, "retry_would_exceed_task_deadline");
 
 assert.equal(TASK_BUDGET_CEILINGS.maxAttempts, 4);
 assert.equal(TASK_BUDGET_CEILINGS.maxTaskAgeMs, 3_600_000);
+assert.equal(TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs, 8 * 60 * 60 * 1000);
+assert.equal(TASK_BUDGET_CEILINGS.maxImprovementRetryDelayMs, 3 * 60 * 60 * 1000);
+
+const improvementRetry = {
+  ...base,
+  deadlineAtMs: 8 * 60 * 60 * 1000,
+  maxTaskAgeMs: 8 * 60 * 60 * 1000,
+  maxRetryDelayMs: 3 * 60 * 60 * 1000,
+  retryDelaysMs: [60 * 60 * 1000, 3 * 60 * 60 * 1000, 3 * 60 * 60 * 1000],
+};
+assert.equal(decideTaskRetry(improvementRetry).delayMs, 60 * 60 * 1000);
+assert.equal(decideTaskRetry({ ...improvementRetry, attempts: 2 }).delayMs, 3 * 60 * 60 * 1000);
+assert.equal(decideTaskRetry({ ...improvementRetry, attempts: 3 }).delayMs, 3 * 60 * 60 * 1000);
+assert.equal(decideTaskRetry({ ...improvementRetry, attempts: 4 }).stopReason, "attempt_budget_exhausted");
 
 // --- classifyAgentTaskError (moved from src/index.js in #86) ---
 // Every fixed class is matched from the message, in list order.
@@ -140,6 +154,7 @@ assert.equal(classifyAgentTaskError(new Error("quota exhausted for this project"
 assert.equal(classifyAgentTaskError(new TypeError("429 from upstream")), "rate_limited");
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 500")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 503 Service Unavailable")), "upstream_5xx");
+assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: WorkersAiError: upstream unavailable (code=503)")), "upstream_5xx");
 const timeoutByName = new Error("boom");
 timeoutByName.name = "TimeoutError";
 assert.equal(classifyAgentTaskError(timeoutByName), "timeout");
