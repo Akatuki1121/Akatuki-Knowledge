@@ -115,3 +115,8 @@ Workers AI のモデルは `@cf/meta/llama-3.1-8b-instruct` です。出力上�
 自動実行は計画ハッシュを再計算し、保存された計画と一致する場合だけ許可します。操作はブランチ作成、`src/`・`scripts/`・`docs/` 内のファイル作成/更新、最後の PR 作成に限定されます。`.github/workflows/`、`migrations/`、その他のパス、Issue・コメント、削除、権限変更、リリース、デプロイは対象外です。範囲外の計画は PR 作成前に停止し、理由を元ノートへ追記します。範囲内の PR は squash 自動マージを要求し、GitHub の必須チェックが成功するまでマージを待機します。
 
 処理結果（PR URL、自動マージの有効化状態、停止理由、失敗コード）は元ノートへ通常の correction API と同期 outbox 経由で追記されます。Web 調査は本経路では利用できず、一般の `POST /api/agent-tasks` からの Web 調査指定も拒否します。
+
+
+## Budget self-audit
+
+A read-only operational self-audit runs twice daily (00:00 and 12:00 UTC). Retrieve recent reports with authenticated `GET /api/budget-audit`. It checks recent task failures, repeated error classes, reserved Workflow steps, and Workers AI usage when its ledger exists. It makes no model calls and does not write notes or modify code.
