@@ -195,9 +195,9 @@ await evaluate("retry-policy-fails-closed", async () => {
   assert.equal(credentials.action, "stop");
 });
 
-assert.equal(AGENT_TOOL_LIMITS.maxModelCalls, 5);
-assert.equal(AGENT_TOOL_LIMITS.maxToolCalls, 4);
-assert.equal(TASK_BUDGET_CEILINGS.maxAiCalls, 20);
-assert.equal(TASK_BUDGET_CEILINGS.maxAiTokens, 40_000);
+assert.equal(Object.hasOwn(AGENT_TOOL_LIMITS, "maxModelCalls"), false);
+assert.equal(Object.hasOwn(AGENT_TOOL_LIMITS, "maxToolCalls"), false);
+assert.equal(Object.hasOwn(TASK_BUDGET_CEILINGS, "maxAiCalls"), false);
+assert.equal(Object.hasOwn(TASK_BUDGET_CEILINGS, "maxAiTokens"), false);
 
 console.log(`Agent evaluation set passed (${results.length} cases): ${results.join(", ")}.`);
