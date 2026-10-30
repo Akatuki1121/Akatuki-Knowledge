@@ -191,15 +191,20 @@ assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must 
 
 
 
-const deployOnMerge = await readFile(new URL("../.github/workflows/deploy-on-merge.yml", import.meta.url), "utf8");
-assert.ok(deployOnMerge.includes("pull_request:"), "Deploy dispatch must be triggered by pull_request events");
-assert.ok(deployOnMerge.includes("types: [closed]"), "Deploy dispatch must run after a PR is closed");
-assert.ok(deployOnMerge.includes("- main"), "Deploy dispatch must be limited to PRs targeting main");
-assert.ok(deployOnMerge.includes("if: github.event.pull_request.merged == true"), "Only merged pull requests may dispatch Deploy");
-assert.ok(deployOnMerge.includes("permissions:\n  actions: write"), "Deploy dispatch must use only actions: write permission");
-assert.ok(deployOnMerge.includes("gh run list --workflow deploy.yml --branch main"), "Deploy dispatch must inspect recent Deploy workflow runs");
-assert.ok(deployOnMerge.includes("github.event.pull_request.merge_commit_sha"), "Duplicate detection must use the PR merge commit SHA");
-assert.ok(deployOnMerge.includes('grep -Fxq "$MERGE_SHA"'), "An existing run for the merge commit must suppress dispatch");
-assert.ok(deployOnMerge.includes("gh workflow run deploy.yml --ref main"), "A missing run must dispatch Deploy against main");
+const deployWorkflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+const autoMergeDeploy = await readFile(new URL("../.github/workflows/deploy-after-auto-merge.yml", import.meta.url), "utf8");
+assert.ok(deployWorkflow.includes('cron: "*/5 * * * *"'), "A periodic reconciliation must recover missed push-triggered deploys");
+assert.ok(deployWorkflow.includes("workflow_dispatch:"), "Deploy must support explicit workflow dispatch");
+assert.ok(deployWorkflow.includes("statuses: write"), "Deploy must be able to record the result against the target commit");
+assert.ok(deployWorkflow.includes('context=production-deploy'), "Deploy must publish a stable commit status context");
+assert.ok(deployWorkflow.includes("find migrations/pending -maxdepth 1 -type f -name '*.sql'"), "Deploy must keep the pending D1 migration gate");
+assert.ok(deployWorkflow.includes("bash scripts/deploy-production.sh"), "GitHub Actions must use the shared production deployment script");
+assert.ok(autoMergeDeploy.includes("workflow_run:"), "Automatic merge completion must be observed independently of push events");
+assert.ok(autoMergeDeploy.includes("自動マージ設定"), "The auto-merge workflow must trigger the deploy watcher");
+assert.ok(autoMergeDeploy.includes("github.event.workflow_run.head_sha"), "The deploy watcher must identify the triggering commit");
+assert.ok(autoMergeDeploy.includes("commits/$HEAD_SHA/pulls"), "The deploy watcher must resolve the PR from the commit SHA");
+assert.ok(autoMergeDeploy.includes('gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/dispatches" -f ref=main'), "The deploy watcher must use the explicit workflow_dispatch API");
+assert.ok(autoMergeDeploy.includes("timeout-minutes: 35"), "The merge watcher must have a bounded wait");
+assert.ok(!autoMergeDeploy.includes("deploy-on-merge.yml"), "The old pull_request.closed dispatch workflow must not be reintroduced");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, retry, and deploy-dispatch contracts passed.");
