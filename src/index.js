@@ -10,6 +10,8 @@ import {
   claimNextAgentTask,
   reserveAgentAiBudget,
   settleAgentAiBudget,
+  reserveQueuedAgentTaskBudget,
+  requeueAgentTaskAfterBudgetWait,
   saveAgentTaskCheckpoint,
   completeAgentTask,
   recordAgentTaskFailure,
@@ -11448,6 +11450,9 @@ __name(isAuthorized, "isAuthorized");
 
 async function ensureAgentTaskWorkflow(env, taskId, options = {}) {
   const { forceRestart = false, allowRestart = false } = options;
+  const taskRow = await env.DB.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task_id = ?").bind(taskId).first();
+  if (!taskRow || taskRow.budget_reserved !== 1
+    || !["queued", "running", "waiting"].includes(taskRow.status)) return "budget_deferred";
   let instance = null;
   try {
     instance = await env.AGENT_TASK_WORKFLOW.get(taskId);
@@ -11542,7 +11547,7 @@ async function runImprovementInbox(env) {
     const seenKey = await improvementSeenKey(note.sync_uuid, note.content_hash);
     const seen = await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first();
     const previous = await env.DB.prepare(`
-      SELECT task_id, status, payload_json
+      SELECT task_id, status, stop_reason, payload_json
       FROM agent_tasks
       WHERE json_extract(payload_json, '$.improvementRequest') = 1
         AND json_extract(payload_json, '$.sourceSyncUuid') = ?
@@ -11566,7 +11571,8 @@ async function runImprovementInbox(env) {
     // A terminal failure/cancellation is not retried unchanged. Editing the
     // request changes its content hash and creates a fresh attempt; transient
     // errors are retried by the Workflow's bounded task retry schedule.
-    if (sameRequest && ["failed", "cancelled"].includes(previous?.status)) continue;
+    if (sameRequest && previous?.status === "cancelled") continue;
+    if (sameRequest && previous?.status === "failed" && previous.stop_reason !== "daily_workflow_budget_exhausted") continue;
     if (seen) continue;
     const requestTokens = estimateWorkersAiPromptTokens(requestContent);
     if (requestTokens >= 131_072 || !requestContent.trim()) {
@@ -11577,9 +11583,20 @@ async function runImprovementInbox(env) {
     }
     // Daily admission is governed by the shared Cloudflare Workflow-step and
     // Workers AI Neurons budgets, not an arbitrary improvement-task count.
-    const existingAttempt = await env.DB.prepare("SELECT status FROM agent_tasks WHERE idempotency_key = ?")
+    const existingAttempt = await env.DB.prepare("SELECT task_id, status, stop_reason FROM agent_tasks WHERE idempotency_key = ?")
       .bind(taskIdempotencyKey).first();
-    if (existingAttempt) continue;
+    if (existingAttempt) {
+      if (existingAttempt.status === "failed" && existingAttempt.stop_reason === "daily_workflow_budget_exhausted") {
+        await requeueAgentTaskAfterBudgetWait(env.DB, existingAttempt.task_id, Date.now());
+        await reserveQueuedAgentTaskBudget(env.DB, { nowMs: Date.now() });
+        const requeuedTask = await env.DB.prepare("SELECT status, budget_reserved FROM agent_tasks WHERE task_id = ?")
+          .bind(existingAttempt.task_id).first();
+        if (requeuedTask?.budget_reserved === 1 && requeuedTask.status === "queued") {
+          await ensureAgentTaskWorkflow(env, existingAttempt.task_id, { allowRestart: false });
+        }
+      }
+      continue;
+    }
     try {
       const admitted = await enqueueAgentTask(env.DB, {
         taskId: crypto.randomUUID(),
@@ -11620,7 +11637,7 @@ async function runImprovementInbox(env) {
   }
   return { scanned, queued, hasMore: rows.length >= 30 };
 }
-async function recoverAgentTaskWorkflows(env, limit = 5) {
+async function recoverAgentTaskWorkflows(env, limit = 20) {
   const nowMs = Date.now();
   const now = toSqliteDateTime(nowMs);
   try {
@@ -11628,6 +11645,7 @@ async function recoverAgentTaskWorkflows(env, limit = 5) {
   } catch {
     return { checked: 0, dispatched: 0, deferred: 0, skipped: "task_table_unavailable" };
   }
+  const budgetReservation = await reserveQueuedAgentTaskBudget(env.DB, { nowMs });
   const tasks = await listRecoverableAgentTasks(env.DB, { nowMs, limit });
   let dispatched = 0;
   let deferred = 0;
@@ -11642,7 +11660,7 @@ async function recoverAgentTaskWorkflows(env, limit = 5) {
       deferred++;
     }
   }
-  return { checked: tasks.length, dispatched, deferred };
+  return { checked: tasks.length, dispatched, deferred, budgetReserved: budgetReservation.reserved || 0, budgetAvailable: budgetReservation.available ?? null };
 }
 __name(recoverAgentTaskWorkflows, "recoverAgentTaskWorkflows");
 
