@@ -67,7 +67,6 @@ const result = await runAgentToolLoop({
     assert.match(prompt, /信頼できない参照データ/);
     if (modelCall === 2) assert.match(prompt, /role":"tool"/);
     if (modelCall === 3) assert.match(prompt, /"name":"get_note"/);
-    assert.ok(toolCalls < AGENT_TOOL_LIMITS.maxToolCalls);
     return responses.shift();
   },
   executeTool: async (tool, args, state) => {
@@ -114,7 +113,7 @@ for (const [response, reason] of [
 for (const [raw, reason] of [
   ["The count is 12.", "model_response_not_json"],
   ["[1, 2]", "model_response_not_object"],
-  ["x".repeat(16_001), "model_response_size"],
+  ["x".repeat(524_289), "model_response_size"],
   [undefined, "model_response_size"],
 ]) {
   await assert.rejects(
@@ -264,21 +263,23 @@ assert.equal(repeatedExecutions, 1, "A repeated tool call must stop before its s
 
 let boundedCalls = 0;
 let boundedTools = 0;
-await assert.rejects(runAgentToolLoop({
-  initialPrompt: "Repeatedly search",
-  maxToolCalls: 2,
+const manyTurns = await runAgentToolLoop({
+  initialPrompt: "Continue investigating until enough evidence is collected",
   callModel: async ({ modelCall }) => {
     boundedCalls++;
-    return action("search_notes", { query: "search " + modelCall });
+    return modelCall <= 5
+      ? action("search_notes", { query: "search " + modelCall })
+      : final("Completed after several searches.");
   },
   executeTool: async () => {
     boundedTools++;
     return { notes: [] };
   },
   saveCheckpoint: async () => true,
-}), (error) => error.message === "tool_budget_exhausted");
-assert.equal(boundedCalls, 3);
-assert.equal(boundedTools, 2);
+});
+assert.equal(manyTurns.reply, "Completed after several searches.");
+assert.equal(boundedCalls, 6);
+assert.equal(boundedTools, 5);
 
 let resumedModelCalls = 0;
 let resumedToolCalls = 0;
@@ -481,7 +482,7 @@ await assert.rejects(runAgentToolLoop({
   executeTool: async () => { stubbornExecutions++; },
   saveCheckpoint: async () => true,
 }), (error) => error.message === "invalid_input:write_plan_shape");
-assert.equal(stubbornModelCalls, AGENT_TOOL_LIMITS.maxModelCalls, "Plan retries stay within the model-call budget");
+assert.equal(stubbornModelCalls, 2, "An identical invalid write plan must stop without a global model-call ceiling");
 assert.equal(stubbornExecutions, 0, "A rejected plan must never execute");
 
 // Safety rejections are not shape mistakes: a blocked path still fails immediately
