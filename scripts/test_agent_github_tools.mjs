@@ -67,6 +67,11 @@ const file = await executeGitHubReadTool("github_read_file", {
 }, { fetchImpl });
 assert.equal(file.content, "# Hello\nWorld");
 assert.equal(file.truncated, false);
+const secondLine = await executeGitHubReadTool("github_read_file", {
+  repository: "example/project", path: "README.md", ref: "main", start_line: 2, end_line: 2,
+}, { fetchImpl });
+assert.equal(secondLine.content, "World");
+assert.equal(secondLine.startLine, 2);
 
 await assert.rejects(executeGitHubReadTool("github_read_file", {
   repository: "example/project", path: ".env", ref: "",
@@ -140,9 +145,17 @@ assert.throws(() => validateGitHubWritePlan({
   })),
 }), /invalid_input/);
 
-const original = "alpha\\nbeta\\ngamma\\n";
-const unifiedDiff = "--- a/docs/agent.md\\n+++ b/docs/agent.md\\n@@ -2,1 +2,1 @@\\n-beta\\n+BETA\\n";
-assert.equal(applyUnifiedPatch(original, unifiedDiff, "docs/agent.md"), "alpha\\nBETA\\ngamma\\n");
+const newline = String.fromCharCode(10);
+const original = ["alpha", "beta", "gamma", ""].join(newline);
+const unifiedDiff = [
+  "--- a/docs/agent.md",
+  "+++ b/docs/agent.md",
+  "@@ -2,1 +2,1 @@",
+  "-beta",
+  "+BETA",
+  "",
+].join(newline);
+assert.equal(applyUnifiedPatch(original, unifiedDiff, "docs/agent.md"), ["alpha", "BETA", "gamma", ""].join(newline));
 assert.throws(() => applyUnifiedPatch(original, unifiedDiff, "docs/other.md"), /github_patch_path_mismatch/);
 assert.throws(() => applyUnifiedPatch(original, unifiedDiff.replace("-beta", "-wrong"), "docs/agent.md"), /github_patch_context_mismatch/);
 
@@ -177,7 +190,7 @@ const patchPlan = {
   ],
 };
 await executeGitHubWritePlan(patchPlan, { token: "test-token", fetchImpl: patchFetch });
-assert.equal(patchedContent, "alpha\\nBETA\\ngamma\\n");
+assert.equal(patchedContent, ["alpha", "BETA", "gamma", ""].join(newline));
 
 // The tool definition shown to the model must disclose exactly the keys the validator
 // requires (Issue #90): for every operation type, a plan built from exactly the
@@ -187,6 +200,7 @@ const sampleOperations = {
   create_branch: { type: "create_branch", branch: "bot/task", base_ref: "main" },
   create_file: { type: "create_file", branch: "bot/task", path: "docs/note.md", content: "# Note\n", message: "docs: add note" },
   update_file: { type: "update_file", branch: "bot/task", path: "docs/note.md", content: "# Note\n", message: "docs: update note", sha: "a".repeat(40) },
+  apply_patch: { type: "apply_patch", branch: "bot/task", path: "src/index.js", patch: "--- a/src/index.js\\n+++ b/src/index.js\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n", message: "patch: update index", sha: "a".repeat(40) },
   create_issue: { type: "create_issue", title: "Issue title", body: "Issue body" },
   add_issue_comment: { type: "add_issue_comment", number: 1, body: "Comment body" },
   create_pull_request: { type: "create_pull_request", head: "bot/task", base: "main", title: "PR title", body: "PR body", draft: true },
