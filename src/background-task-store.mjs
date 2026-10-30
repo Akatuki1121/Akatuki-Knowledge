@@ -711,7 +711,7 @@ export async function recordAgentTaskFailure(db, input) {
     );
     if (!releaseWorkflowBudget) {
       const result = await updateTask.run();
-      return { applied: result?.meta?.changes === 1, decision };
+      return { applied: result?.meta?.changes === 1, decision, workflowBudgetReleased: false };
     }
     const results = await db.batch([
       updateTask,
@@ -726,7 +726,7 @@ export async function recordAgentTaskFailure(db, input) {
           )
       `).bind(retryDay, input.taskId, input.taskId),
     ]);
-    return { applied: results?.[0]?.meta?.changes === 1, decision };
+    return { applied: results?.[0]?.meta?.changes === 1, decision, workflowBudgetReleased: true };
   }
 
   const result = await db.prepare(`
