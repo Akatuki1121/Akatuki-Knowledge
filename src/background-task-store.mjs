@@ -351,10 +351,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
       .bind(budgetDay).first();
     if (!budget) return { reserved: 0, available: 0, reason: "budget_row_unavailable" };
 
-    const available = Math.max(0, Math.min(
-      Math.floor((2_700 - Number(budget.workflow_steps_reserved || 0)) / 32),
-      90 - Number(budget.tasks_reserved || 0),
-    ));
+    const available = Math.max(0, Math.floor((2_700 - Number(budget.workflow_steps_reserved || 0)) / 32));
     if (available === 0) {
       await db.prepare(`
         UPDATE agent_tasks
@@ -392,8 +389,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
           WHERE task_id = ? AND budget_day = ? AND counted = 0
             AND EXISTS (
               SELECT 1 FROM agent_task_daily_budget
-              WHERE budget_day = ? AND tasks_reserved < 90
-                AND workflow_steps_reserved + 32 <= 2700
+              WHERE budget_day = ? AND workflow_steps_reserved + 32 <= 2700
             )
         `).bind(taskId, budgetDay, budgetDay),
         db.prepare(`
@@ -401,8 +397,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
           SET tasks_reserved = tasks_reserved + 1,
               workflow_steps_reserved = workflow_steps_reserved + 32,
               updated_at = ?
-          WHERE budget_day = ? AND tasks_reserved < 90
-            AND workflow_steps_reserved + 32 <= 2700
+          WHERE budget_day = ? AND workflow_steps_reserved + 32 <= 2700
             AND EXISTS (
               SELECT 1 FROM agent_task_budget_reservations r
               JOIN agent_tasks t ON t.task_id = r.task_id
@@ -448,10 +443,7 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
 
     const remaining = (await db.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?")
       .bind(budgetDay).first()) || {};
-    const left = Math.max(0, Math.min(
-      Math.floor((2_700 - Number(remaining.workflow_steps_reserved || 0)) / 32),
-      90 - Number(remaining.tasks_reserved || 0),
-    ));
+    const left = Math.max(0, Math.floor((2_700 - Number(remaining.workflow_steps_reserved || 0)) / 32));
     if (left === 0) {
       await db.prepare(`
         UPDATE agent_tasks
