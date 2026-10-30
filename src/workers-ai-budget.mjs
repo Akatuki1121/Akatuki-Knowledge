@@ -34,7 +34,7 @@ function modelRates(model) {
 export function estimateWorkersAiNeurons(input) {
   const rates = modelRates(input.model);
   const promptTokens = estimateWorkersAiPromptTokens(input.prompt);
-  const outputTokens = Math.max(128, Math.min(1024, Math.floor(Number(input.maxOutputTokens) || 512)));
+  const outputTokens = Math.max(1, Math.min(131_072, Math.floor(Number(input.maxOutputTokens) || 131_072)));
   return Math.max(1, Math.ceil((promptTokens * rates.input + outputTokens * rates.output) / 1_000_000));
 }
 
@@ -48,32 +48,32 @@ export function calculateWorkersAiNeurons(model, usage) {
 }
 
 export async function reserveWorkersAiBudget(db, input) {
-  if (!db || typeof db.prepare !== "function") throw new Error("workers_ai_budget_unavailable");
+  if (!db || typeof db.prepare !== "function") return { tracked: false, day: null, model: input.model, reservedNeurons: 0 };
   const nowMs = Number.isFinite(input.nowMs) ? input.nowMs : Date.now();
   const now = new Date(nowMs).toISOString();
-  const day = now.slice(0, 10); // Cloudflare's daily allocation resets at 00:00 UTC.
+  const day = now.slice(0, 10); // Cloudflare resets the account-wide allocation at 00:00 UTC.
   const neurons = estimateWorkersAiNeurons(input);
-
-  await db.prepare(`
-    INSERT INTO workers_ai_daily_usage (usage_day, reserved_neurons, actual_neurons, calls_completed, updated_at)
-    VALUES (?, 0, 0, 0, ?)
-    ON CONFLICT(usage_day) DO NOTHING
-  `).bind(day, now).run();
-
-  const admitted = await db.prepare(`
-    UPDATE workers_ai_daily_usage
-    SET reserved_neurons = reserved_neurons + ?, updated_at = ?
-    WHERE usage_day = ?
-      AND actual_neurons + reserved_neurons + ? <= ?
-    RETURNING usage_day
-  `).bind(neurons, now, day, neurons, WORKERS_AI_DAILY_NEURON_LIMIT).first();
-
-  if (!admitted) throw new Error("workers_ai_daily_budget_exhausted");
-  return { day, model: input.model, reservedNeurons: neurons };
+  try {
+    await db.prepare(`
+      INSERT INTO workers_ai_daily_usage (usage_day, reserved_neurons, actual_neurons, calls_completed, updated_at)
+      VALUES (?, 0, 0, 0, ?)
+      ON CONFLICT(usage_day) DO NOTHING
+    `).bind(day, now).run();
+    await db.prepare(`
+      UPDATE workers_ai_daily_usage
+      SET reserved_neurons = reserved_neurons + ?, updated_at = ?
+      WHERE usage_day = ?
+    `).bind(neurons, now, day).run();
+    return { tracked: true, day, model: input.model, reservedNeurons: neurons };
+  } catch {
+    // Telemetry schema rollout must never disable Workers AI. Cloudflare is the
+    // authoritative quota gate and will reject requests after the Free allocation.
+    return { tracked: false, day, model: input.model, reservedNeurons: 0 };
+  }
 }
 
 export async function settleWorkersAiBudget(db, reservation, usage, nowMs = Date.now()) {
-  if (!reservation || !Number.isInteger(reservation.reservedNeurons)) return { settled: false, reason: "invalid_reservation" };
+  if (!reservation || !Number.isInteger(reservation.reservedNeurons)) return { settled: false, reason: "invalid_reservation" };\n  if (reservation.tracked === false) return { settled: false, reason: "usage_ledger_unavailable" };
   const actualNeurons = calculateWorkersAiNeurons(reservation.model, usage);
   // If the binding omits usage, retain the conservative pre-call reservation.
   if (actualNeurons === null) return { settled: false, reason: "usage_unavailable" };
@@ -101,7 +101,7 @@ export async function settleWorkersAiBudgetFailure(db, reservation, inputTokens,
     || !Number.isSafeInteger(inputTokens) || inputTokens < 0) {
     throw new Error("workers_ai_budget_settlement_invalid");
   }
-  const actualNeurons = calculateWorkersAiNeurons(reservation.model, {
+  if (reservation.tracked === false) return { settled: false, reason: "usage_ledger_unavailable" };\n  const actualNeurons = calculateWorkersAiNeurons(reservation.model, {
     prompt_tokens: inputTokens,
     completion_tokens: 0,
   });
