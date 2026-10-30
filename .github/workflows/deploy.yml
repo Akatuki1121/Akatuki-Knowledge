@@ -86,7 +86,7 @@ jobs:
             echo "前回の本番反映状態: ${state:-記録なし}。デプロイを試みます。"
           fi
 
-      - name: 未適用 D1 マイグレーションによるデプロイ保留判定
+      - name: Gate deployment on pending D1 migrations
         id: migration_gate
         if: steps.already.outputs.deployed != 'true'
         env:
@@ -148,8 +148,8 @@ jobs:
         if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
         run: npm run check
 
-      - name: Cloudflare デプロイ認証情報を確認
-        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+      - name: Require Cloudflare deployment credential
+        if: steps.migration_gate.outputs.allowed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -158,9 +158,9 @@ jobs:
             exit 1
           fi
 
-      - name: 対象コミットを本番 Worker へデプロイ
+      - name: Deploy production Worker
         id: deploy_worker
-        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        if: steps.migration_gate.outputs.allowed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ea03cba73884bef04c37d1e21535e101
