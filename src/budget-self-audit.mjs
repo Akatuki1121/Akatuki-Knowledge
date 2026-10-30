@@ -81,9 +81,10 @@ function summarizeFindings({ budget, taskGroups, errorGroups, aiUsage }) {
 }
 
 /**
- * Deterministic, read-only operational audit. It deliberately makes no model
- * calls and writes only a compact report to app_meta. The two UTC slots and
- * unique keys cap persistence at two reports per day and prevent recursion.
+ * Deterministic operational audit. It makes no model calls; it stores a compact
+ * report and may create one bounded improvement-request note for the existing
+ * implementation workflow. The note is marked as audit-generated and cannot
+ * trigger another audit.
  */
 async function createAuditImprovementRequest(env, report, nowMs) {
   if (!report.findings.length) return { created: false, reason: "no_actionable_findings" };
@@ -194,7 +195,7 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now()) {
     limitations: [
       "Cloudflare account-wide Workers/D1/DO/Workflows usage is not attributed by this local D1 audit.",
       "GraphQL Analytics is not connected to the Worker; missing AI ledger data is reported as unavailable.",
-      "This audit is read-only and does not create notes, tasks, branches, or pull requests.",
+      "The audit may create at most one bounded improvement-request note per UTC day; the existing improvement workflow handles implementation and PR creation.",
     ],
   };
 
