@@ -131,6 +131,7 @@ assert.equal(
 );
 // Regex classes, in evaluation order.
 assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: daily Neurons quota exhausted")), "workers_ai_daily_quota_exhausted");
+assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: WorkersAiError: account limited (code=3036)")), "workers_ai_daily_quota_exhausted");
 assert.equal(classifyAgentTaskError(new Error("HTTP 429 Too Many Requests")), "rate_limited");
 assert.equal(classifyAgentTaskError(new Error("Rate limit exceeded")), "rate_limited");
 assert.equal(classifyAgentTaskError(new Error("quota exhausted for this project")), "rate_limited");
