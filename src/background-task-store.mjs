@@ -278,19 +278,38 @@ export async function enqueueAgentTask(db, input) {
         ? existingPayload.inputHash
         : await sha256Hex(safeJson(existingPayload, "payload"));
       if (existingInputHash !== inputHash) throw new Error("idempotency_key_conflict");
+      if (existing.status === "failed" && existing.stop_reason === "daily_workflow_budget_exhausted") {
+        const nextResetMs = Date.UTC(nowMsDate(nowMs).getUTCFullYear(), nowMsDate(nowMs).getUTCMonth(), nowMsDate(nowMs).getUTCDate() + 1, 0, 1, 0);
+        const retryAt = toSqliteDateTime(nextResetMs);
+        const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
+        await db.prepare(`
+          UPDATE agent_tasks
+          SET status = 'queued', budget_reserved = 0, stop_reason = NULL, completed_at = NULL,
+              next_attempt_at = ?, deadline_at = ?, updated_at = ?,
+              lease_token = NULL, lease_expires_at = NULL
+          WHERE task_id = ? AND status = 'failed' AND stop_reason = 'daily_workflow_budget_exhausted'
+        `).bind(retryAt, deadline, now, existing.task_id).run();
+        const requeued = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?").bind(existing.task_id).first();
+        return { created: false, queuedForBudget: true, task: presentTask(requeued) };
+      }
       return { created: false, task: presentTask(existing) };
     }
   }
   if (!row) throw new Error("agent_task_insert_not_confirmed");
 
   if (row.budget_reserved !== 1 && row.status === "queued") {
+    const current = new Date(nowMs);
+    const nextResetMs = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
+    const retryAt = toSqliteDateTime(nextResetMs);
+    const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
     await db.prepare(`
       UPDATE agent_tasks
-      SET status = 'failed', stop_reason = 'daily_workflow_budget_exhausted',
-          completed_at = ?, updated_at = ?
+      SET next_attempt_at = ?, deadline_at = CASE WHEN deadline_at < ? THEN ? ELSE deadline_at END,
+          updated_at = ?
       WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'
-    `).bind(now, now, taskId).run();
-    throw new Error("daily_workflow_budget_exhausted");
+    `).bind(retryAt, deadline, deadline, now, taskId).run();
+    const deferred = await db.prepare("SELECT * FROM agent_tasks WHERE task_id = ?").bind(taskId).first();
+    return { created: inserted, queuedForBudget: true, task: presentTask(deferred) };
   }
   if (row.budget_reserved !== 1 && row.status !== "queued") {
     return { created: inserted, task: presentTask(row) };
@@ -299,6 +318,152 @@ export async function enqueueAgentTask(db, input) {
     .bind(taskId).first();
   if (!admitted) throw new Error("agent_task_insert_not_confirmed");
   return { created: inserted, task: presentTask(admitted) };
+}
+
+/**
+ * Reserve the next available daily Workflow capacity for queued tasks. Tasks
+ * that do not fit remain queued and are deferred to the next UTC day.
+ */
+export async function reserveQueuedAgentTaskBudget(db, input = {}) {
+  const nowMs = finiteNumber(input.nowMs, Date.now());
+  const now = toSqliteDateTime(nowMs);
+  const current = new Date(nowMs);
+  const budgetDay = now.slice(0, 10);
+  const nextResetMs = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
+  const retryAt = toSqliteDateTime(nextResetMs);
+  const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
+
+  try {
+    await db.prepare(`
+      INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at)
+      VALUES (?, 0, 0, ?)
+      ON CONFLICT(budget_day) DO NOTHING
+    `).bind(budgetDay, now).run();
+
+    const budget = await db.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?")
+      .bind(budgetDay).first();
+    if (!budget) return { reserved: 0, available: 0, reason: "budget_row_unavailable" };
+
+    const available = Math.max(0, Math.min(
+      Math.floor((2_700 - Number(budget.workflow_steps_reserved || 0)) / 32),
+      90 - Number(budget.tasks_reserved || 0),
+    ));
+    if (available === 0) {
+      await db.prepare(`
+        UPDATE agent_tasks
+        SET next_attempt_at = ?, deadline_at = CASE WHEN deadline_at < ? THEN ? ELSE deadline_at END,
+            updated_at = ?
+        WHERE status = 'queued' AND budget_reserved = 0 AND next_attempt_at <= ?
+      `).bind(retryAt, deadline, deadline, now, now).run();
+      return { reserved: 0, available: 0, nextAttemptAt: retryAt };
+    }
+
+    const candidates = (await db.prepare(`
+      SELECT task_id
+      FROM agent_tasks
+      WHERE status = 'queued' AND budget_reserved = 0
+        AND next_attempt_at <= ? AND deadline_at > ? AND attempts < max_attempts
+      ORDER BY created_at ASC, task_id ASC
+      LIMIT ?
+    `).bind(now, now, available).all()).results || [];
+
+    let reserved = 0;
+    for (const candidate of candidates) {
+      const taskId = candidate.task_id;
+      const results = await db.batch([
+        db.prepare(`
+          INSERT INTO agent_task_budget_reservations (task_id, budget_day, workflow_steps, counted)
+          SELECT task_id, ?, 32, 0 FROM agent_tasks
+          WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
+          ON CONFLICT(task_id) DO UPDATE SET
+            budget_day = excluded.budget_day, workflow_steps = 32, counted = 0
+          WHERE agent_task_budget_reservations.counted = 0
+        `).bind(budgetDay, taskId),
+        db.prepare(`
+          UPDATE agent_task_budget_reservations
+          SET counted = 1
+          WHERE task_id = ? AND budget_day = ? AND counted = 0
+            AND EXISTS (
+              SELECT 1 FROM agent_task_daily_budget
+              WHERE budget_day = ? AND tasks_reserved < 90
+                AND workflow_steps_reserved + 32 <= 2700
+            )
+        `).bind(taskId, budgetDay, budgetDay),
+        db.prepare(`
+          UPDATE agent_task_daily_budget
+          SET tasks_reserved = tasks_reserved + 1,
+              workflow_steps_reserved = workflow_steps_reserved + 32,
+              updated_at = ?
+          WHERE budget_day = ? AND tasks_reserved < 90
+            AND workflow_steps_reserved + 32 <= 2700
+            AND EXISTS (
+              SELECT 1 FROM agent_task_budget_reservations r
+              JOIN agent_tasks t ON t.task_id = r.task_id
+              WHERE r.task_id = ? AND r.budget_day = ? AND r.counted = 1
+                AND t.status = 'queued' AND t.budget_reserved = 0
+            )
+        `).bind(now, budgetDay, taskId, budgetDay),
+      ]);
+      if (Number(results?.[2]?.meta?.changes || 0) !== 1) {
+        await db.prepare("UPDATE agent_task_budget_reservations SET counted = 0 WHERE task_id = ? AND budget_day = ? AND counted = 1")
+          .bind(taskId, budgetDay).run();
+        break;
+      }
+      await db.batch([
+        db.prepare("UPDATE agent_task_budget_reservations SET counted = 2 WHERE task_id = ? AND budget_day = ? AND counted = 1")
+          .bind(taskId, budgetDay),
+        db.prepare(`
+          UPDATE agent_tasks
+          SET budget_reserved = 1, next_attempt_at = ?, updated_at = ?
+          WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
+            AND EXISTS (
+              SELECT 1 FROM agent_task_budget_reservations
+              WHERE task_id = ? AND budget_day = ? AND counted = 2
+            )
+        `).bind(now, now, taskId, taskId, budgetDay),
+      ]);
+      reserved++;
+    }
+
+    const remaining = (await db.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = ?")
+      .bind(budgetDay).first()) || {};
+    const left = Math.max(0, Math.min(
+      Math.floor((2_700 - Number(remaining.workflow_steps_reserved || 0)) / 32),
+      90 - Number(remaining.tasks_reserved || 0),
+    ));
+    if (left === 0) {
+      await db.prepare(`
+        UPDATE agent_tasks
+        SET next_attempt_at = ?, deadline_at = CASE WHEN deadline_at < ? THEN ? ELSE deadline_at END,
+            updated_at = ?
+        WHERE status = 'queued' AND budget_reserved = 0 AND next_attempt_at <= ?
+      `).bind(retryAt, deadline, deadline, now, now).run();
+    }
+    return { reserved, available: left, scanned: candidates.length };
+  } catch {
+    return { reserved: 0, available: 0, reason: "workflow_budget_reservation_unavailable" };
+  }
+}
+
+/**
+ * Requeue tasks that an older Worker version incorrectly marked terminal when
+ * the daily Workflow-step reservation was full.
+ */
+export async function requeueAgentTaskAfterBudgetWait(db, taskId, nowMs = Date.now()) {
+  const now = toSqliteDateTime(nowMs);
+  const current = new Date(nowMs);
+  const nextResetMs = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
+  const retryAt = toSqliteDateTime(nextResetMs);
+  const deadline = toSqliteDateTime(nextResetMs + 60 * 60 * 1000);
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET status = 'queued', budget_reserved = 0, stop_reason = NULL, completed_at = NULL,
+        next_attempt_at = ?, deadline_at = ?, updated_at = ?,
+        lease_token = NULL, lease_expires_at = NULL
+    WHERE task_id = ? AND status = 'failed' AND stop_reason = 'daily_workflow_budget_exhausted'
+    RETURNING task_id
+  `).bind(retryAt, deadline, now, taskId).first();
+  return Boolean(result?.task_id);
 }
 
 /**
