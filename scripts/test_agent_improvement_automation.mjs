@@ -184,6 +184,7 @@ test("manual and scheduled pulls share the same post-pull automation", async () 
   const manual = source.slice(manualStart, scheduledStart);
   const scheduled = source.slice(scheduledStart);
   assert.ok(manual.includes("runPostPullAutomation(env, result.ok === true && result.applied === true)"));
+  assert.ok(manual.includes("if (apply) await drainSyncOutbox(env, 10)"));
   assert.ok(scheduled.includes("runPostPullAutomation(env, improvementPullReady)"));
   assert.equal((source.match(/await runPostPullAutomation\(env,/gu) || []).length, 2);
 });
