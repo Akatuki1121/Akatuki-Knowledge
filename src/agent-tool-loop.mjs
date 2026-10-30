@@ -416,9 +416,15 @@ export async function runAgentToolLoop(input) {
       state.toolCalls = compacted.toolCalls;
       state.transcript = compacted.transcript;
     }
+    // Persist an immutable snapshot. The in-memory loop continues appending
+    // actions/results after this call; sharing these arrays would mutate older
+    // checkpoints and break exactly-once recovery validation.
+    const snapshotToolCalls = JSON.parse(JSON.stringify(compacted?.toolCalls ?? checkpoint.toolCalls ?? []));
+    const snapshotTranscript = JSON.parse(JSON.stringify(compacted?.transcript ?? checkpoint.transcript ?? []));
     return input.saveCheckpoint({
       ...checkpoint,
-      ...(compacted ? { toolCalls: compacted.toolCalls, transcript: compacted.transcript } : {}),
+      toolCalls: snapshotToolCalls,
+      transcript: snapshotTranscript,
       initialPrompt: input.initialPrompt,
       contextNotes: input.contextNotes ?? [],
     });
