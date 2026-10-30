@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - 自動マージ設定
+      - Check recovered Worker and YAOS event sync
     types:
       - completed
 
