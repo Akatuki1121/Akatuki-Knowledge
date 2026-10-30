@@ -339,6 +339,28 @@ export async function reserveQueuedAgentTaskBudget(db, input = {}) {
       ON CONFLICT(budget_day) DO NOTHING
     `).bind(budgetDay, now).run();
 
+    await db.batch([
+      db.prepare(`
+        UPDATE agent_tasks
+        SET budget_reserved = 0, updated_at = ?
+        WHERE status IN ('queued', 'waiting') AND budget_reserved = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM agent_task_budget_reservations r
+            WHERE r.task_id = agent_tasks.task_id AND r.budget_day = ? AND r.counted = 2
+          )
+      `).bind(now, budgetDay),
+      db.prepare(`
+        UPDATE agent_task_budget_reservations
+        SET budget_day = ?, counted = 0
+        WHERE budget_day < ? AND counted = 2
+          AND EXISTS (
+            SELECT 1 FROM agent_tasks t
+            WHERE t.task_id = agent_task_budget_reservations.task_id
+              AND t.status IN ('queued', 'waiting') AND t.budget_reserved = 0
+          )
+      `).bind(budgetDay, budgetDay),
+    ]);
+
     await db.prepare(`
       UPDATE agent_tasks
       SET next_attempt_at = CASE WHEN next_attempt_at > ? THEN next_attempt_at ELSE ? END,
