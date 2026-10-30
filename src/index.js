@@ -12770,15 +12770,13 @@ var wrapper_default = {
             body: JSON.stringify(note),
           }), env),
         });
-        console.log(JSON.stringify({
-          budgetSelfAudit: {
-            ok: audit.ok,
-            status: audit.report?.status || null,
-            findings: audit.report?.findings?.length || 0,
-            noteCreated: audit.noteCreated === true,
-            recorded: audit.recorded === true,
-          },
-        }));
+        console.log(JSON.stringify({ budgetSelfAudit: {
+          ok: audit.ok,
+          status: audit.report?.status || null,
+          findings: audit.report?.findings?.length || 0,
+          noteCreated: audit.noteCreated === true,
+          recorded: audit.recorded === true,
+        } }));
       } catch (error) {
         console.log(JSON.stringify({ budgetSelfAudit: { ok: false }, failure: describeSafeFailure("budget_self_audit_failed", error) }));
       }
