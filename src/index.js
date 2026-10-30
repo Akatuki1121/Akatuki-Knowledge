@@ -12136,9 +12136,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         }
         if (failure.decision?.action === "retry") {
           const retryAt = new Date(failure.decision.retryAtMs).toISOString();
-          const retryDay = retryAt.slice(0, 10);
-          const currentUtcDay = new Date().toISOString().slice(0, 10);
-          if (errorClass === "workers_ai_daily_quota_exhausted" || retryDay !== currentUtcDay) {
+          if (failure.workflowBudgetReleased === true || errorClass === "workers_ai_daily_quota_exhausted") {
             // End this Workflow run when a retry crosses UTC midnight. The
             // daily reservation moves with it; recovery Cron reserves fresh
             // steps on the retry day before restarting the task.
