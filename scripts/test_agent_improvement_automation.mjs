@@ -206,7 +206,7 @@ test("improvement result blocks are removed before retrying the original request
   assert.equal(stripImprovementResults(original), original);
 });
 
-test("failed improvement tasks remain eligible and retries are idempotent per day", async () => {
+test("failed improvement tasks remain unchanged until edited; transient retries use the task retry schedule", async () => {
   const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
   const appendStart = source.indexOf("async function appendImprovementResult");
   const inboxStart = source.indexOf("async function runImprovementInbox", appendStart);
@@ -215,8 +215,10 @@ test("failed improvement tasks remain eligible and retries are idempotent per da
   const append = source.slice(appendStart, inboxStart);
   const inbox = source.slice(inboxStart, recoveryStart);
   assert.ok(append.includes('if (result?.status === "failed") return false;'));
-  assert.ok(inbox.includes('["failed", "cancelled"].includes(previous?.status)'));
-  assert.ok(inbox.includes('":retry:" + day'));
+  assert.ok(inbox.includes('sameRequest && ["failed", "cancelled"].includes(previous?.status)'));
+  assert.ok(!inbox.includes('":retry:" + day'));
+  assert.ok(inbox.includes("maxAttempts: 4"));
+  assert.ok(inbox.includes("maxTaskAgeMs: 8 * 60 * 60 * 1000"));
   assert.ok(inbox.includes('["queued", "running", "waiting"].includes(previous.status)'));
   assert.ok(!inbox.includes("await markImprovementSeen(env, note.sync_uuid, note.content_hash);\n      const task = admitted.task;"),
     "Queue admission must not mark an improvement request as seen");
