@@ -34,7 +34,7 @@ export const AGENT_WEB_RESEARCH_TOOL = Object.freeze({
 // code and the disclosed schema — never the rejected plan or any model/user content —
 // so the model can correct the plan within the existing model-call budget instead of
 // the task dying on the first proposal.
-export const AGENT_GITHUB_WRITE_PLAN_FEEDBACK = "直前の github_propose_write の計画は、形式検証で却下されました（理由コード: write_plan_shape）。計画は保存も実行もされていません。認証情報や機微情報の問題ではなく、キー構成や値の形式の問題です。引数は repository, summary, operations の3キーちょうどにしてください。操作は種類ごとの必須キーちょうどで構成し、余分なキーや不足をなくしてください: create_branch={type,branch,base_ref} / create_file={type,branch,path,content,message} / update_file={type,branch,path,content,message,sha} / create_issue={type,title,body} / add_issue_comment={type,number,body} / create_pull_request={type,head,base,title,body,draft}。summaryは500字以内、messageとtitleは200字以内、contentは20000字以内、bodyは10000字以内、shaは40桁の16進数、draftは真偽値です。修正した計画を github_propose_write で再提案してください。再提案できない場合は、計画を作らず最終回答で理由を述べてください。";
+export const AGENT_GITHUB_WRITE_PLAN_FEEDBACK = "直前の github_propose_write の計画は、形式検証で却下されました（理由コード: write_plan_shape）。計画は保存も実行もされていません。認証情報や機微情報の問題ではなく、キー構成や値の形式の問題です。引数は repository, summary, operations の3キーちょうどにしてください。operationsは1〜50件です。各操作は種類ごとの必須キーちょうどで構成してください: create_branch={type,branch,base_ref} / create_file={type,branch,path,content,message} / update_file={type,branch,path,content,message,sha} / apply_patch={type,branch,path,patch,message,sha} / create_issue={type,title,body} / add_issue_comment={type,number,body} / create_pull_request={type,head,base,title,body,draft}。contentは200000字以内、patchは100000字以内、summaryは500字以内、messageとtitleは200字以内、bodyは10000字以内、shaは40桁の16進数、draftは真偽値です。apply_patchは --- a/<path> と +++ b/<path> ヘッダーを持つ単一ファイルのunified diffにしてください。修正した計画を github_propose_write で再提案してください。";
 
 const exactKeys = (value, keys) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -133,6 +133,16 @@ export function validateAgentToolAction(response, { allowWebResearch = false, al
     } else if (response.tool === "github_read_file") {
       if (typeof args.path !== "string" || !args.path.trim() || args.path.length > 240
         || typeof args.ref !== "string" || args.ref.length > 120) throw invalidInput("github_read_file_args");
+      if (args.start_line !== undefined && (!Number.isSafeInteger(args.start_line) || args.start_line < 1 || args.start_line > 1_000_000)) {
+        throw invalidInput("github_read_file_range");
+      }
+      if (args.end_line !== undefined && (!Number.isSafeInteger(args.end_line) || args.end_line < 1 || args.end_line > 1_000_000)) {
+        throw invalidInput("github_read_file_range");
+      }
+      if (args.start_line !== undefined && args.end_line !== undefined
+        && (args.end_line < args.start_line || args.end_line - args.start_line > 999)) {
+        throw invalidInput("github_read_file_range");
+      }
     }
     return { action: "tool", tool: response.tool, arguments: { ...args, repository: args.repository.trim() } };
   }
