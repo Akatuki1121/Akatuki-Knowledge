@@ -11479,12 +11479,6 @@ async function markImprovementSeen(env, syncUuid, contentHash) {
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at").bind(key, now).run();
 }
-async function reserveImprovementTaskSlot(env, day) {
-  const key = "agent_improvement_daily:" + day;
-  const now = new Date().toISOString();
-  return env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1, updated_at = excluded.updated_at WHERE CAST(value AS INTEGER) < ? RETURNING value")
-    .bind(key, now, IMPROVEMENT_AUTOMATION_LIMITS.maxTasksPerDay).first();
-}
 async function appendImprovementResult(env, payload, taskId, result) {
   if (payload?.improvementRequest !== true || typeof payload.improvementNotePath !== "string"
     || typeof payload.sourceSyncUuid !== "string") return false;
@@ -11572,12 +11566,11 @@ async function runImprovementInbox(env) {
       }, "rejected-" + idempotencyKey, { status: "stopped", reason: requestContent.length > 8000 ? "request_too_large" : "empty_request" });
       continue;
     }
-    // Do not spend the daily task allowance for a duplicate retry key.
+    // Daily admission is governed by the shared Cloudflare Workflow-step and
+    // Workers AI Neurons budgets, not an arbitrary improvement-task count.
     const existingAttempt = await env.DB.prepare("SELECT status FROM agent_tasks WHERE idempotency_key = ?")
       .bind(taskIdempotencyKey).first();
     if (existingAttempt) continue;
-    const slot = await reserveImprovementTaskSlot(env, day);
-    if (!slot) return { scanned, queued, skipped: "daily_automation_limit" };
     try {
       const admitted = await enqueueAgentTask(env.DB, {
         taskId: crypto.randomUUID(),
