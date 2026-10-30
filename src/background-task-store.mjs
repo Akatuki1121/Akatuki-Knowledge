@@ -657,6 +657,7 @@ export async function recordAgentTaskFailure(db, input) {
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
     errorClass: input.errorClass,
+    previousErrorClass: row.last_error_class,
     retryable: input.retryable === true,
   });
 
