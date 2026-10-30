@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { describeWorkersAiFailure } from "../src/workers-ai-client.mjs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import {
@@ -169,4 +170,18 @@ test("unknown model pricing degrades telemetry only and never blocks inference",
   });
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM workers_ai_daily_usage").get().count, 0);
   sqlite.close();
+});
+
+
+test("Workers AI failure description retains both provider code and HTTP status", () => {
+  const upstreamFailure = new Error("upstream unavailable");
+  upstreamFailure.name = "WorkersAiError";
+  upstreamFailure.code = "model_error";
+  upstreamFailure.status = 503;
+  assert.deepEqual(describeWorkersAiFailure(upstreamFailure), {
+    name: "WorkersAiError",
+    message: "upstream unavailable",
+    code: "model_error",
+    status: 503,
+  });
 });
