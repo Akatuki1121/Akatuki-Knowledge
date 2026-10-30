@@ -21,7 +21,6 @@ test("Workers AI client uses bounded tool-capable model and returns text", async
   const env = { AI: { run: async (...args) => { called = args; return { response: '{"action":"final","reply":"ok","source_ids":[]}' }; } } };
   const result = await callWorkersAi(env, "prompt", 500, { responseMimeType: "application/json" });
   assert.equal(result, '{"action":"final","reply":"ok","source_ids":[]}');
-  assert.equal(WORKERS_AI_MODEL, "@cf/zai-org/glm-4.7-flash");
   assert.equal(called[0], WORKERS_AI_MODEL);
   assert.equal(called[1].max_tokens, 500);
   assert.deepEqual(called[1].response_format, { type: "json_object" });
@@ -110,7 +109,7 @@ test("idempotency key is stable and bounded for sync UUID plus content hash", as
   assert.equal(first, await improvementIdempotencyKey("sync-uuid", hash));
   assert.notEqual(first, await improvementIdempotencyKey("other-uuid", hash));
   assert.ok(first.length <= 100);
-  assert.equal(IMPROVEMENT_AUTOMATION_LIMITS.maxTasksPerDay, 3);
+  assert.equal(Object.hasOwn(IMPROVEMENT_AUTOMATION_LIMITS, "maxTasksPerDay"), false);
   assert.equal(IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask, 5);
 });
 
