@@ -148,7 +148,7 @@ export function validateGitHubWritePlan(input) {
     || Object.keys(input).sort().join(",") !== "operations,repository,summary") throw new Error("invalid_input");
   const repository = validateRepository(input.repository);
   const summary = validateShortText(input.summary, 500, "summary");
-  if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 50) {
+  if (!Array.isArray(input.operations) || input.operations.length < 1) {
     throw new Error("invalid_input");
   }
   const operations = input.operations.map((op) => {
