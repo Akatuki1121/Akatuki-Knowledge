@@ -203,6 +203,31 @@ test("eligible plan creates PR and enables squash auto-merge through mocked GitH
   assert.ok(calls.some((call) => call.url.endsWith("/graphql") && call.body.variables.input.mergeMethod === "SQUASH"));
 });
 
+test("already-enabled squash auto-merge is idempotent", async () => {
+  const plan = validPlan();
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method || "GET" });
+    if (String(url).endsWith("/git/ref/heads/main")) return Response.json({ object: { sha: "a".repeat(40) } });
+    if (String(url).endsWith("/git/refs")) return Response.json({ ref: "refs/heads/agent/fix-small-check" });
+    if (String(url).includes("/contents/src/example.mjs")) return Response.json({ content: { path: "src/example.mjs" }, commit: { sha: "b".repeat(40) } });
+    if (String(url).endsWith("/pulls") && options.method === "POST") return Response.json({ number: 43, html_url: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/43" });
+    if (String(url).endsWith("/pulls/43")) return Response.json({
+      node_id: "PR_node_id",
+      auto_merge: { enabled_at: "2026-10-30T00:00:00Z", merge_method: "squash" },
+    });
+    if (String(url).endsWith("/graphql")) throw new Error("GraphQL must not be called when auto-merge is already enabled");
+    throw new Error("unexpected_mock_request");
+  };
+  const result = await executeApprovedImprovementPlan({ plan, expectedPlanHash: await hashGitHubWritePlan(plan), token: "test-token", fetchImpl });
+  assert.deepEqual(result, {
+    ok: true,
+    pullRequestUrl: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/43",
+    autoMergeEnabled: true,
+  });
+  assert.equal(calls.some((call) => call.url.endsWith("/graphql")), false);
+});
+
 test("rejected plan and hash mismatch make no GitHub calls", async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; throw new Error("should_not_call"); };
