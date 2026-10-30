@@ -9,6 +9,12 @@ assert.ok(deployWorkflow.includes("find migrations/pending -maxdepth 1 -type f -
 assert.ok(deployWorkflow.includes("if: steps.migration_gate.outputs.allowed == 'true'"), "Credential validation and deploy must require the migration gate");
 assert.ok(deployWorkflow.indexOf("Gate deployment on pending D1 migrations") < deployWorkflow.indexOf("Deploy production Worker"), "Migration gate must precede the deploy step");
 
+const productionDeployScript = await readFile(new URL("../scripts/deploy-production.sh", import.meta.url), "utf8");
+assert.ok(deployWorkflow.includes("bash scripts/deploy-production.sh"), "GitHub Actions must use the shared production deploy script");
+assert.ok(productionDeployScript.includes("find migrations/pending -maxdepth 1 -type f -name '*.sql'"), "Shared production deploy script must block pending D1 migrations");
+assert.ok(productionDeployScript.includes('git rev-parse HEAD'), "Production deployment must identify the exact checked-out commit");
+assert.ok(productionDeployScript.includes("npx --yes wrangler@4.69.0 deploy"), "Production deployment must use the pinned Wrangler version");
+
 for (const required of [
   'name = "akatuki-knowledge"',
   'main = "src/index.js"',
