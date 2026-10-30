@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import {
-  WORKERS_AI_DAILY_NEURON_LIMIT,
+  WORKERS_AI_FREE_DAILY_NEURONS,
   calculateWorkersAiNeurons,
   estimateWorkersAiInputTokens,
   estimateWorkersAiNeurons,
@@ -54,25 +54,42 @@ test("model usage converts prompt and completion tokens to Neurons", () => {
   assert.equal(calculateWorkersAiNeurons("@cf/zai-org/glm-4.7-flash", {}), null);
 });
 
-test("daily reservation is atomic and rejects only when the Neurons budget is exhausted", async () => {
+test("daily Neurons reservations are telemetry only and never block provider calls", async () => {
   const { sqlite, db } = makeDb();
   const first = await reserveWorkersAiBudget(db, {
     model: "@cf/zai-org/glm-4.7-flash", prompt: "短い依頼", maxOutputTokens: 1024,
     nowMs: Date.parse("2026-10-30T08:59:00Z")
   });
   assert.equal(first.day, "2026-10-30");
+  assert.equal(first.tracked, true);
   const before = sqlite.prepare("SELECT reserved_neurons FROM workers_ai_daily_usage").get();
   assert.equal(before.reserved_neurons, first.reservedNeurons);
 
-  sqlite.prepare("UPDATE workers_ai_daily_usage SET actual_neurons = ?").run(WORKERS_AI_DAILY_NEURON_LIMIT);
-  await assert.rejects(
-    reserveWorkersAiBudget(db, {
-      model: "@cf/zai-org/glm-4.7-flash", prompt: "次の依頼", maxOutputTokens: 1024,
-      nowMs: Date.parse("2026-10-30T08:59:30Z")
-    }),
-    (error) => error.message === "workers_ai_daily_budget_exhausted"
-  );
+  sqlite.prepare("UPDATE workers_ai_daily_usage SET actual_neurons = ?").run(WORKERS_AI_FREE_DAILY_NEURONS * 10);
+  const second = await reserveWorkersAiBudget(db, {
+    model: "@cf/zai-org/glm-4.7-flash", prompt: "次の依頼", maxOutputTokens: 1024,
+    nowMs: Date.parse("2026-10-30T08:59:30Z")
+  });
+  assert.equal(second.tracked, true);
+  assert.ok(second.reservedNeurons > 0);
+  const after = sqlite.prepare("SELECT reserved_neurons, actual_neurons FROM workers_ai_daily_usage").get();
+  assert.equal(after.reserved_neurons, before.reserved_neurons + second.reservedNeurons);
+  assert.equal(after.actual_neurons, WORKERS_AI_FREE_DAILY_NEURONS * 10);
   sqlite.close();
+});
+
+test("missing telemetry schema never blocks a Workers AI request", async () => {
+  const unavailableDb = { prepare() { throw new Error("no such table: workers_ai_daily_usage"); } };
+  const reservation = await reserveWorkersAiBudget(unavailableDb, {
+    model: "@cf/zai-org/glm-4.7-flash", prompt: "依頼", maxOutputTokens: 131072,
+  });
+  assert.equal(reservation.tracked, false);
+  assert.deepEqual(await settleWorkersAiBudget(unavailableDb, reservation, {
+    prompt_tokens: 10, completion_tokens: 10,
+  }), { settled: false, reason: "usage_ledger_unavailable" });
+  assert.deepEqual(await settleWorkersAiBudgetFailure(unavailableDb, reservation, 10), {
+    settled: false, reason: "usage_ledger_unavailable",
+  });
 });
 
 test("settlement replaces a reservation with measured usage and UTC day rolls over", async () => {
