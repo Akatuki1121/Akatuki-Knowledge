@@ -1,5 +1,5 @@
-const MAX_RESULT_CHARS = 10_000;
-const MAX_FILE_CHARS = 8_000;
+const MAX_RESULT_CHARS = 40_000;
+const MAX_FILE_CHARS = 30_000;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u;
 const PATH_PATTERN = /^[A-Za-z0-9_./@+-]{1,240}$/u;
 const BLOCKED_PATH_PARTS = /(?:^|\/)(?:\.env(?:\..*)?|\.dev\.vars|secrets?|credentials?|private[-_]?keys?)(?:\/|$)|\.(?:pem|p12|pfx|key)$/iu;
@@ -26,9 +26,9 @@ export const GITHUB_READ_TOOLS = Object.freeze({
     arguments: Object.freeze(["repository", "number"]),
   }),
   github_read_file: Object.freeze({
-    description: "Read a bounded text file from a public GitHub repository's branch. Sensitive file paths are blocked.",
+    description: "Read a text file from a public GitHub repository branch. Optional line ranges are supported; sensitive file paths are blocked.",
     sideEffect: "external_read",
-    arguments: Object.freeze(["repository", "path", "ref"]),
+    arguments: Object.freeze(["repository", "path", "ref", "start_line", "end_line"]),
   }),
 });
 
@@ -79,7 +79,7 @@ async function githubGet(path, { token, fetchImpl = fetch, signal } = {}) {
     throw new Error("github_request_failed");
   }
   const text = await response.text();
-  if (text.length > 100_000) throw new Error("github_response_too_large");
+  if (text.length > 2_000_000) throw new Error("github_response_too_large");
   try {
     return JSON.parse(text);
   } catch {
@@ -146,7 +146,7 @@ export function validateGitHubWritePlan(input) {
     || Object.keys(input).sort().join(",") !== "operations,repository,summary") throw new Error("invalid_input");
   const repository = validateRepository(input.repository);
   const summary = validateShortText(input.summary, 500, "summary");
-  if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 5) {
+  if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 50) {
     throw new Error("invalid_input");
   }
   const operations = input.operations.map((op) => {
@@ -159,7 +159,7 @@ export function validateGitHubWritePlan(input) {
       case "create_file": {
         if (!exactObjectKeys(op, ["type", "branch", "path", "content", "message"])) throw new Error("invalid_input");
         return { type: op.type, branch: validateBranch(op.branch), path: validateWritePath(op.path),
-          content: validateContent(op.content, 20_000),
+          content: validateContent(op.content, 200_000),
           message: validateShortText(op.message, 200, "message") };
       }
       case "update_file": {
@@ -189,7 +189,7 @@ export function validateGitHubWritePlan(input) {
     }
   });
   const normalized = { repository, summary, operations };
-  if (JSON.stringify(normalized).length > 9_000) throw new Error("github_write_plan_too_large");
+  if (JSON.stringify(normalized).length > 200_000) throw new Error("github_write_plan_too_large");
   return normalized;
 }
 
