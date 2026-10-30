@@ -54,12 +54,12 @@ function createWorkersAiRequestFailure(error) {
   return failure;
 }
 
-export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options = {}) {
+export async function callWorkersAi(env, prompt, maxOutputTokens = WORKERS_AI_MAX_OUTPUT_TOKENS, options = {}) {
   if (!env?.AI || typeof env.AI.run !== "function") throw new Error("workers_ai_binding_missing");
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("invalid_input");
   const requested = Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : WORKERS_AI_MAX_OUTPUT_TOKENS;
-  const promptTokens = estimateWorkersAiPromptTokens(prompt);
-  const contextRemaining = Math.max(1, 131_072 - promptTokens);
+  const estimatedPromptTokens = estimateWorkersAiPromptTokens(prompt);
+  const contextRemaining = Math.max(1, 131_072 - estimatedPromptTokens);
   const maxTokens = Math.max(1, Math.min(WORKERS_AI_MAX_OUTPUT_TOKENS, requested, contextRemaining));
   const messages = [
     {
