@@ -16,13 +16,6 @@ assert.ok(productionDeployScript.includes("find migrations/pending -maxdepth 1 -
 assert.ok(productionDeployScript.includes("git rev-parse HEAD"), "Production deployment must identify the exact checked-out commit");
 assert.ok(productionDeployScript.includes("npx --yes wrangler@4.69.0 deploy"), "Production deployment must use the pinned Wrangler version");
 
-const productionDeployScript = await readFile(new URL("../scripts/deploy-production.sh", import.meta.url), "utf8");
-assert.ok(deployWorkflow.includes("bash scripts/deploy-production.sh"), "GitHub Actions must use the shared production deploy script");
-assert.ok(deployWorkflow.includes("scripts/deploy-production.sh"), "Changes to the shared deploy script must trigger Deploy");
-assert.ok(productionDeployScript.includes("find migrations/pending -maxdepth 1 -type f -name '*.sql'"), "Shared production deploy script must block pending D1 migrations");
-assert.ok(productionDeployScript.includes("git rev-parse HEAD"), "Production deployment must identify the exact checked-out commit");
-assert.ok(productionDeployScript.includes("npx --yes wrangler@4.69.0 deploy"), "Production deployment must use the pinned Wrangler version");
-
 for (const required of [
   'name = "akatuki-knowledge"',
   'main = "src/index.js"',
