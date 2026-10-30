@@ -11449,6 +11449,12 @@ async function markImprovementSeen(env, syncUuid, contentHash) {
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at").bind(key, now).run();
 }
+function stripImprovementResults(content) {
+  let cleaned = String(content ?? "");
+  const resultBlock = /(?:\\r?\\n){2}<!-- akatuki-improvement-result:[^>]+ -->\\r?\\n### 改善エージェント実行結果\\r?\\n\\r?\\n\\x60\\x60\\x60json\\r?\\n[\\s\\S]*?\\r?\\n\\x60\\x60\\x60\\s*$/u;
+  while (resultBlock.test(cleaned)) cleaned = cleaned.replace(resultBlock, "");
+  return cleaned.trimEnd();
+}
 async function reserveImprovementTaskSlot(env, day) {
   const key = "agent_improvement_daily:" + day;
   const now = new Date().toISOString();
@@ -11458,6 +11464,9 @@ async function reserveImprovementTaskSlot(env, day) {
 async function appendImprovementResult(env, payload, taskId, result) {
   if (payload?.improvementRequest !== true || typeof payload.improvementNotePath !== "string"
     || typeof payload.sourceSyncUuid !== "string") return false;
+  // A failed task did not complete the requested check. Keep the source note
+  // unchanged so the inbox scanner can retry it on a later scheduled run.
+  if (result?.status === "failed") return false;
   const row = await env.DB.prepare("SELECT id, path, sync_uuid, content, content_hash FROM notes WHERE path = ? AND deleted_at IS NULL")
     .bind(payload.improvementNotePath).first();
   if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
@@ -11473,8 +11482,8 @@ async function appendImprovementResult(env, payload, taskId, result) {
     error: recordedError,
     recordedAt: new Date().toISOString()
   });
-  const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
-    + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n" + resultText + "\n\x60\x60\x60\n";
+  const content = row.content.replace(/\\s*$/, "") + "\\n\\n" + marker
+    + "\\n### 改善エージェント実行結果\\n\\n\\x60\\x60\\x60json\\n" + resultText + "\\n\\x60\\x60\\x60\\n";
   const route = new URL("/api/notes/" + encodeURIComponent(row.id) + "/correction", "https://internal");
   const request = new Request(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
   const response = await correctNote(request, route, env);
@@ -11494,28 +11503,67 @@ async function runImprovementInbox(env) {
     scanned++;
     if (typeof note.sync_uuid !== "string" || !note.sync_uuid
       || typeof note.content_hash !== "string" || !/^[a-f0-9]{64}$/i.test(note.content_hash)) continue;
+    const requestContent = stripImprovementResults(note.content);
     const idempotencyKey = await improvementIdempotencyKey(note.sync_uuid, note.content_hash);
     const seenKey = await improvementSeenKey(note.sync_uuid, note.content_hash);
-    if (await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first()) continue;
-    if (note.content.length > 8000 || !note.content.trim()) {
-      await appendImprovementResult(env, {
-        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
-      }, "rejected-" + idempotencyKey, { status: "stopped", reason: note.content.length > 8000 ? "request_too_large" : "empty_request" });
-      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+    const seen = await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first();
+    const previous = await env.DB.prepare(`
+      SELECT task_id, status, payload_json
+      FROM agent_tasks
+      WHERE json_extract(payload_json, '$.improvementRequest') = 1
+        AND json_extract(payload_json, '$.sourceSyncUuid') = ?
+        AND json_extract(payload_json, '$.improvementNotePath') = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).bind(note.sync_uuid, note.path).first();
+    let taskIdempotencyKey = "improvement:" + idempotencyKey;
+    let retryingFailedRequest = false;
+    let previousPayload = null;
+    try {
+      previousPayload = previous?.payload_json ? JSON.parse(previous.payload_json) : null;
+    } catch {
+      previousPayload = null;
+    }
+    const sameRequest = previousPayload?.prompt === requestContent;
+    if (sameRequest && previous && ["queued", "running", "waiting"].includes(previous.status)) continue;
+    if (sameRequest && previous?.status === "succeeded") {
+      if (!seen) await markImprovementSeen(env, note.sync_uuid, note.content_hash);
       continue;
     }
+    if (sameRequest && ["failed", "cancelled"].includes(previous?.status)) {
+      // The prior failure may have written a result block before this fix.
+      // Reuse its original source hash and strip generated result blocks from
+      // the prompt so a retry checks the user's request, not its own report.
+      const sourceHash = previousPayload?.sourceContentHash;
+      if (typeof sourceHash === "string" && /^[a-f0-9]{64}$/i.test(sourceHash)) {
+        const originalKey = await improvementIdempotencyKey(note.sync_uuid, sourceHash);
+        taskIdempotencyKey = "improvement:" + originalKey + ":retry:" + day;
+        retryingFailedRequest = true;
+      }
+    }
+    if (seen && !retryingFailedRequest) continue;
+    if (requestContent.length > 8000 || !requestContent.trim()) {
+      await appendImprovementResult(env, {
+        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
+      }, "rejected-" + idempotencyKey, { status: "stopped", reason: requestContent.length > 8000 ? "request_too_large" : "empty_request" });
+      continue;
+    }
+    // Do not spend the daily task allowance for a duplicate retry key.
+    const existingAttempt = await env.DB.prepare("SELECT status FROM agent_tasks WHERE idempotency_key = ?")
+      .bind(taskIdempotencyKey).first();
+    if (existingAttempt) continue;
     const slot = await reserveImprovementTaskSlot(env, day);
     if (!slot) return { scanned, queued, skipped: "daily_automation_limit" };
     try {
       const admitted = await enqueueAgentTask(env.DB, {
         taskId: crypto.randomUUID(),
         taskType: "github_query",
-        idempotencyKey: "improvement:" + idempotencyKey,
+        idempotencyKey: taskIdempotencyKey,
         maxAttempts: 1,
         maxAiCalls: IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask,
         maxAiTokens: 12000,
         payload: {
-          prompt: note.content,
+          prompt: requestContent,
           maxOutputTokens: 1024,
           allowGitHubRead: true,
           allowGitHubWrite: true,
@@ -11527,17 +11575,14 @@ async function runImprovementInbox(env) {
         },
         nowMs: Date.now()
       });
-      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
       const task = admitted.task;
       if (task?.budget_reserved === 1 && task.status === "queued") {
         await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
       }
       queued++;
     } catch (error) {
-      await appendImprovementResult(env, {
-        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
-      }, "enqueue-" + idempotencyKey, { status: "failed", reason: "task_enqueue_failed", error: safeErrorCode(error?.message) });
-      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+      console.log(JSON.stringify({ improvementInboxEnqueue: { ok: false, reason: safeErrorCode(error?.message) } }));
+      // Leave the note un-seen. A later scheduled scan can try again.
     }
   }
   return { scanned, queued };
