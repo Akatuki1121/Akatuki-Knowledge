@@ -8,7 +8,7 @@
 
 Workers AIについて、Cloudflare FreeのNeurons枠を超えるアプリ独自の停止条件は撤去した。Cloudflareアカウント全体の10,000 Neurons/UTC日が唯一の利用枠であり、Workers AI利用台帳は観測専用である。タスク単位のmodel call数・token数上限、改善タスク固有のAI呼び出し数上限、1回1,024 output token制限も撤去し、GLM-4.7-Flashのコンテキスト上限に合わせた。
 
-CloudflareがWorkers AIのquota exhaustionを返した場合、タスクをwaitingにし、次のUTC 00:00以降にWorkflow recoveryで再開する。Neurons台帳が未作成・未適用・書き込み失敗でもAI呼び出しを止めない。Cloudflareの実際のquotaを超えて無料利用できるわけではなく、課金を有効にする変更でもない。
+CloudflareがWorkers AIのquota exhaustionを返した場合、タスクをwaitingにし、次のUTC 00:00以降にWorkflow recoveryで再開する。リセット直後も拒否が続く場合は1時間ごとに再確認し、利用可能になり次第再開する。Neurons台帳が未作成・未適用・書き込み失敗でもAI呼び出しを止めない。Cloudflareの実際のquotaを超えて無料利用できるわけではなく、課金を有効にする変更でもない。
 
 Workers AI以外のCloudflare資源は別枠で管理する。特にWorkflowsはFreeの3,000 steps/dayに対し、1タスク32 steps・日次2,700 reserved stepsの受付ゲートを維持する。これはAI利用上限ではなく、他のCloudflare workload用に300 stepsを残す設計。実消費量の精算とCloudflare全体利用量の帰属は今後の改善余地として残す。
 
