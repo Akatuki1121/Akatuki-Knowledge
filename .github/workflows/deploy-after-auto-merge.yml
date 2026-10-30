@@ -13,14 +13,14 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: auto-merge-deploy-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  group: auto-merge-deploy-${{ github.event.workflow_run.head_sha || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   dispatch-deploy:
     if: >-
       ${{ github.event.workflow_run.conclusion == 'success' &&
-          github.event.workflow_run.pull_requests[0].number != null }}
+          github.event.workflow_run.head_sha != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -28,13 +28,17 @@ jobs:
         id: target
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          prs_json="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls")"
+          PR_NUMBER="$(jq -r --arg sha "$HEAD_SHA" '[.[] | select(.base.ref == "main" and .head.sha == $sha)][0].number // ""' <<< "$prs_json")"
           if [ -z "$PR_NUMBER" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Workflow Run のコミットに対応する main 向けPRがないため、Deploy起動を省略します。"
             exit 0
           fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
           pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
           if jq -e '.merged == true' <<< "$pr_json" >/dev/null; then
@@ -57,7 +61,7 @@ jobs:
         if: steps.target.outputs.eligible == 'true' && steps.target.outputs.merged != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
         run: |
           set -euo pipefail
           for attempt in $(seq 1 60); do
