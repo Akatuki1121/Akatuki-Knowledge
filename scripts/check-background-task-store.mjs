@@ -24,7 +24,7 @@ for (const required of [
   "decideTaskRetry(",
   "safeErrorDetail(input.errorDetail)",
   "last_error_class = COALESCE(NULLIF(last_error_class, ''), CASE",
-  "lease_expires_at = datetime(?, '+120 seconds')",
+  "lease_expires_at = MAX(lease_expires_at, datetime(?, '+120 seconds'))",
   "task_deadline_exceeded",
   "attempt_budget_exhausted",
   "export async function reserveAgentAiBudget",
