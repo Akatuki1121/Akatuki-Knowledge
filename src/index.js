@@ -940,6 +940,10 @@ async function moveNote(request, url, env) {
   if (body.expectedContentHash !== undefined && (typeof body.expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(body.expectedContentHash))) {
     return json({ error: "invalid_expected_content_hash" }, 400);
   }
+  const declaredFileId = body.fileId === undefined ? null : body.fileId;
+  if (declaredFileId !== null && (typeof declaredFileId !== "string" || declaredFileId.length === 0)) {
+    return json({ error: "invalid_file_id" }, 400);
+  }
 
   const note = await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE path = ? AND deleted_at IS NULL").bind(currentPath).first();
   if (!note) return json({ error: "live_note_not_found" }, 404);
@@ -950,11 +954,27 @@ async function moveNote(request, url, env) {
   const occupied = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(newPath, note.id).first();
   if (occupied) return json({ error: "destination_note_exists" }, 409);
   const mappings = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(note.id, note.sync_uuid).all()).results || [];
-  if (mappings.length !== 1 || mappings[0].note_id !== note.id || mappings[0].sync_uuid !== note.sync_uuid) {
+  let mapping;
+  let declaredMapping = null;
+  if (mappings.length === 1 && mappings[0].note_id === note.id && mappings[0].sync_uuid === note.sync_uuid) {
+    mapping = mappings[0];
+    if (declaredFileId !== null && declaredFileId !== mapping.file_id) {
+      return json({ error: "sync_identity_mapping_conflict" }, 409);
+    }
+    if (mapping.last_path !== currentPath) return json({ error: "sync_identity_mapping_path_mismatch" }, 409);
+  } else if (mappings.length === 0 && declaredFileId !== null) {
+    const fileIdTaken = await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map WHERE file_id = ? LIMIT 1").bind(declaredFileId).first();
+    const currentPathTaken = await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map WHERE last_path = ? LIMIT 1").bind(currentPath).first();
+    const uuidTaken = await env.DB.prepare("SELECT id FROM notes WHERE sync_uuid = ? AND id <> ? AND deleted_at IS NULL LIMIT 1").bind(note.sync_uuid, note.id).first();
+    const pathTaken = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL AND id <> ? LIMIT 1").bind(currentPath, note.id).first();
+    if (fileIdTaken || currentPathTaken || uuidTaken || pathTaken) {
+      return json({ error: "sync_identity_mapping_conflict" }, 409);
+    }
+    declaredMapping = { file_id: declaredFileId, sync_uuid: note.sync_uuid, note_id: note.id, last_path: newPath };
+    mapping = declaredMapping;
+  } else {
     return json({ error: "sync_identity_mapping_conflict" }, 409);
   }
-  const mapping = mappings[0];
-  if (mapping.last_path !== currentPath) return json({ error: "sync_identity_mapping_path_mismatch" }, 409);
   const destinationMapping = await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map WHERE last_path = ? AND file_id <> ? LIMIT 1").bind(newPath, mapping.file_id).first();
   if (destinationMapping) return json({ error: "destination_identity_mapping_conflict" }, 409);
 
@@ -967,12 +987,19 @@ async function moveNote(request, url, env) {
     previousRevisionContent: previousRevision?.content ?? null
   });
   if (!prepared) return json({ error: "sync_outbox_enqueue_failed" }, 503);
-
-  const results = await env.DB.batch([
+  const identityStatements = declaredMapping ? [
+    env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(declaredMapping.file_id, declaredMapping.sync_uuid, declaredMapping.note_id, declaredMapping.last_path, now, now),
+    env.DB.prepare("UPDATE notes SET path = ? WHERE id = ? AND path = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ?)")
+      .bind(newPath, note.id, currentPath, mapping.file_id, note.id, note.sync_uuid, newPath),
+  ] : [
     env.DB.prepare("UPDATE notes SET path = ? WHERE id = ? AND path = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ?)")
       .bind(newPath, note.id, currentPath, mapping.file_id, note.id, note.sync_uuid, currentPath),
     env.DB.prepare("UPDATE yaos_file_identity_map SET last_path = ?, updated_at = ? WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND path = ? AND deleted_at IS NULL)")
       .bind(newPath, now, mapping.file_id, note.id, note.sync_uuid, currentPath, note.id, newPath),
+  ];
+  const results = await env.DB.batch([
+    ...identityStatements,
     ...prepared.statements
   ]);
   if (!results[0]?.meta?.changes || !results[1]?.meta?.changes) {

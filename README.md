@@ -6,7 +6,7 @@ Obsidian のノートを検索し、AI で整理するための個人用ナレ�
 
 - **ノート同期**: Obsidian Vault と D1 のノートを、YAOS 経由のイベント同期でそろえます。定期実行の照合は、取りこぼしを直す安全網です。同期 outbox の dead 履歴は、認証済み `POST /sync/outbox/purge-dead` で dry-run 確認後に削除できます。 YAOS conflict コピーの除去は、凍結ターゲットと本文同一性を検証する `POST /sync/remove-vault-fossil` で限定的に扱います。
 - **ノート作成 API**: `POST /api/notes`（Bearer 認証）で指定パスに新規ノートを作成します。既存パスは上書きせず `409` を返し、作成と同期 outbox 登録を同一 D1 batch で行います。YAOS の実ファイル ID は最初の upsert 応答から保存し、Akatuki 側で捏造しません。認証情報を検出した本文は保存できますが、AI 送信を禁止します。
-- **同一性を保ったノート移動 API**: `POST /api/notes/<URLエンコードした現在のパス>/move`（Bearer 認証）で `newPath` を指定します。`notes.id`、`sync_uuid`、本文、contentHash、リビジョンは維持し、`notes.path`・同一性マップの `last_path`・同期 outbox を同一 D1 batch で更新します。移動先のノートや別 fileId の同一性マップが存在する場合は拒否します。必要に応じて `expectedContentHash` で楽観的ロックを指定できます。
+- **同一性を保ったノート移動 API**: `POST /api/notes/<URLエンコードした現在のパス>/move`（Bearer 認証）で `newPath` を指定します。`notes.id`、`sync_uuid`、本文、contentHash、リビジョンは維持し、`notes.path`・同一性マップの `last_path`・同期 outbox を同一 D1 batch で更新します。移動先のノートや別 fileId の同一性マップが存在する場合は拒否します。必要に応じて `expectedContentHash` で楽観的ロックを指定できます。マッピングがまだ無い作った直後のノートは、`fileId`（`GET /sync/diff` の観測から得た Vault の fileId）を併せて渡すことで、pull なしでマッピング確立と移動を同時に行えます。
 - **現在のパスによるノート API**: `GET /api/notes/<URLエンコードしたパス>` で生存ノートの本文とメタデータを取得できます。`DELETE /api/notes/<引数>` は現在の `notes.path` を優先し、該当しなければ従来の `notes.id` / Telegram ID として解決します。パス参照と ID 参照が異なるノートを指す場合は `409 ambiguous_note_reference` で拒否します。
 - **全件マニフェスト**: `GET /api/sync/manifest?limit=500&cursor=...` は `nextCursor` を使ってページ送りでき、`totalCount` に全レコード件数を返します。既存の `notes` / `nextCursor` フィールドは維持されます。
 - **バックグラウンドタスク**: `POST /api/agent-tasks` で、ナレッジベースを検索して要約するタスクを非同期に実行します。結果は `GET /api/agent-tasks` で取得します。ノートの作成・追記・移動・削除は行いません。仕様は [`docs/BACKGROUND_TASKS.md`](docs/BACKGROUND_TASKS.md) を参照してください。
