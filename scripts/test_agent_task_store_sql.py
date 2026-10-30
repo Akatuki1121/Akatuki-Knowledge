@@ -61,6 +61,17 @@ def enqueue(day, task_id):
     ]
     for statement, bindings in zip(enqueue_statements, params):
         connection.execute(statement, bindings)
+    row = connection.execute(
+        "SELECT status, budget_reserved FROM agent_tasks WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    if row and row[1] != 1 and row[0] == "queued":
+        connection.execute(
+            """UPDATE agent_tasks SET status = 'failed',
+                stop_reason = 'daily_workflow_budget_exhausted',
+                completed_at = ?, updated_at = ?
+            WHERE task_id = ? AND budget_reserved = 0 AND status = 'queued'""",
+            (now, now, task_id),
+        )
     return connection.execute(
         "SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = ?", (task_id,)
     ).fetchone()
