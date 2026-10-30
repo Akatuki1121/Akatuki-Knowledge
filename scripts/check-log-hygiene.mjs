@@ -31,7 +31,7 @@ for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.
     if (!APP_CONSOLE_LINES.test(line)) return;
     if (VENDOR_LOG_MARKERS.some((marker) => line.includes(marker))) return;
     assert.ok(
-      line.includes("describeSafeFailure") || line.includes("describeOrganizeFailure") || line.includes("safeErrorCode") || line.includes("summarizeReconcile") || line.includes("operational_alert") || line.includes("agentTaskRecovery"),
+      line.includes("describeSafeFailure") || line.includes("describeOrganizeFailure") || line.includes("safeErrorCode") || line.includes("summarizeReconcile") || line.includes("operational_alert") || line.includes("agentTaskRecovery" || line.includes("budgetSelfAudit"),
       `${name}:${index + 1} logs without the shared sanitizer: ${line.trim().slice(0, 120)}`
     );
   });
