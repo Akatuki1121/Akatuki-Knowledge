@@ -19,7 +19,7 @@ import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { callWorkersAi } from "./workers-ai-client.mjs";
-import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey } from "./agent-improvement-policy.mjs";
+import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -304,6 +304,36 @@ async function drainSyncOutboxAfterWrite(env, ctx, origin) {
   return { ok: failed === 0, processed, sent, failed, batches, pull };
 }
 __name(drainSyncOutboxAfterWrite, "drainSyncOutboxAfterWrite");
+async function runPostPullAutomation(env, pullSucceeded) {
+  const result = { reconciliation: null, improvementInbox: null };
+  try {
+    const response = await doFetch(env, "reconcile-existing-note-ids");
+    const reconcile = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+    await persistRecoveryDiagnostics(env, reconcile);
+    result.reconciliation = summarizeReconcile(reconcile);
+    if (!response.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0
+      || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0
+      || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
+      console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
+    }
+  } catch (error) {
+    result.reconciliation = { ok: false };
+    console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false }, failure: describeSafeFailure("safe_note_id_recovery_failed", error) }));
+  }
+  if (pullSucceeded) {
+    try {
+      result.improvementInbox = await runImprovementInbox(env);
+      console.log(JSON.stringify({ improvementInbox: { scanned: Number(result.improvementInbox?.scanned || 0), queued: Number(result.improvementInbox?.queued || 0), skipped: safeErrorCode(result.improvementInbox?.skipped) } }));
+    } catch (error) {
+      result.improvementInbox = { ok: false };
+      console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
+    }
+  } else {
+    result.improvementInbox = { skipped: "vault_pull_failed" };
+  }
+  return result;
+}
+__name(runPostPullAutomation, "runPostPullAutomation");
 async function runScheduledMaintenance(env) {
   await drainSyncOutbox(env, 10);
   await backfillSyncUuidIndex(env, 100);
@@ -11458,6 +11488,9 @@ async function reserveImprovementTaskSlot(env, day) {
 async function appendImprovementResult(env, payload, taskId, result) {
   if (payload?.improvementRequest !== true || typeof payload.improvementNotePath !== "string"
     || typeof payload.sourceSyncUuid !== "string") return false;
+  // A failed task did not complete the requested check. Keep the source note
+  // unchanged so the inbox scanner can retry it on a later scheduled run.
+  if (result?.status === "failed") return false;
   const row = await env.DB.prepare("SELECT id, path, sync_uuid, content, content_hash FROM notes WHERE path = ? AND deleted_at IS NULL")
     .bind(payload.improvementNotePath).first();
   if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
@@ -11494,28 +11527,67 @@ async function runImprovementInbox(env) {
     scanned++;
     if (typeof note.sync_uuid !== "string" || !note.sync_uuid
       || typeof note.content_hash !== "string" || !/^[a-f0-9]{64}$/i.test(note.content_hash)) continue;
+    const requestContent = stripImprovementResults(note.content);
     const idempotencyKey = await improvementIdempotencyKey(note.sync_uuid, note.content_hash);
     const seenKey = await improvementSeenKey(note.sync_uuid, note.content_hash);
-    if (await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first()) continue;
-    if (note.content.length > 8000 || !note.content.trim()) {
-      await appendImprovementResult(env, {
-        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
-      }, "rejected-" + idempotencyKey, { status: "stopped", reason: note.content.length > 8000 ? "request_too_large" : "empty_request" });
-      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+    const seen = await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first();
+    const previous = await env.DB.prepare(`
+      SELECT task_id, status, payload_json
+      FROM agent_tasks
+      WHERE json_extract(payload_json, '$.improvementRequest') = 1
+        AND json_extract(payload_json, '$.sourceSyncUuid') = ?
+        AND json_extract(payload_json, '$.improvementNotePath') = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).bind(note.sync_uuid, note.path).first();
+    let taskIdempotencyKey = "improvement:" + idempotencyKey;
+    let retryingFailedRequest = false;
+    let previousPayload = null;
+    try {
+      previousPayload = previous?.payload_json ? JSON.parse(previous.payload_json) : null;
+    } catch {
+      previousPayload = null;
+    }
+    const sameRequest = previousPayload?.prompt === requestContent;
+    if (sameRequest && previous && ["queued", "running", "waiting"].includes(previous.status)) continue;
+    if (sameRequest && previous?.status === "succeeded") {
+      if (!seen) await markImprovementSeen(env, note.sync_uuid, note.content_hash);
       continue;
     }
+    if (sameRequest && ["failed", "cancelled"].includes(previous?.status)) {
+      // The prior failure may have written a result block before this fix.
+      // Reuse its original source hash and strip generated result blocks from
+      // the prompt so a retry checks the user's request, not its own report.
+      const sourceHash = previousPayload?.sourceContentHash;
+      if (typeof sourceHash === "string" && /^[a-f0-9]{64}$/i.test(sourceHash)) {
+        const originalKey = await improvementIdempotencyKey(note.sync_uuid, sourceHash);
+        taskIdempotencyKey = "improvement:" + originalKey + ":retry:" + day;
+        retryingFailedRequest = true;
+      }
+    }
+    if (seen && !retryingFailedRequest) continue;
+    if (requestContent.length > 8000 || !requestContent.trim()) {
+      await appendImprovementResult(env, {
+        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
+      }, "rejected-" + idempotencyKey, { status: "stopped", reason: requestContent.length > 8000 ? "request_too_large" : "empty_request" });
+      continue;
+    }
+    // Do not spend the daily task allowance for a duplicate retry key.
+    const existingAttempt = await env.DB.prepare("SELECT status FROM agent_tasks WHERE idempotency_key = ?")
+      .bind(taskIdempotencyKey).first();
+    if (existingAttempt) continue;
     const slot = await reserveImprovementTaskSlot(env, day);
     if (!slot) return { scanned, queued, skipped: "daily_automation_limit" };
     try {
       const admitted = await enqueueAgentTask(env.DB, {
         taskId: crypto.randomUUID(),
         taskType: "github_query",
-        idempotencyKey: "improvement:" + idempotencyKey,
+        idempotencyKey: taskIdempotencyKey,
         maxAttempts: 1,
         maxAiCalls: IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask,
         maxAiTokens: 12000,
         payload: {
-          prompt: note.content,
+          prompt: requestContent,
           maxOutputTokens: 1024,
           allowGitHubRead: true,
           allowGitHubWrite: true,
@@ -11527,17 +11599,14 @@ async function runImprovementInbox(env) {
         },
         nowMs: Date.now()
       });
-      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
       const task = admitted.task;
       if (task?.budget_reserved === 1 && task.status === "queued") {
         await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: false });
       }
       queued++;
     } catch (error) {
-      await appendImprovementResult(env, {
-        improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
-      }, "enqueue-" + idempotencyKey, { status: "failed", reason: "task_enqueue_failed", error: safeErrorCode(error?.message) });
-      await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+      console.log(JSON.stringify({ improvementInboxEnqueue: { ok: false, reason: safeErrorCode(error?.message) } }));
+      // Leave the note un-seen. A later scheduled scan can try again.
     }
   }
   return { scanned, queued };
@@ -12610,13 +12679,16 @@ var wrapper_default = {
       if (url.pathname === "/sync/pull" && request.method === "POST") {
         let result;
         try {
-          result = await pullFromVault(env, ctx, url.origin, url.searchParams.get("apply") === "1");
+          const apply = url.searchParams.get("apply") === "1";
+          if (apply) await drainSyncOutbox(env, 10);
+          result = await pullFromVault(env, ctx, url.origin, apply);
         } catch (error) {
           await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "manual"));
           throw error;
         }
         await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "manual"));
-        return Response.json(result, { status: result.ok ? 200 : 502, headers: JSON_HEADERS2 });
+        const postPull = await runPostPullAutomation(env, result.ok === true && result.applied === true);
+        return Response.json({ ...result, postPull }, { status: result.ok ? 200 : 502, headers: JSON_HEADERS2 });
       }
     }
     return originalFetch(request, env, ctx);
@@ -12648,24 +12720,7 @@ var wrapper_default = {
         await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "scheduled"));
         console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
       }
-      try {
-        const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
-        const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
-        await persistRecoveryDiagnostics(env, reconcile);
-        if (!reconcileResponse.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
-          console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
-        }
-      } catch (error) {
-        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false }, failure: describeSafeFailure("safe_note_id_recovery_failed", error) }));
-      }
-      if (improvementPullReady) {
-        try {
-          const automation = await runImprovementInbox(env);
-          // Improvement outcomes are recorded in their source notes.
-        } catch (error) {
-          console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
-        }
-      }
+      await runPostPullAutomation(env, improvementPullReady);
       return worker_default.scheduled(event, env, ctx);
     }
     return worker_default.scheduled(event, env, ctx);
