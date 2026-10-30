@@ -454,24 +454,26 @@ export async function executeGitHubReadTool(tool, args, options = {}) {
     if (file.type !== "file" || typeof file.content !== "string" || file.encoding !== "base64") {
       throw new Error("github_not_text_file");
     }
-    if (file.size > MAX_FILE_CHARS * 4) throw new Error("github_file_too_large");
-    let decoded;
-    try {
-      decoded = atob(file.content.replace(/\n/g, ""));
-    } catch {
-      throw new Error("github_invalid_file");
-    }
-    const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
-    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (file.size > 1_000_000) throw new Error("github_file_too_large");
+    const content = decodeBase64Utf8(file.content);
     if (content.includes("\u0000")) throw new Error("github_not_text_file");
+    const lines = content.replace(/\r\n/g, "\n").split("\n");
+    const totalLines = lines.length;
+    const startLine = args.start_line === undefined ? 1 : validateNumber(args.start_line);
+    const endLine = args.end_line === undefined ? Math.min(totalLines, startLine + 999) : validateNumber(args.end_line);
+    if (endLine < startLine || endLine - startLine > 999 || startLine > totalLines + 1) throw new Error("invalid_input");
+    const selected = lines.slice(startLine - 1, endLine).join("\n");
     result = {
       repository,
       path: args.path,
       ref: boundedText(ref || file.target || "", 120),
       sha: boundedText(file.sha, 100),
       url: safeUrl(file.html_url),
-      truncated: content.length > MAX_FILE_CHARS,
-      content: content.slice(0, MAX_FILE_CHARS),
+      totalLines,
+      startLine,
+      endLine: Math.min(endLine, totalLines),
+      truncated: selected.length > MAX_FILE_CHARS || endLine < totalLines,
+      content: selected.slice(0, MAX_FILE_CHARS),
     };
   }
   if (JSON.stringify(result).length > MAX_RESULT_CHARS) throw new Error("github_result_too_large");
