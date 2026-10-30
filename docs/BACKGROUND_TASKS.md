@@ -26,7 +26,7 @@ Workers AIの利用を止める独自のアプリ上限は設けない。
 - 1回あたりの出力tokenはモデルのコンテキスト仕様に従う。GLM-4.7-Flashのコンテキスト上限と入力token数を考慮し、入力と出力の合計がモデル上限を超えないようにする。
 - Workers AIの無料枠はCloudflareアカウント全体で共有される10,000 Neurons/UTC日。実際の枠超過判定はCloudflare側を唯一の権威とし、アプリ内の予約台帳で利用可否を拒否しない。
 - D1のworkers_ai_daily_usageはモデル・推定Neurons・provider usage・成功/失敗回数を記録するbest-effort telemetry。テーブル未適用・記録失敗でもAI呼び出しを止めない。
-- Cloudflareが日次Neurons枠超過を返した場合はtaskをwaitingにし、次のUTC 00:00リセット後に自動再開する。その他のrate limitやupstream errorは通常の一時障害分類に従う。
+- Cloudflareが日次Neurons枠超過を返した場合はtaskをwaitingにし、次のUTC 00:00リセット後に自動再開する。リセット直後もCloudflare側の拒否が続く場合は、1時間ごとに再確認して利用可能になり次第再開する。その他のrate limitやupstream errorは通常の一時障害分類に従う。
 - provider usageが返る場合は実績を記録する。応答なしの失敗は入力token推定分だけを記録し、出力分は計上しない。usageなし成功は過少計上を避けるため予約を残す。
 - モデル自体の入力・出力コンテキスト上限、Cloudflare Freeの実際のNeurons枠、Workers AI以外のCloudflareサービスquotaは引き続き有効。
 
