@@ -670,10 +670,12 @@ export async function recordAgentTaskFailure(db, input) {
   if (decision.action === "retry") {
     const retryAt = toSqliteDateTime(decision.retryAtMs);
     const isWorkersAiQuotaWait = input.errorClass === "workers_ai_daily_quota_exhausted";
+    const retryDay = retryAt.slice(0, 10);
+    const releaseWorkflowBudget = retryDay !== now.slice(0, 10);
     const updateTask = db.prepare(`
       UPDATE agent_tasks
       SET status = 'waiting',
-          budget_reserved = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN 0 ELSE budget_reserved END,
+          budget_reserved = CASE WHEN ? = 1 THEN 0 ELSE budget_reserved END,
           next_attempt_at = ?, updated_at = ?,
           last_error_class = ?, last_error = ?, stop_reason = NULL,
           attempts = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN MAX(0, attempts - 1) ELSE attempts END,
@@ -682,11 +684,11 @@ export async function recordAgentTaskFailure(db, input) {
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
         AND lease_expires_at > ?
     `).bind(
-      input.errorClass ?? "unknown", retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail),
+      releaseWorkflowBudget ? 1 : 0, retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail),
       input.errorClass ?? "unknown", input.errorClass ?? "unknown", retryAt,
       input.taskId, input.leaseToken, now,
     );
-    if (!isWorkersAiQuotaWait) {
+    if (!releaseWorkflowBudget) {
       const result = await updateTask.run();
       return { applied: result?.meta?.changes === 1, decision };
     }
@@ -701,7 +703,7 @@ export async function recordAgentTaskFailure(db, input) {
             WHERE task_id = ? AND status = 'waiting' AND budget_reserved = 0
               AND last_error_class = 'workers_ai_daily_quota_exhausted'
           )
-      `).bind(retryAt.slice(0, 10), input.taskId, input.taskId),
+      `).bind(retryDay, input.taskId, input.taskId),
     ]);
     return { applied: results?.[0]?.meta?.changes === 1, decision };
   }
