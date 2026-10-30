@@ -304,6 +304,36 @@ async function drainSyncOutboxAfterWrite(env, ctx, origin) {
   return { ok: failed === 0, processed, sent, failed, batches, pull };
 }
 __name(drainSyncOutboxAfterWrite, "drainSyncOutboxAfterWrite");
+async function runPostPullAutomation(env, pullSucceeded) {
+  const result = { reconciliation: null, improvementInbox: null };
+  try {
+    const response = await doFetch(env, "reconcile-existing-note-ids");
+    const reconcile = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
+    await persistRecoveryDiagnostics(env, reconcile);
+    result.reconciliation = summarizeReconcile(reconcile);
+    if (!response.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0
+      || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0
+      || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
+      console.log(JSON.stringify({ safeNoteIdRecovery: result.reconciliation }));
+    }
+  } catch (error) {
+    result.reconciliation = { ok: false };
+    console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false }, failure: describeSafeFailure("safe_note_id_recovery_failed", error) }));
+  }
+  if (pullSucceeded) {
+    try {
+      result.improvementInbox = await runImprovementInbox(env);
+      console.log(JSON.stringify({ improvementInbox: result.improvementInbox }));
+    } catch (error) {
+      result.improvementInbox = { ok: false };
+      console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
+    }
+  } else {
+    result.improvementInbox = { skipped: "vault_pull_failed" };
+  }
+  return result;
+}
+__name(runPostPullAutomation, "runPostPullAutomation");
 async function runScheduledMaintenance(env) {
   await drainSyncOutbox(env, 10);
   await backfillSyncUuidIndex(env, 100);
@@ -12655,7 +12685,8 @@ var wrapper_default = {
           throw error;
         }
         await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "manual"));
-        return Response.json(result, { status: result.ok ? 200 : 502, headers: JSON_HEADERS2 });
+        const postPull = await runPostPullAutomation(env, result.ok === true);
+        return Response.json({ ...result, postPull }, { status: result.ok ? 200 : 502, headers: JSON_HEADERS2 });
       }
     }
     return originalFetch(request, env, ctx);
@@ -12687,24 +12718,7 @@ var wrapper_default = {
         await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "scheduled"));
         console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
       }
-      try {
-        const reconcileResponse = await doFetch(env, "reconcile-existing-note-ids");
-        const reconcile = await reconcileResponse.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
-        await persistRecoveryDiagnostics(env, reconcile);
-        if (!reconcileResponse.ok || !reconcile.ok || reconcile.skipped || reconcile.changed > 0 || reconcile.contentConflicts > 0 || reconcile.missingInVault > 0 || reconcile.duplicatePaths > 0 || reconcile.uuidConflicts > 0) {
-          console.log(JSON.stringify({ safeNoteIdRecovery: summarizeReconcile(reconcile) }));
-        }
-      } catch (error) {
-        console.log(JSON.stringify({ safeNoteIdRecovery: { ok: false }, failure: describeSafeFailure("safe_note_id_recovery_failed", error) }));
-      }
-      if (improvementPullReady) {
-        try {
-          const automation = await runImprovementInbox(env);
-          // Improvement outcomes are recorded in their source notes.
-        } catch (error) {
-          console.log(JSON.stringify({ improvementInbox: { ok: false }, failure: describeSafeFailure("improvement_inbox_failed", error) }));
-        }
-      }
+      await runPostPullAutomation(env, improvementPullReady);
       return worker_default.scheduled(event, env, ctx);
     }
     return worker_default.scheduled(event, env, ctx);
