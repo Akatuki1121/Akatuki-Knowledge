@@ -1,0 +1,21 @@
+name: 一時的な全件チェック検証
+
+on:
+  push:
+    branches:
+      - feat/deploy-on-pull-request-merge
+
+permissions:
+  contents: read
+
+jobs:
+  full-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run full check suite
+        run: npm run check
