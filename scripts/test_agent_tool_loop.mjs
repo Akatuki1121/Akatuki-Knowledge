@@ -509,6 +509,7 @@ for (const malformedPlan of malformedBranchPlans) {
 // not by an arbitrary global model-call limit.
 let historyCompactionCalls = 0;
 let compactedPrompt = "";
+const historyCheckpoints = [];
 const longHistory = await runAgentToolLoop({
   initialPrompt: "Investigate a repository using several independent note searches",
   callModel: async ({ modelCall, prompt }) => {
@@ -522,13 +523,21 @@ const longHistory = await runAgentToolLoop({
   executeTool: async (_tool, args) => ({
     notes: [{ id: "note-" + args.query.split(" ").at(-1), title: "Finding " + args.query, path: "Notes/Finding.md", excerpt: "evidence " + args.query }],
   }),
-  saveCheckpoint: async () => true,
+  saveCheckpoint: async (checkpoint) => { historyCheckpoints.push(checkpoint); return true; },
 });
 assert.equal(longHistory.modelCalls, 8);
 assert.equal(longHistory.toolCalls.length, 7);
 assert.match(compactedPrompt, /history_summary/);
 assert.match(compactedPrompt, /note-1/);
 assert.match(compactedPrompt, /note-7/);
+const compactedHistoryCheckpoint = historyCheckpoints.at(-2);
+assert.equal(compactedHistoryCheckpoint.toolCalls[0].result.notes[0].id, "note-1");
+assert.equal(typeof compactedHistoryCheckpoint.toolCalls[0].result.notes[0].text, "string");
+assert.equal(compactedHistoryCheckpoint.toolCalls[0].result.notes[0].excerpt, undefined);
+assert.deepEqual(
+  compactedHistoryCheckpoint.transcript.find((item) => item.role === "tool").result,
+  compactedHistoryCheckpoint.toolCalls[0].result,
+);
 
 let stubbornModelCalls = 0;
 let stubbornExecutions = 0;
