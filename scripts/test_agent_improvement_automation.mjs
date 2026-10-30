@@ -167,3 +167,23 @@ test("failed improvement tasks remain eligible and retries are idempotent per da
     "Queue admission must not mark an improvement request as seen");
   assert.ok(inbox.includes("Leave the note un-seen. A later scheduled scan can try again."));
 });
+
+
+test("manual and scheduled pulls share the same post-pull automation", async () => {
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const helperStart = source.indexOf("async function runPostPullAutomation");
+  const helperEnd = source.indexOf("async function runScheduledMaintenance", helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  const helper = source.slice(helperStart, helperEnd);
+  assert.ok(helper.includes('doFetch(env, "reconcile-existing-note-ids")'));
+  assert.ok(helper.includes("runImprovementInbox(env)"));
+  assert.ok(helper.includes('skipped: "vault_pull_failed"'));
+
+  const manualStart = source.indexOf('if (url.pathname === "/sync/pull"');
+  const scheduledStart = source.indexOf("async scheduled(event, env, ctx)");
+  const manual = source.slice(manualStart, scheduledStart);
+  const scheduled = source.slice(scheduledStart);
+  assert.ok(manual.includes("runPostPullAutomation(env, result.ok === true)"));
+  assert.ok(scheduled.includes("runPostPullAutomation(env, improvementPullReady)"));
+  assert.equal((source.match(/await runPostPullAutomation\\(env,/gu) || []).length, 2);
+});
