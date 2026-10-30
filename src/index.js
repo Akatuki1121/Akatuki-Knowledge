@@ -11672,6 +11672,7 @@ function describeAgentTaskError(error, env) {
       typeof error.workersAiError.name === "string" ? error.workersAiError.name : "",
       typeof error.workersAiError.message === "string" ? error.workersAiError.message : "",
       error.workersAiError.code !== undefined ? "code=" + String(error.workersAiError.code) : "",
+      error.workersAiError.status !== undefined ? "status=" + String(error.workersAiError.status) : "",
     ].filter(Boolean).join(": ")
     : "";
   const raw = [typeof error?.message === "string" ? error.message : "", upstream]
