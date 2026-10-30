@@ -154,7 +154,12 @@ export async function enqueueAgentTask(db, input) {
   }
 
   const nowMs = finiteNumber(input.nowMs, Date.now());
-  const hardDeadline = nowMs + TASK_BUDGET_CEILINGS.maxTaskAgeMs;
+  const maxTaskAgeMs = boundedInteger(
+    input.maxTaskAgeMs,
+    TASK_BUDGET_CEILINGS.maxTaskAgeMs,
+    TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs,
+  );
+  const hardDeadline = nowMs + maxTaskAgeMs;
   const deadlineAtMs = Math.min(finiteNumber(input.deadlineAtMs, hardDeadline), hardDeadline);
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
 
@@ -512,10 +517,19 @@ export async function recordAgentTaskFailure(db, input) {
   `).bind(input.taskId, input.leaseToken, now).first();
   if (!row) return { applied: false, decision: null };
 
+  const payload = parseJson(row.payload_json, {});
+  const isImprovementRequest = payload?.improvementRequest === true;
   const decision = decideTaskRetry({
     nowMs,
     createdAtMs: fromSqliteDateTime(row.created_at),
     deadlineAtMs: fromSqliteDateTime(row.deadline_at),
+    maxTaskAgeMs: isImprovementRequest
+      ? TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs
+      : TASK_BUDGET_CEILINGS.maxTaskAgeMs,
+    maxRetryDelayMs: isImprovementRequest
+      ? TASK_BUDGET_CEILINGS.maxImprovementRetryDelayMs
+      : TASK_BUDGET_CEILINGS.maxDelayMs,
+    retryDelaysMs: isImprovementRequest ? [60 * 60 * 1000, 3 * 60 * 60 * 1000, 3 * 60 * 60 * 1000] : undefined,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
     aiCallsUsed: row.ai_calls_used,
