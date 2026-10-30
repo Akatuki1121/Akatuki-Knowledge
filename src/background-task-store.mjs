@@ -100,7 +100,7 @@ export async function expireAgentTasks(db, input = {}) {
 export async function listRecoverableAgentTasks(db, input = {}) {
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const now = toSqliteDateTime(nowMs);
-  const limit = Math.max(1, Math.min(10, Math.floor(finiteNumber(input.limit, 5))));
+  const limit = Math.max(1, Math.min(20, Math.floor(finiteNumber(input.limit, 20))));
   await expireAgentTasks(db, { nowMs });
   const result = await db.prepare(`
     SELECT task_id, status, next_attempt_at, lease_expires_at
