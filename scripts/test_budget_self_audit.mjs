@@ -5,7 +5,7 @@ const summary = summarizeFindings({
   budget: { tasks_reserved: 55, workflow_steps_reserved: 2300 },
   taskGroups: [{ status: "failed", count: 6 }, { status: "succeeded", count: 10 }],
   errorGroups: [{ error_class: "upstream_5xx", count: 3 }],
-  aiUsage: { reserved_neurons: 6500, actual_neurons: 100, calls_failed: 2, calls_completed: 8 },
+  aiUsage: { reserved_neurons: 8500, actual_neurons: 100, calls_failed: 2, calls_completed: 8 },
 });
 assert.equal(summary.status, "attention");
 assert.deepEqual(summary.findings.map((item) => item.code), [
@@ -51,6 +51,6 @@ assert.equal(first.ok, true);
 assert.equal(first.recorded, true);
 assert.equal(first.report.status, "normal");
 assert.equal(db.writes.length, 1);
-assert.match(db.writes[0].args[0], /budget-audit:2026-10-30:00/);
+assert.match(db.writes[0].args[0], /budget-audit:2026-10-30:00/);\n\nlet createdNote = null;\nconst attentionDb = fakeDb();\nconst attention = await runBudgetSelfAudit({ DB: attentionDb }, Date.parse("2026-10-30T00:00:00.000Z"), {\n  includeSystemAudit: true,\n  createNote: async (note) => { createdNote = note; return { ok: true, status: 201 }; },\n});\nassert.equal(attention.ok, true);\nassert.equal(attention.noteCreated, true);\nassert.match(createdNote.path, /^Notes\\/改善\\/自己監査-2026-10-30\\.md$/u);\nassert.match(createdNote.content, /origin: budget-audit/);\nassert.match(createdNote.content, /audit_generated: true/);
 
 console.log("budget self-audit tests passed");
