@@ -179,6 +179,12 @@ export async function enqueueAgentTask(db, input) {
   const taskId = input.taskId.trim();
   const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
     ? input.notifyChatId.trim() : null;
+  // Cloudflare Workers Free includes 3,000 Workflow steps/day. Reserve at most
+  // 2,700 here, leaving 300 steps for other account workloads and variance.
+  // Each admitted task reserves 32 steps; there is no separate task-count cap.
+  // Cloudflare Workers Free includes 3,000 Workflow steps/day. Reserve at most
+  // 2,700 here, leaving 300 steps for other account workloads and variance.
+  // Each admitted task reserves 32 steps; there is no separate task-count cap.
   const budgetDay = now.slice(0, 10);
 
   // D1 batch is transactional. The reservation ledger's unique task_id makes
@@ -212,8 +218,8 @@ export async function enqueueAgentTask(db, input) {
       WHERE task_id = ? AND status = 'queued' AND budget_reserved = 0
         AND EXISTS (
           SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved < 60
-            AND workflow_steps_reserved + 32 <= 2000
+          WHERE budget_day = ?
+            AND workflow_steps_reserved + 32 <= 2700
         )
       ON CONFLICT(task_id) DO NOTHING
     `).bind(budgetDay, taskId, budgetDay),
@@ -225,8 +231,8 @@ export async function enqueueAgentTask(db, input) {
       WHERE task_id = ? AND budget_day = ? AND counted = 0
         AND EXISTS (
           SELECT 1 FROM agent_task_daily_budget
-          WHERE budget_day = ? AND tasks_reserved < 60
-            AND workflow_steps_reserved + 32 <= 2000
+          WHERE budget_day = ?
+            AND workflow_steps_reserved + 32 <= 2700
         )
     `).bind(taskId, budgetDay, budgetDay),
     db.prepare(`
@@ -235,7 +241,7 @@ export async function enqueueAgentTask(db, input) {
           workflow_steps_reserved = workflow_steps_reserved + 32,
           updated_at = ?
       WHERE budget_day = ?
-        AND tasks_reserved < 60 AND workflow_steps_reserved + 32 <= 2000
+        AND workflow_steps_reserved + 32 <= 2700
         AND EXISTS (
           SELECT 1 FROM agent_task_budget_reservations
           WHERE task_id = ? AND budget_day = ? AND counted = 1

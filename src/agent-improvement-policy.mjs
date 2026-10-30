@@ -1,5 +1,4 @@
 export const IMPROVEMENT_AUTOMATION_LIMITS = Object.freeze({
-  maxTasksPerDay: 3,
   maxModelCallsPerTask: 5,
 });
 

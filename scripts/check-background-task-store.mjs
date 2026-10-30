@@ -42,12 +42,13 @@ for (const required of [
   "counted = 2",
   "SET counted = 2",
   "const results = await db.batch(statements)",
-  "tasks_reserved < 60",
-  "workflow_steps_reserved + 32 <= 2000",
+  "workflow_steps_reserved + 32 <= 2700",
   "daily_workflow_budget_exhausted",
 ]) {
   assert.ok(source.includes(required), "Missing background task store contract: " + required);
 }
+assert.ok(!source.includes("tasks_reserved < 60"), "Task admission must not use an arbitrary daily task-count cap");
+assert.ok(!source.includes("workflow_steps_reserved + 32 <= 2000"), "Workflow admission must use the Cloudflare Free step budget");
 assert.ok(!source.includes("input.error.message"), "Raw exception messages must not be persisted");
 assert.equal(toSqliteDateTime(Date.UTC(2026, 9, 20, 12, 34, 56)), "2026-10-20 12:34:56");
 console.log("Background task store contract checks passed.");
