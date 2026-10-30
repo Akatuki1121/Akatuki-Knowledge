@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "src/**"
+      - "scripts/deploy-production.sh"
       - "wrangler.toml"
       - "package.json"
       - "package-lock.json"
@@ -144,6 +145,10 @@ jobs:
         if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
         run: npm ci
 
+      - name: 本番デプロイスクリプトの構文を確認
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        run: bash -n scripts/deploy-production.sh
+
       - name: チェックを実行
         if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
         run: npm run check
@@ -164,10 +169,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ea03cba73884bef04c37d1e21535e101
-          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
-          npx --yes wrangler@4.69.0 deploy --config wrangler.toml --tag "github-$TARGET_SHA" --message "GitHub commit $TARGET_SHA"
+          bash scripts/deploy-production.sh
 
       - name: 対象コミットに本番デプロイ結果を記録
         if: always() && steps.target.outputs.sha != '' && steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
