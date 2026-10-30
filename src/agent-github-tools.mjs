@@ -167,8 +167,19 @@ export function validateGitHubWritePlan(input) {
       case "update_file": {
         if (!exactObjectKeys(op, ["type", "branch", "path", "content", "message", "sha"]) || !SHA_PATTERN.test(op.sha)) throw new Error("invalid_input");
         return { type: op.type, branch: validateBranch(op.branch), path: validateWritePath(op.path),
-          content: validateContent(op.content, 20_000),
+          content: validateContent(op.content, 200_000),
           message: validateShortText(op.message, 200, "message"), sha: op.sha };
+      }
+      case "apply_patch": {
+        if (!exactObjectKeys(op, ["type", "branch", "path", "patch", "message", "sha"]) || !SHA_PATTERN.test(op.sha)) throw new Error("invalid_input");
+        return {
+          type: op.type,
+          branch: validateBranch(op.branch),
+          path: validateWritePath(op.path),
+          patch: validateContent(op.patch, 100_000),
+          message: validateShortText(op.message, 200, "message"),
+          sha: op.sha,
+        };
       }
       case "create_issue": {
         if (!exactObjectKeys(op, ["type", "title", "body"])) throw new Error("invalid_input");
@@ -197,6 +208,81 @@ export function validateGitHubWritePlan(input) {
 
 function exactObjectKeys(value, keys) {
   return Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+}
+
+function decodeBase64Utf8(value) {
+  let decoded;
+  try { decoded = atob(value.replace(/\n/g, "")); }
+  catch { throw new Error("github_invalid_file"); }
+  const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new Error("github_invalid_file"); }
+}
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+export function applyUnifiedPatch(original, patch, path) {
+  const normalizedOriginal = String(original).replace(/\r\n/g, "\n");
+  const hadTrailingNewline = normalizedOriginal.endsWith("\n");
+  const sourceLines = normalizedOriginal.split("\n");
+  if (hadTrailingNewline) sourceLines.pop();
+  const patchLines = String(patch).replace(/\r\n/g, "\n").split("\n");
+  if (patchLines[0] !== "--- a/" + path || patchLines[1] !== "+++ b/" + path) {
+    throw new Error("github_patch_path_mismatch");
+  }
+  const output = [];
+  let sourceIndex = 0;
+  let hunks = 0;
+  let index = 2;
+  while (index < patchLines.length) {
+    if (!patchLines[index]) { index++; continue; }
+    const match = patchLines[index].match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/u);
+    if (!match) throw new Error("github_patch_invalid");
+    const oldStart = Number(match[1]);
+    const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+    const newCount = match[4] === undefined ? 1 : Number(match[4]);
+    const targetIndex = oldStart === 0 ? 0 : oldStart - 1;
+    if (targetIndex < sourceIndex || targetIndex > sourceLines.length) throw new Error("github_patch_context_mismatch");
+    output.push(...sourceLines.slice(sourceIndex, targetIndex));
+    sourceIndex = targetIndex;
+    let consumed = 0;
+    let produced = 0;
+    index++;
+    while (index < patchLines.length && !patchLines[index].startsWith("@@ ")) {
+      const line = patchLines[index++];
+      if (line.startsWith("\\ No newline at end of file")) continue;
+      const marker = line[0];
+      const text = line.slice(1);
+      if (marker === " ") {
+        if (sourceLines[sourceIndex] !== text) throw new Error("github_patch_context_mismatch");
+        output.push(text);
+        sourceIndex++;
+        consumed++;
+        produced++;
+      } else if (marker === "-") {
+        if (sourceLines[sourceIndex] !== text) throw new Error("github_patch_context_mismatch");
+        sourceIndex++;
+        consumed++;
+      } else if (marker === "+") {
+        output.push(text);
+        produced++;
+      } else {
+        throw new Error("github_patch_invalid");
+      }
+    }
+    if (consumed !== oldCount || produced !== newCount) throw new Error("github_patch_invalid");
+    hunks++;
+  }
+  if (hunks === 0) throw new Error("github_patch_invalid");
+  output.push(...sourceLines.slice(sourceIndex));
+  return output.join("\n") + (hadTrailingNewline ? "\n" : "");
 }
 
 export async function hashGitHubWritePlan(plan) {
