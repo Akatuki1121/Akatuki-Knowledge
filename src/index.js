@@ -11666,7 +11666,16 @@ __name(recoverAgentTaskWorkflows, "recoverAgentTaskWorkflows");
 
 function describeAgentTaskError(error, env) {
   const name = typeof error?.name === "string" ? error.name : "Error";
-  const raw = typeof error?.message === "string" ? error.message.replace(/\s+/g, " ").slice(0, 160) : "";
+  const upstream = error?.workersAiError && typeof error.workersAiError === "object"
+    ? [
+      "Workers AI",
+      typeof error.workersAiError.name === "string" ? error.workersAiError.name : "",
+      typeof error.workersAiError.message === "string" ? error.workersAiError.message : "",
+      error.workersAiError.code !== undefined ? "code=" + String(error.workersAiError.code) : "",
+    ].filter(Boolean).join(": ")
+    : "";
+  const raw = [typeof error?.message === "string" ? error.message : "", upstream]
+    .filter(Boolean).join(" | ").replace(/\s+/g, " ").slice(0, 400);
   const checked = inspectAndRedact(raw, { blocklist: env?.PRIVACY_BLOCKLIST || "" });
   return checked.ok && !hasSensitiveCategory(checked.findings) ? (name + ": " + checked.text).slice(0, 200) : name;
 }
