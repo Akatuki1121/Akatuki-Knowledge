@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { reserveAgentAiBudget, settleAgentAiBudget, toSqliteDateTime } from "../src/background-task-store.mjs";
+import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
@@ -13,10 +13,17 @@ class D1Statement {
   bind(...values) { this.values = values; return this; }
   first() { return this.sqlite.prepare(this.sql).get(...this.values) ?? null; }
   run() { const result = this.sqlite.prepare(this.sql).run(...this.values); return { meta: { changes: Number(result.changes) } }; }
+  all() { return { results: this.sqlite.prepare(this.sql).all(...this.values) }; }
 }
 class D1Database {
   constructor(sqlite) { this.sqlite = sqlite; }
   prepare(sql) { return new D1Statement(this.sqlite, sql); }
+  batch(statements) {
+    return this.sqlite.transaction(() => statements.map((statement) => {
+      const result = this.sqlite.prepare(statement.sql).run(...statement.values);
+      return { meta: { changes: Number(result.changes) } };
+    }))();
+  }
 }
 
 const sqlite = new DatabaseSync(":memory:");
@@ -56,6 +63,43 @@ assert.equal(await settleAgentAiBudget(db, {
 }), true);
 row = sqlite.prepare("SELECT ai_calls_used, ai_tokens_used FROM agent_tasks WHERE task_id = 'settle-overrun'").get();
 assert.deepEqual({ ...row }, { ai_calls_used: 1, ai_tokens_used: 600_000 });
+
+const enqueueAt = Date.parse("2026-10-30T23:50:00.000Z");
+const enqueueSql = toSqliteDateTime(enqueueAt);
+sqlite.prepare(`
+  INSERT INTO agent_task_daily_budget (budget_day, tasks_reserved, workflow_steps_reserved, updated_at)
+  VALUES ('2026-10-30', 84, 2700, ?)
+`).run(enqueueSql);
+const deferred = await enqueueAgentTask(db, {
+  taskId: "queued-for-workflow-budget",
+  taskType: "github_query",
+  idempotencyKey: "queued-for-workflow-budget",
+  payload: { prompt: "inspect repository" },
+  maxTaskAgeMs: 8 * 60 * 60 * 1000,
+  nowMs: enqueueAt,
+});
+assert.equal(deferred.queuedForBudget, true);
+assert.equal(deferred.task.status, "queued");
+assert.equal(deferred.task.budget_reserved, 0);
+row = sqlite.prepare("SELECT next_attempt_at, deadline_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.equal(row.next_attempt_at, "2026-10-31 00:01:00");
+assert.equal(row.deadline_at, "2026-10-31 01:01:00");
+
+const resumedAt = Date.parse("2026-10-31T00:02:00.000Z");
+const reserved = await reserveQueuedAgentTaskBudget(db, { nowMs: resumedAt });
+assert.equal(reserved.reserved, 1);
+row = sqlite.prepare("SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = 'queued-for-workflow-budget'").get();
+assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 1, next_attempt_at: "2026-10-31 00:02:00" });
+const budgetRow = sqlite.prepare("SELECT tasks_reserved, workflow_steps_reserved FROM agent_task_daily_budget WHERE budget_day = '2026-10-31'").get();
+assert.deepEqual({ ...budgetRow }, { tasks_reserved: 1, workflow_steps_reserved: 32 });
+
+sqlite.prepare(`
+  INSERT INTO agent_tasks (task_id, task_type, status, stop_reason, deadline_at, next_attempt_at, created_at, updated_at)
+  VALUES ('legacy-budget-failure', 'github_query', 'failed', 'daily_workflow_budget_exhausted', ?, ?, ?, ?)
+`).run("2026-10-30 23:59:00", "2026-10-30 23:59:00", "2026-10-30 23:50:00", "2026-10-30 23:50:00");
+assert.equal(await requeueAgentTaskAfterBudgetWait(db, "legacy-budget-failure", resumedAt), true);
+row = sqlite.prepare("SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = 'legacy-budget-failure'").get();
+assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 0, stop_reason: null });
 
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");
