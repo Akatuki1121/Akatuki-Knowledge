@@ -139,11 +139,12 @@ assert.equal(writes.results.length, 3);
 assert.equal(writes.results[2].url, "https://github.com/example/project/pull/9");
 assert.ok(writeCalls.every((call) => call.init.headers.authorization === "Bearer test-token"));
 assert.deepEqual(writeCalls.map((call) => call.init.method), ["GET", "POST", "PUT", "POST"]);
-assert.throws(() => validateGitHubWritePlan({
-  repository: "example/project", summary: "too many", operations: Array.from({ length: 51 }, () => ({
+const manyOperations = validateGitHubWritePlan({
+  repository: "example/project", summary: "many independent changes", operations: Array.from({ length: 51 }, () => ({
     type: "create_issue", title: "x", body: "",
   })),
-}), /invalid_input/);
+});
+assert.equal(manyOperations.operations.length, 51, "GitHub plans must not have an arbitrary operation-count ceiling");
 
 const newline = String.fromCharCode(10);
 const original = ["alpha", "beta", "gamma", ""].join(newline);
