@@ -84,6 +84,14 @@ export async function expireAgentTasks(db, input = {}) {
           WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
           ELSE 'attempt_budget_exhausted'
         END,
+        last_error_class = COALESCE(NULLIF(last_error_class, ''), CASE
+          WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
+          ELSE 'attempt_budget_exhausted'
+        END),
+        last_error = COALESCE(NULLIF(last_error, ''), CASE
+          WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
+          ELSE 'attempt_budget_exhausted'
+        END),
         completed_at = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
     WHERE status IN ('queued', 'waiting', 'running')
       AND (
@@ -93,7 +101,7 @@ export async function expireAgentTasks(db, input = {}) {
           AND attempts >= max_attempts
         )
       )
-  `).bind(now, now, now, now, now).run();
+  `).bind(now, now, now, now, now, now, now).run();
   return Number(result?.meta?.changes || 0);
 }
 
@@ -584,11 +592,12 @@ export async function reserveAgentAiBudget(db, input) {
     UPDATE agent_tasks
     SET ai_calls_used = ai_calls_used + 1,
         ai_tokens_used = ai_tokens_used + ?,
+        lease_expires_at = datetime(?, '+120 seconds'),
         updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
       AND deadline_at > ? AND lease_expires_at > ?
   `).bind(
-    estimatedTokens, now, input.taskId, input.leaseToken, now, now,
+    estimatedTokens, now, now, input.taskId, input.leaseToken, now, now,
   ).run();
   return result?.meta?.changes === 1;
 }
@@ -608,11 +617,11 @@ export async function settleAgentAiBudget(db, input) {
     UPDATE agent_tasks
     SET ai_tokens_used = MAX(0, ai_tokens_used - ?) + ?, updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-      AND lease_expires_at > ? AND deadline_at > ?
+      AND deadline_at > ?
       AND ai_tokens_used >= ?
   `).bind(
     reservedTokens, actualTokens, now,
-    input.taskId, input.leaseToken, now, now, reservedTokens,
+    input.taskId, input.leaseToken, now, reservedTokens,
   ).run();
   return result?.meta?.changes === 1;
 }
@@ -662,11 +671,13 @@ export async function completeAgentTask(db, input) {
 export async function recordAgentTaskFailure(db, input) {
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const now = toSqliteDateTime(nowMs);
+  // The lease token is the fencing value. If the lease expired but no
+  // replacement workflow has claimed the task, preserve this failure; a
+  // reclaimed/cancelled task has a different token or status.
   const row = await db.prepare(`
     SELECT * FROM agent_tasks
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-      AND lease_expires_at > ?
-  `).bind(input.taskId, input.leaseToken, now).first();
+  `).bind(input.taskId, input.leaseToken).first();
   if (!row) return { applied: false, decision: null };
 
   const payload = parseJson(row.payload_json, {});
@@ -703,11 +714,10 @@ export async function recordAgentTaskFailure(db, input) {
           deadline_at = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN datetime(?, '+1 hour') ELSE deadline_at END,
           lease_token = NULL, lease_expires_at = NULL
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
-        AND lease_expires_at > ?
     `).bind(
       releaseWorkflowBudget ? 1 : 0, retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail),
       input.errorClass ?? "unknown", input.errorClass ?? "unknown", retryAt,
-      input.taskId, input.leaseToken, now,
+      input.taskId, input.leaseToken,
     );
     if (!releaseWorkflowBudget) {
       const result = await updateTask.run();
@@ -735,8 +745,7 @@ export async function recordAgentTaskFailure(db, input) {
         last_error_class = ?, last_error = ?, stop_reason = ?,
         lease_token = NULL, lease_expires_at = NULL
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-      AND lease_expires_at > ?
-  `).bind(now, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), decision.stopReason, input.taskId, input.leaseToken, now).run();
+  `).bind(now, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), decision.stopReason, input.taskId, input.leaseToken).run();
   return { applied: result?.meta?.changes === 1, decision };
 }
 
