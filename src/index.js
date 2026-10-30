@@ -12714,6 +12714,17 @@ var wrapper_default = {
     if (event.cron === "0 */12 * * *") {
       try {
         const audit = await runBudgetSelfAudit(env);
+        let improvementInbox = null;
+        if (audit.improvement?.created === true) improvementInbox = await runImprovementInbox(env);
+        console.log(JSON.stringify({ budgetSelfAudit: {
+          ok: audit.ok === true,
+          recorded: audit.recorded === true,
+          status: audit.report?.status || null,
+          findingCount: audit.report?.findings?.length || 0,
+          improvementCreated: audit.improvement?.created === true,
+          improvementReason: audit.improvement?.reason || null,
+          improvementQueued: Number(improvementInbox?.queued || 0),
+        } }));
         console.log(JSON.stringify({ budgetSelfAudit: { ok: audit.ok === true, recorded: audit.recorded === true, status: audit.report?.status || null, findingCount: audit.report?.findings?.length || 0, skipped: audit.skipped || null } }));
       } catch (error) {
         console.log(JSON.stringify({ budgetSelfAudit: { ok: false }, failure: describeSafeFailure("budget_self_audit_failed", error) }));
