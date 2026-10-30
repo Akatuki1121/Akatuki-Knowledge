@@ -137,7 +137,7 @@ sqlite.prepare(`
   INSERT INTO agent_tasks (task_id, task_type, status, stop_reason, deadline_at, next_attempt_at, created_at, updated_at)
   VALUES ('legacy-budget-failure', 'github_query', 'failed', 'daily_workflow_budget_exhausted', ?, ?, ?, ?)
 `).run("2026-10-30 23:59:00", "2026-10-30 23:59:00", "2026-10-30 23:50:00", "2026-10-30 23:50:00");
-assert.equal(await requeueAgentTaskAfterBudgetWait(db, "legacy-budget-failure", resumedAt), true);
+assert.equal(await requeueAgentTaskAfterBudgetWait(db, "legacy-budget-failure", Date.parse("2026-11-01T00:02:00.000Z")), true);
 row = sqlite.prepare("SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = 'legacy-budget-failure'").get();
 assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 0, stop_reason: null });
 
