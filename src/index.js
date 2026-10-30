@@ -21,7 +21,8 @@ import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { callWorkersAi } from "./workers-ai-client.mjs";
 import { estimateWorkersAiPromptTokens } from "./workers-ai-budget.mjs";
-import { IMPROVEMENT_AUTOMATION_LIMITS, improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
+import { improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
+import { runBudgetSelfAudit } from "./budget-self-audit.mjs";
 import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
 import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
@@ -11429,6 +11430,7 @@ var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
 var PULL_CRON = "0 * * * *";
 var TASK_RECOVERY_CRON = "*/15 * * * *";
+var BUDGET_AUDIT_CRON = "55 23 * * *";
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11516,7 +11518,20 @@ async function appendImprovementResult(env, payload, taskId, result) {
 }
 async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
-  const rows = (await env.DB.prepare("SELECT id, path, title, content, content_hash, sync_uuid FROM notes WHERE path LIKE 'Notes/改善/%' AND path <> 'Notes/改善/このフォルダについて.md' AND deleted_at IS NULL ORDER BY updated_at ASC LIMIT 30").all()).results || [];
+  const cursorKey = "agent_improvement_inbox_cursor";
+  const cursorRow = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(cursorKey).first();
+  let cursor = null;
+  try { cursor = cursorRow?.value ? JSON.parse(cursorRow.value) : null; } catch { cursor = null; }
+  const rows = (await env.DB.prepare(`
+    SELECT id, path, title, content, content_hash, sync_uuid, updated_at
+    FROM notes
+    WHERE path LIKE 'Notes/改善/%'
+      AND path <> 'Notes/改善/このフォルダについて.md'
+      AND deleted_at IS NULL
+      AND (? IS NULL OR updated_at > ? OR (updated_at = ? AND id > ?))
+    ORDER BY updated_at ASC, id ASC
+    LIMIT 30
+  `).bind(cursor?.updatedAt ?? null, cursor?.updatedAt ?? null, cursor?.updatedAt ?? null, cursor?.id ?? "").all()).results || [];
   let queued = 0, scanned = 0;
   for (const note of rows) {
     scanned++;
@@ -11553,10 +11568,11 @@ async function runImprovementInbox(env) {
     // errors are retried by the Workflow's bounded task retry schedule.
     if (sameRequest && ["failed", "cancelled"].includes(previous?.status)) continue;
     if (seen) continue;
-    if (requestContent.length > 8000 || !requestContent.trim()) {
+    const requestTokens = estimateWorkersAiPromptTokens(requestContent);
+    if (requestTokens >= 131_072 || !requestContent.trim()) {
       await appendImprovementResult(env, {
         improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
-      }, "rejected-" + idempotencyKey, { status: "stopped", reason: requestContent.length > 8000 ? "request_too_large" : "empty_request" });
+      }, "rejected-" + idempotencyKey, { status: "stopped", reason: requestTokens >= 131_072 ? "model_context_window_exceeded" : "empty_request" });
       continue;
     }
     // Daily admission is governed by the shared Cloudflare Workflow-step and
@@ -11571,11 +11587,9 @@ async function runImprovementInbox(env) {
         idempotencyKey: taskIdempotencyKey,
         maxAttempts: 4,
         maxTaskAgeMs: 8 * 60 * 60 * 1000,
-        maxAiCalls: IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask,
-        maxAiTokens: 12000,
         payload: {
           prompt: requestContent,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 131_072,
           allowGitHubRead: true,
           allowGitHubWrite: true,
           allowWebResearch: false,
@@ -11596,7 +11610,15 @@ async function runImprovementInbox(env) {
       // Leave the note un-seen. A later scheduled scan can try again.
     }
   }
-  return { scanned, queued };
+  if (rows.length >= 30 && rows.length > 0) {
+    const last = rows.at(-1);
+    const nextCursor = JSON.stringify({ updatedAt: last.updated_at, id: last.id });
+    await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .bind(cursorKey, nextCursor, new Date().toISOString()).run();
+  } else {
+    await env.DB.prepare("DELETE FROM app_meta WHERE key = ?").bind(cursorKey).run();
+  }
+  return { scanned, queued, hasMore: rows.length >= 30 };
 }
 async function recoverAgentTaskWorkflows(env, limit = 5) {
   const nowMs = Date.now();
@@ -11698,8 +11720,8 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           if (task.payload.allowWebResearch === true) throw new Error("web_research_disabled");
 
           const checkpoint = task.checkpoint || {};
-          const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 512;
-          const maxOutputTokens = Math.max(128, Math.min(1024, requested));
+          const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 131_072;
+          const maxOutputTokens = Math.max(1, Math.min(131_072, requested));
           const allowWebResearch = false;
           if (checkpoint.stage === "completed" && typeof checkpoint.result === "string") {
             return { resumeCompleted: true, maxOutputTokens };
@@ -12189,20 +12211,35 @@ __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/budget-audit" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB) return Response.json({ error: "audit_database_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      try {
+        const rows = (await env.DB.prepare("SELECT key, value, updated_at FROM app_meta WHERE key LIKE 'budget-audit:%' ORDER BY key DESC LIMIT 14").all()).results || [];
+        const reports = rows.map((row) => {
+          try { return { ...JSON.parse(row.value), updatedAt: row.updated_at }; }
+          catch { return { key: row.key, updatedAt: row.updated_at, status: "unreadable" }; }
+        });
+        return Response.json({ reports }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ error: "audit_report_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+    }
+
     if (url.pathname === "/api/agent-tasks" && request.method === "POST") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       if (!env.DB || !env.AGENT_TASK_WORKFLOW) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
       const contentLength = Number(request.headers.get("content-length") || 0);
-      if (contentLength > 16384) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
+      if (contentLength > 524288) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
       let body;
       try {
         const raw = await request.text();
-        if (raw.length > 16384) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
+        if (raw.length > 524288) return Response.json({ error: "request_too_large" }, { status: 413, headers: JSON_HEADERS2 });
         body = JSON.parse(raw);
       } catch {
         return Response.json({ error: "invalid_json" }, { status: 400, headers: JSON_HEADERS2 });
       }
-      if (typeof body?.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 8000) {
+      if (typeof body?.prompt !== "string" || !body.prompt.trim() || estimateWorkersAiPromptTokens(body.prompt) >= 131_072) {
         return Response.json({ error: "invalid_prompt" }, { status: 400, headers: JSON_HEADERS2 });
       }
       if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 100) {
@@ -12216,8 +12253,8 @@ var wrapper_default = {
       if (!inspection.ok || hasSensitiveCategory(inspection.findings)) {
         return Response.json({ error: "sensitive_input_blocked" }, { status: 422, headers: JSON_HEADERS2 });
       }
-      const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 512;
-      const maxOutputTokens = Math.max(128, Math.min(1024, requestedTokens));
+      const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 131_072;
+      const maxOutputTokens = Math.max(1, Math.min(131_072, requestedTokens));
       let queued;
       try {
         queued = await enqueueAgentTask(env.DB, {
@@ -12695,6 +12732,30 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === BUDGET_AUDIT_CRON) {
+      try {
+        const audit = await runBudgetSelfAudit(env, Date.now(), {
+          includeSystemAudit: true,
+          createNote: async (note) => createNote(new Request("https://internal/api/notes", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(note),
+          }), env),
+        });
+        console.log(JSON.stringify({
+          budgetSelfAudit: {
+            ok: audit.ok,
+            status: audit.report?.status || null,
+            findings: audit.report?.findings?.length || 0,
+            noteCreated: audit.noteCreated === true,
+            recorded: audit.recorded === true,
+          },
+        }));
+      } catch (error) {
+        console.log(JSON.stringify({ budgetSelfAudit: { ok: false }, failure: describeSafeFailure("budget_self_audit_failed", error) }));
+      }
+      return worker_default.scheduled(event, env, ctx);
+    }
     if (event.cron === TASK_RECOVERY_CRON) {
       try {
         const recovery = await recoverAgentTaskWorkflows(env, 5);
