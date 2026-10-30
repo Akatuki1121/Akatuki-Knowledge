@@ -57,8 +57,10 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
-          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/statuses?per_page=100" \
-            --jq '[.[] | select(.context == "production-deploy")][0].state // ""')"
+          previous="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "production-deploy")][0] // {} | {state: (.state // ""), description: (.description // "")}')"
+          state="$(jq -r '.state' <<< "$previous")"
+          description="$(jq -r '.description' <<< "$previous")"
           if [ "$state" = "success" ]; then
             echo "deployed=true" >> "$GITHUB_OUTPUT"
             echo "::notice::コミット $TARGET_SHA は既に本番反映成功として記録されています。"
@@ -68,6 +70,19 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "deployed=false" >> "$GITHUB_OUTPUT"
+            # 定期照合で初めて未反映を発見した場合、または前回実行が
+            # 「デプロイ中」のまま終了していた場合は、起動漏れ/中断を明示的に記録する。
+            if [ "$GITHUB_EVENT_NAME" = "schedule" ] && {
+              [ -z "$state" ] || [ "$description" = "本番デプロイ実行中" ];
+            }; then
+              target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+                -f state=failure \
+                -f context=production-deploy \
+                -f description="定期照合で本番未反映を検出。自動復旧を試みます" \
+                -f target_url="$target_url"
+              echo "::warning::本番デプロイの成功記録がないため、未起動または前回実行の中断を検出しました。"
+            fi
             echo "前回の本番反映状態: ${state:-記録なし}。デプロイを試みます。"
           fi
 
@@ -104,6 +119,20 @@ jobs:
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: 本番デプロイ開始を記録
+        if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state=pending \
+            -f context=production-deploy \
+            -f description="本番デプロイ実行中" \
+            -f target_url="$target_url"
+
       - name: Node.js をセットアップ
         if: steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
         uses: actions/setup-node@v4
@@ -138,7 +167,7 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
-          npx --yes wrangler@4.69.0 deploy --config wrangler.toml --message "GitHub commit $TARGET_SHA"
+          npx --yes wrangler@4.69.0 deploy --config wrangler.toml --tag "github-$TARGET_SHA" --message "GitHub commit $TARGET_SHA"
 
       - name: 対象コミットに本番デプロイ結果を記録
         if: always() && steps.target.outputs.sha != '' && steps.already.outputs.deployed != 'true' && steps.migration_gate.outputs.allowed == 'true'
