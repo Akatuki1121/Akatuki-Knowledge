@@ -48,7 +48,7 @@ jobs:
             echo "## 本番デプロイ対象"
             echo
             echo "- ブランチ: main"
-            echo "- コミット: `$target_sha`"
+            echo "- コミット: $target_sha"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 対象コミットの本番反映状況を確認
@@ -110,9 +110,9 @@ jobs:
               echo
               echo "## デプロイ保留"
               echo
-              echo "- 対象コミット: `$TARGET_SHA`"
-              echo "- 理由: `$pending` が migrations/pending に存在します。"
-              echo "- コミット Status: `production-deploy: pending`"
+              echo "- 対象コミット: $TARGET_SHA"
+              echo "- 理由: $pending が migrations/pending に存在します."
+              echo "- コミット Status: production-deploy: pending"
               echo
               echo "安全ゲートを維持するため、デプロイは実行していません。次回の定期確認で再試行します。"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -199,6 +199,6 @@ jobs:
             echo "## 本番デプロイ結果"
             echo
             echo "- 対象コミット: `$TARGET_SHA`"
-            echo "- 結果: `$state`"
+            echo "- 結果: $state"
             echo "- 実行ログ: $target_url"
           } >> "$GITHUB_STEP_SUMMARY"
