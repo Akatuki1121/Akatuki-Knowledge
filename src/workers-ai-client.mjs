@@ -34,11 +34,13 @@ export function describeWorkersAiFailure(error) {
   const name = typeof error?.name === "string" && WORKERS_AI_ERROR_NAME_PATTERN.test(error.name)
     ? error.name
     : "Error";
-  const code = safeWorkersAiCode(error?.code ?? error?.status ?? error?.httpStatus ?? error?.apiStatus ?? error?.statusCode);
+  const code = safeWorkersAiCode(error?.code);
+  const status = safeWorkersAiCode(error?.status ?? error?.httpStatus ?? error?.apiStatus ?? error?.statusCode);
   return {
     name,
     message: sanitizeWorkersAiMessage(rawMessage),
-    ...(code === void 0 ? {} : { code })
+    ...(code === void 0 ? {} : { code }),
+    ...(status === void 0 ? {} : { status })
   };
 }
 

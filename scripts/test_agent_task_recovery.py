@@ -151,7 +151,7 @@ connection.execute(
     "UPDATE agent_tasks SET attempts = 1, lease_token = 'expired-lease', lease_expires_at = ? WHERE task_id = ?",
     ("2026-10-22 11:58:00", "expired"),
 )
-connection.execute(expire_sql, (NOW, NOW, NOW, NOW, NOW))
+connection.execute(expire_sql, (NOW, NOW, NOW, NOW, NOW, NOW, NOW))
 expired = connection.execute(
     "SELECT status, stop_reason, checkpoint_json FROM agent_tasks WHERE task_id = 'expired'"
 ).fetchone()

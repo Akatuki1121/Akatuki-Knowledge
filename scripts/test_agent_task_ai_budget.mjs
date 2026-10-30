@@ -178,5 +178,87 @@ assert.equal(await requeueAgentTaskAfterBudgetWait(db, "legacy-budget-failure", 
 row = sqlite.prepare("SELECT status, budget_reserved, stop_reason FROM agent_tasks WHERE task_id = 'legacy-budget-failure'").get();
 assert.deepEqual({ ...row }, { status: "queued", budget_reserved: 0, stop_reason: null });
 
+
+const staleAt = Date.parse("2026-10-31T14:00:00.000Z");
+const staleExpiry = toSqliteDateTime(staleAt - 60_000);
+const staleDeadline = toSqliteDateTime(staleAt + 60 * 60 * 1000);
+// Every AI reservation also renews a still-valid lease, so multiple model
+// calls cannot consume the original 120-second lease without refreshing it.
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, lease_token, lease_expires_at, deadline_at,
+    created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  "renew-on-ai-reservation", "github_query", "running", "renew-token",
+  toSqliteDateTime(staleAt + 5_000), staleDeadline, staleExpiry, staleExpiry,
+);
+assert.equal(await reserveAgentAiBudget(db, {
+  taskId: "renew-on-ai-reservation", leaseToken: "renew-token", estimatedTokens: 100, nowMs: staleAt
+}), true);
+row = sqlite.prepare("SELECT lease_expires_at FROM agent_tasks WHERE task_id = 'renew-on-ai-reservation'").get();
+assert.equal(row.lease_expires_at, toSqliteDateTime(staleAt + 120_000));
+
+// A late-starting call may still reserve against its original token when
+// no replacement workflow has claimed the expired lease.
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, lease_token, lease_expires_at, deadline_at,
+    created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  "reserve-after-expiry", "github_query", "running", "late-reserve-token",
+  staleExpiry, staleDeadline, staleExpiry, staleExpiry,
+);
+assert.equal(await reserveAgentAiBudget(db, {
+  taskId: "reserve-after-expiry", leaseToken: "late-reserve-token", estimatedTokens: 250, nowMs: staleAt
+}), true);
+row = sqlite.prepare("SELECT ai_tokens_used, lease_expires_at FROM agent_tasks WHERE task_id = 'reserve-after-expiry'").get();
+assert.deepEqual({ ...row }, {
+  ai_tokens_used: 250,
+  lease_expires_at: toSqliteDateTime(staleAt + 120_000),
+});
+
+// Expired leases must not discard provider settlement or the final failure.
+// The lease token is the fencing value: expiry alone does not mean a new
+// workflow has claimed the task.
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, payload_json, attempts, max_attempts,
+    ai_calls_used, ai_tokens_used, lease_token, lease_expires_at,
+    deadline_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  "expired-lease-failure", "github_query", "running",
+  JSON.stringify({ improvementRequest: true }), 4, 4, 1, 136_757,
+  "expired-lease-token", staleExpiry, staleDeadline, staleExpiry, staleExpiry,
+);
+assert.equal(await settleAgentAiBudget(db, {
+  taskId: "expired-lease-failure",
+  leaseToken: "expired-lease-token",
+  reservedTokens: 136_757,
+  actualTokens: 5_685,
+  nowMs: staleAt,
+}), true);
+row = sqlite.prepare("SELECT ai_tokens_used FROM agent_tasks WHERE task_id = 'expired-lease-failure'").get();
+assert.equal(row.ai_tokens_used, 5_685);
+const staleFailure = await recordAgentTaskFailure(db, {
+  taskId: "expired-lease-failure",
+  leaseToken: "expired-lease-token",
+  errorClass: "upstream_5xx",
+  errorDetail: "WorkersAiError: upstream HTTP 503",
+  retryable: true,
+  nowMs: staleAt,
+});
+assert.equal(staleFailure.applied, true);
+assert.equal(staleFailure.decision.stopReason, "attempt_budget_exhausted");
+row = sqlite.prepare("SELECT status, last_error_class, last_error, stop_reason FROM agent_tasks WHERE task_id = 'expired-lease-failure'").get();
+assert.deepEqual({ ...row }, {
+  status: "failed",
+  last_error_class: "upstream_5xx",
+  last_error: "WorkersAiError: upstream HTTP 503",
+  stop_reason: "attempt_budget_exhausted",
+});
+
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");

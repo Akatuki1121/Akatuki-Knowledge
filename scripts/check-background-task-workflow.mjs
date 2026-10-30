@@ -53,6 +53,8 @@ for (const required of [
   "step.sleepUntil",
   "AbortSignal.timeout(30_000)",
   "recordAgentTaskFailure",
+  "reason: errorClass",
+  "const errorDetail = describeAgentTaskError(error, this.env);",
   "recoverAgentTaskWorkflows",
   "reserveQueuedAgentTaskBudget",
   "requeueAgentTaskAfterBudgetWait",

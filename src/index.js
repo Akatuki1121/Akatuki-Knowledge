@@ -11666,7 +11666,17 @@ __name(recoverAgentTaskWorkflows, "recoverAgentTaskWorkflows");
 
 function describeAgentTaskError(error, env) {
   const name = typeof error?.name === "string" ? error.name : "Error";
-  const raw = typeof error?.message === "string" ? error.message.replace(/\s+/g, " ").slice(0, 160) : "";
+  const upstream = error?.workersAiError && typeof error.workersAiError === "object"
+    ? [
+      "Workers AI",
+      typeof error.workersAiError.name === "string" ? error.workersAiError.name : "",
+      typeof error.workersAiError.message === "string" ? error.workersAiError.message : "",
+      error.workersAiError.code !== undefined ? "code=" + String(error.workersAiError.code) : "",
+      error.workersAiError.status !== undefined ? "status=" + String(error.workersAiError.status) : "",
+    ].filter(Boolean).join(": ")
+    : "";
+  const raw = [typeof error?.message === "string" ? error.message : "", upstream]
+    .filter(Boolean).join(" | ").replace(/\s+/g, " ").slice(0, 400);
   const checked = inspectAndRedact(raw, { blocklist: env?.PRIVACY_BLOCKLIST || "" });
   return checked.ok && !hasSensitiveCategory(checked.findings) ? (name + ": " + checked.text).slice(0, 200) : name;
 }
@@ -12112,20 +12122,20 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         const current = await getAgentTask(this.env.DB, taskId);
         return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
       } catch (error) {
+        const errorClass = classifyAgentTaskError(error);
+        const errorDetail = describeAgentTaskError(error, this.env);
         try {
           const failedTask = await getAgentTask(this.env.DB, taskId);
           if (failedTask?.payload?.improvementRequest === true) {
             await appendImprovementResult(this.env, failedTask.payload, taskId, {
               status: "failed",
-              reason: safeErrorCode(error?.message),
-              error: describeAgentTaskError(error, this.env)
+              reason: errorClass,
+              error: errorDetail
             });
           }
         } catch (writebackError) {
           console.log(JSON.stringify({ improvementResultWriteback: { ok: false }, failure: describeSafeFailure("improvement_result_writeback_failed", writebackError) }));
         }
-        const errorClass = classifyAgentTaskError(error);
-        const errorDetail = describeAgentTaskError(error, this.env);
         const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted", "workers_ai_daily_quota_exhausted"].includes(errorClass);
         const failure = await step.do("record-failure-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
           return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, errorDetail, retryable, nowMs: Date.now() });

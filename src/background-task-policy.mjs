@@ -154,14 +154,19 @@ __name(describeAgentTaskStopReason, "describeAgentTaskStopReason");
 // エージェントタスクのエラー分類 (Issue #86)。src/index.js から移動した関数で、本文は移動前と同一。
 // 分類結果は decideTaskRetry への入力クラスになるため、固定クラスの先行一致の順序も含め本文を変えない。
 export function classifyAgentTaskError(error) {
-  const message = typeof error?.message === "string" ? error.message : "";
+  const message = [
+    typeof error?.message === "string" ? error.message : "",
+    typeof error?.workersAiError?.message === "string" ? error.workersAiError.message : "",
+    error?.workersAiError?.code !== undefined ? String(error.workersAiError.code) : "",
+    error?.workersAiError?.status !== undefined ? String(error.workersAiError.status) : "",
+  ].filter(Boolean).join(" ");
   for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "tool_output_too_large", "workers_ai_daily_quota_exhausted"]) {
     if (message.includes(fixed)) return fixed;
   }
-  if (/workers_ai_request_failed/i.test(message) && (/(daily|neuron|quota|allocation)/i.test(message) || /code=3036\b/iu.test(message))) return "workers_ai_daily_quota_exhausted";
+  if (/workers_ai_(?:request|failure_settlement)_failed/i.test(message) && (/(daily|neuron|quota|allocation)/i.test(message) || /code=3036\b/iu.test(message))) return "workers_ai_daily_quota_exhausted";
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
-  if (/Gemini API returned 5\d\d/i.test(message)
-    || /workers_ai_request_failed[\s\S]{0,180}\b5\d\d\b/i.test(message)) return "upstream_5xx";
+  if (/\b5\d\d\b/i.test(message)
+    || /Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
   if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
   if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
   return "unknown";
