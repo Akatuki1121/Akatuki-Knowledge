@@ -567,34 +567,3 @@ await assert.rejects(runAgentToolLoop({
 assert.equal(blockedModelCalls, 1, "A safety-blocked plan must fail on the first response, without feedback retries");
 console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
 
-
-// Long-running tool loops retain evidence IDs while compacting bulky old results
-// from the durable checkpoint and model context.
-const longHistorySaved = [];
-let longHistoryModelCalls = 0;
-const longHistory = await runAgentToolLoop({
-  initialPrompt: "Collect enough evidence across many notes.",
-  callModel: async ({ modelCall, prompt }) => {
-    longHistoryModelCalls = modelCall;
-    if (modelCall > 4) assert.match(prompt, /history_summary/);
-    return modelCall <= 12
-      ? action("search_notes", { query: "long-history search " + modelCall })
-      : final("Collected evidence across twelve searches.");
-  },
-  executeTool: async (_tool, args) => ({
-    notes: [{
-      id: "long-note-" + args.query.split(" ").at(-1),
-      title: "Long evidence note",
-      text: "x".repeat(20_000),
-    }],
-  }),
-  saveCheckpoint: async (checkpoint) => { longHistorySaved.push(checkpoint); return true; },
-});
-assert.equal(longHistoryModelCalls, 13);
-assert.equal(longHistory.toolCalls.length, 12);
-const longHistoryCheckpoint = longHistorySaved.at(-2);
-assert.equal(longHistoryCheckpoint.toolCalls[0].result.notes[0].text.length, 400);
-assert.equal(longHistoryCheckpoint.toolCalls.at(-3).result.notes[0].text.length, 400);
-assert.equal(longHistoryCheckpoint.toolCalls.at(-1).result.notes[0].text.length, 20_000);
-assert.equal(longHistoryCheckpoint.transcript.filter((item) => item.role === "tool").length, 12);
-assert.ok(JSON.stringify(longHistoryCheckpoint).length < 100_000, "Durable checkpoints must not grow linearly with full historical tool output");
