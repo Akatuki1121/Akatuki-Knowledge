@@ -95,13 +95,13 @@ async function githubGet(path, { token, fetchImpl = fetch, signal } = {}) {
 export const GITHUB_WRITE_PROPOSAL_TOOL = Object.freeze({
   description: "Prepare a GitHub write plan for explicit user approval. This tool NEVER performs writes. "
     + "The arguments object must contain exactly repository, summary, operations. "
-    + "operations may contain 1 to 50 entries. Each operation must contain exactly its documented keys. "
+    + "operations may contain one or more entries, bounded by the total serialized plan size. Each operation must contain exactly its documented keys. "
     + "create_branch={type,branch,base_ref}; create_file={type,branch,path,content,message}; "
     + "update_file={type,branch,path,content,message,sha}; apply_patch={type,branch,path,patch,message,sha}; "
     + "create_issue={type,title,body}; add_issue_comment={type,number,body}; "
     + "create_pull_request={type,head,base,title,body,draft}. "
     + "File content may be up to 200000 characters. apply_patch uses a standard unified diff for exactly one existing file, with --- a/<path> and +++ b/<path> headers, and is limited to 100000 characters. "
-    + "update_file and apply_patch require the current 40-character blob sha. The complete plan must fit within 200000 characters of JSON.",
+    + "update_file and apply_patch require the current 40-character blob sha. The complete plan must fit within 500000 characters of JSON.",
   sideEffect: "approval_required",
   arguments: Object.freeze(["repository", "summary", "operations"]),
   operationArguments: Object.freeze({
@@ -202,7 +202,7 @@ export function validateGitHubWritePlan(input) {
     }
   });
   const normalized = { repository, summary, operations };
-  if (JSON.stringify(normalized).length > 200_000) throw new Error("github_write_plan_too_large");
+  if (JSON.stringify(normalized).length > 500_000) throw new Error("github_write_plan_too_large");
   return normalized;
 }
 
