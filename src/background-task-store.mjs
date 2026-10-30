@@ -592,7 +592,7 @@ export async function reserveAgentAiBudget(db, input) {
     UPDATE agent_tasks
     SET ai_calls_used = ai_calls_used + 1,
         ai_tokens_used = ai_tokens_used + ?,
-        lease_expires_at = datetime(?, '+120 seconds'),
+        lease_expires_at = MAX(lease_expires_at, datetime(?, '+120 seconds')),
         updated_at = ?
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
       AND deadline_at > ? AND lease_expires_at > ?
