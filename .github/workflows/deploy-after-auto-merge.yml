@@ -92,5 +92,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run deploy.yml --ref main
+          gh workflow run deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           echo "Deploy workflow_dispatch を main に対して要求しました。"
