@@ -255,7 +255,7 @@ export function applyUnifiedPatch(original, patch, path) {
     let consumed = 0;
     let produced = 0;
     index++;
-    while (index < patchLines.length && !patchLines[index].startsWith("@@ ")) {
+    while (index < patchLines.length && patchLines[index] !== "" && !patchLines[index].startsWith("@@ ")) {
       const line = patchLines[index++];
       if (line.startsWith("\\ No newline at end of file")) continue;
       const marker = line[0];
