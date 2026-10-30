@@ -148,6 +148,12 @@ assert.equal(classifyAgentTaskError(new TypeError("429 from upstream")), "rate_l
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 500")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 503 Service Unavailable")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: WorkersAiError: upstream unavailable (code=503)")), "upstream_5xx");
+const nestedProviderFailure = new Error("workers_ai_failure_settlement_failed");
+nestedProviderFailure.workersAiError = { name: "WorkersAiError", message: "upstream unavailable", code: "model_error", status: 503 };
+assert.equal(classifyAgentTaskError(nestedProviderFailure), "upstream_5xx");
+const nestedQuotaFailure = new Error("workers_ai_failure_settlement_failed");
+nestedQuotaFailure.workersAiError = { name: "WorkersAiError", message: "daily Neurons allocation exhausted", status: 429 };
+assert.equal(classifyAgentTaskError(nestedQuotaFailure), "workers_ai_daily_quota_exhausted");
 const timeoutByName = new Error("boom");
 timeoutByName.name = "TimeoutError";
 assert.equal(classifyAgentTaskError(timeoutByName), "timeout");
