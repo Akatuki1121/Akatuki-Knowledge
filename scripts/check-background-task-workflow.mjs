@@ -175,4 +175,18 @@ const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay
 assert.equal(retryConfigs.length, 14, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
 assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
 
-console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, and retry contracts passed.");
+
+
+
+const deployOnMerge = await readFile(new URL("../.github/workflows/deploy-on-merge.yml", import.meta.url), "utf8");
+assert.ok(deployOnMerge.includes("pull_request:"), "Deploy dispatch must be triggered by pull_request events");
+assert.ok(deployOnMerge.includes("types: [closed]"), "Deploy dispatch must run after a PR is closed");
+assert.ok(deployOnMerge.includes("- main"), "Deploy dispatch must be limited to PRs targeting main");
+assert.ok(deployOnMerge.includes("if: github.event.pull_request.merged == true"), "Only merged pull requests may dispatch Deploy");
+assert.ok(deployOnMerge.includes("permissions:\n  actions: write"), "Deploy dispatch must use only actions: write permission");
+assert.ok(deployOnMerge.includes("gh run list --workflow deploy.yml --branch main"), "Deploy dispatch must inspect recent Deploy workflow runs");
+assert.ok(deployOnMerge.includes("github.event.pull_request.merge_commit_sha"), "Duplicate detection must use the PR merge commit SHA");
+assert.ok(deployOnMerge.includes('grep -Fxq "$MERGE_SHA"'), "An existing run for the merge commit must suppress dispatch");
+assert.ok(deployOnMerge.includes("gh workflow run deploy.yml --ref main"), "A missing run must dispatch Deploy against main");
+
+console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, retry, and deploy-dispatch contracts passed.");
