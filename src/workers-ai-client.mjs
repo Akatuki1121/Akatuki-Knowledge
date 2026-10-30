@@ -7,7 +7,7 @@ import {
 
 // GLM-4.7-Flash remains available on Workers Free and supports multilingual tool-calling.
 export const WORKERS_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
-export const WORKERS_AI_MAX_OUTPUT_TOKENS = 1024;
+export const WORKERS_AI_MAX_OUTPUT_TOKENS = 131_072;
 
 // 元エラーのサニタイズ規則。src/log-sanitize.mjs と同じ考え方で、
 // 名前・メッセージ・コードだけを残し、プロンプト本文や認証情報は含めない。
@@ -57,8 +57,10 @@ function createWorkersAiRequestFailure(error) {
 export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options = {}) {
   if (!env?.AI || typeof env.AI.run !== "function") throw new Error("workers_ai_binding_missing");
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("invalid_input");
-  const requested = Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : 512;
-  const maxTokens = Math.max(128, Math.min(WORKERS_AI_MAX_OUTPUT_TOKENS, requested));
+  const requested = Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : WORKERS_AI_MAX_OUTPUT_TOKENS;
+  const promptTokens = estimateWorkersAiPromptTokens(prompt);
+  const contextRemaining = Math.max(1, 131_072 - promptTokens);
+  const maxTokens = Math.max(1, Math.min(WORKERS_AI_MAX_OUTPUT_TOKENS, requested, contextRemaining));
   const messages = [
     {
       role: "system",
@@ -75,7 +77,7 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options 
     // そのため env.AI.run には第3引数を渡さない。options.signal が渡されても無視する。
     result = await env.AI.run(WORKERS_AI_MODEL, {
       messages,
-      max_tokens: maxTokens,
+      max_completion_tokens: maxTokens,
       temperature: 0.1,
       ...(options.responseMimeType === "application/json" ? { response_format: { type: "json_object" } } : {})
     });
@@ -104,6 +106,6 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = 512, options 
     if (typeof options.onUsage === "function") await options.onUsage(result.usage);
   }
   const response = typeof result?.response === "string" ? result.response : "";
-  if (!response.trim() || response.length > 16_000) throw new Error("workers_ai_invalid_response");
+  if (!response.trim() || response.length > 524_288) throw new Error("workers_ai_invalid_response");
   return response;
 }
