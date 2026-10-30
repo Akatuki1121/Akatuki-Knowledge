@@ -78,6 +78,17 @@ assert.ok(config.includes('"*/15 * * * *"'));
 assert.ok(config.includes('"55 23 * * *"'), "Daily system self-audit must be scheduled");
 assert.ok(source.includes('event.cron === BUDGET_AUDIT_CRON'), "Daily budget and system audit must be connected to Cron");
 assert.ok(source.includes('url.pathname === "/api/budget-audit"'), "Latest audit reports must be queryable through an authenticated API");
+const manualAuditRouteStart = source.indexOf('url.pathname === "/api/budget-audit/run" && request.method === "POST"');
+const manualAuditRouteEnd = source.indexOf('url.pathname === "/api/budget-audit" && request.method === "GET"', manualAuditRouteStart);
+assert.ok(manualAuditRouteStart >= 0 && manualAuditRouteEnd > manualAuditRouteStart, "Manual budget audit must be a dedicated POST route");
+const manualAuditRoute = source.slice(manualAuditRouteStart, manualAuditRouteEnd);
+assert.ok(manualAuditRoute.indexOf("await isAuthorized(request, env)") < manualAuditRoute.indexOf("runBudgetSelfAudit"), "Manual budget audit must authenticate before running");
+assert.ok(manualAuditRoute.includes("includeSystemAudit: true"), "Manual budget audit must include the system audit");
+assert.ok(manualAuditRoute.includes('createNote(new Request("https://internal/api/notes"'), "Manual budget audit must create notes through the internal notes API");
+for (const field of ["ok:", "report:", "noteCreated:", "recorded:"]) {
+  assert.ok(manualAuditRoute.includes(field), "Manual budget audit response must include " + field);
+}
+
 assert.ok(source.includes('taskRow.budget_reserved !== 1'), "Workflow dispatch must wait for a reserved step budget");
 assert.ok(source.includes("failure.workflowBudgetReleased === true"), "UTC day rollover must end the current Workflow run");
 assert.ok(source.includes("workers_ai_daily_quota_exhausted"), "Cloudflare Workers AI quota exhaustion must wait for the UTC reset");
