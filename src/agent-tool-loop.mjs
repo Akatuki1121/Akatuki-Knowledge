@@ -356,13 +356,16 @@ export async function runAgentToolLoop(input) {
     if (action.tool === "github_propose_write" && state.toolCalls.some((call) => call.tool === "github_propose_write")) throw new Error("github_write_plan_already_proposed");
     if (action.tool === "github_propose_write") {
       for (const operation of action.arguments.operations) {
-        if (operation.type !== "update_file") continue;
+        if (operation.type !== "update_file" && operation.type !== "apply_patch") continue;
         const source = [...state.toolCalls].reverse().find((call) =>
           call.tool === "github_read_file"
           && call.arguments.repository === action.arguments.repository
           && call.arguments.path === operation.path);
-        if (!source || source.result?.truncated === true || source.result?.sha !== operation.sha) {
-          throw new Error("github_write_requires_complete_file_read");
+        if (!source || source.result?.sha !== operation.sha
+          || (operation.type === "update_file" && source.result?.truncated === true)) {
+          throw new Error(operation.type === "update_file"
+            ? "github_write_requires_complete_file_read"
+            : "github_patch_requires_matching_file_sha");
         }
       }
     }
