@@ -191,7 +191,7 @@ test("rejected plan and hash mismatch make no GitHub calls", async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; throw new Error("should_not_call"); };
   const plan = validPlan();
-  plan.operations[1].path = ".github/workflows/release.yml";
+  plan.operations[1].path = ".github/workflows/auto-merge.yml";
   assert.deepEqual(await executeApprovedImprovementPlan({ plan, expectedPlanHash: "unused", token: "test-token", fetchImpl }), { ok: false, reason: "changed_path_out_of_scope" });
   const allowed = validPlan();
   assert.deepEqual(await executeApprovedImprovementPlan({ plan: allowed, expectedPlanHash: "wrong-hash", token: "test-token", fetchImpl }), { ok: false, reason: "approved_plan_hash_mismatch" });
