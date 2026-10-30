@@ -100,6 +100,13 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now()) {
   } catch {
     // Old or partially migrated environments remain observable as unavailable.
   }
+  // The audit is lower priority than admitted work. Skip it when the shared
+  // Workflow reservation ledger is unavailable or has consumed 80% of its
+  // application allocation; the audit never bypasses the normal budget gate.
+  if (!budget) return { ok: true, recorded: false, skipped: "workflow_budget_unavailable" };
+  if (Number(budget.workflow_steps_reserved || 0) >= 2160) {
+    return { ok: true, recorded: false, skipped: "low_priority_budget_gate" };
+  }
   try {
     aiUsage = await env.DB.prepare(
       "SELECT reserved_neurons, actual_neurons, calls_failed, calls_completed FROM workers_ai_daily_usage WHERE usage_day = ?"
