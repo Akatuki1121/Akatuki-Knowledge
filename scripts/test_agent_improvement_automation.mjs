@@ -139,7 +139,7 @@ test("improvement plan allows pending migrations and safe workflows but protects
   plan.operations[1].path = "tests/agent-improvement/new-check.mjs";
   assert.equal(validateImprovementPlan(plan).ok, true);
   plan.operations[1].path = ".github/workflows/audit-report.yml";
-  plan.operations[1].content = "name: Audit\\non:\\n  schedule:\\n    - cron: '0 0 * * *'\\npermissions:\\n  contents: read\\n";
+  plan.operations[1].content = ["name: Audit", "on:", "  schedule:", "    - cron: 0 0 * * *", "permissions:", "  contents: read"].join("\n");
   assert.equal(validateImprovementPlan(plan).ok, true);
   plan.operations[1].content += "\\npermissions:\\n  contents: write\\n";
   assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_out_of_scope" });
