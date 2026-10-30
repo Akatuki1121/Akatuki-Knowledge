@@ -12685,7 +12685,7 @@ var wrapper_default = {
           throw error;
         }
         await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "manual"));
-        const postPull = await runPostPullAutomation(env, result.ok === true);
+        const postPull = await runPostPullAutomation(env, result.ok === true && result.applied === true);
         return Response.json({ ...result, postPull }, { status: result.ok ? 200 : 502, headers: JSON_HEADERS2 });
       }
     }
