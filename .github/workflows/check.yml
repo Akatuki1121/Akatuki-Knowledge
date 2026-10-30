@@ -80,7 +80,7 @@ jobs:
               - 'scripts/classify_yaos_integration.mjs'
               - '.github/workflows/check.yml'
             agent_tests:
-              - 'src/index.js'
+              - 'src/**'
               - 'src/reply-text.mjs'
               - 'src/note-search-text.mjs'
               - 'src/bot-alerts.mjs'
@@ -112,7 +112,7 @@ jobs:
               - 'scripts/test_reconstructed_baseline.py'
               - 'scripts/test_worker_sql_compatibility.py'
             deploy:
-              - 'src/index.js'
+              - 'src/**'
               - 'src/reply-text.mjs'
               - 'src/note-search-text.mjs'
               - 'src/bot-alerts.mjs'
