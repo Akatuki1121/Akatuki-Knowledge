@@ -15,7 +15,7 @@ invocation_logs = true
 head_sampling_rate = 1
 
 [triggers]
-crons = ["0 * * * *", "*/15 * * * *"]
+crons = ["0 * * * *", "*/15 * * * *", "0 */12 * * *"]
 
 [[d1_databases]]
 binding = "DB"

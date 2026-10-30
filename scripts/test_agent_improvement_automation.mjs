@@ -144,7 +144,7 @@ test("improvement request fixture uses current frontmatter-free heading format",
     "",
     "## どうなっていてほしいか",
     "",
-    "許可された変更範囲なら、PR 作成と CI 待ちの自動マージ設定まで進んでほしい。",
+    "許可された変更範囲なら、修正とテストを行い、レビュー用PRまで作成してほしい。",
     "",
     "## どうなれば直ったと言えるか",
     "",
@@ -168,7 +168,7 @@ test("idempotency key is stable and bounded for sync UUID plus content hash", as
   assert.equal(IMPROVEMENT_AUTOMATION_LIMITS.maxModelCallsPerTask, 5);
 });
 
-test("eligible plan creates PR and enables squash auto-merge through mocked GitHub calls", async () => {
+test("eligible plan creates PR without enabling auto-merge", async () => {
   const plan = validPlan();
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
@@ -177,13 +177,12 @@ test("eligible plan creates PR and enables squash auto-merge through mocked GitH
     if (String(url).endsWith("/git/refs")) return Response.json({ ref: "refs/heads/agent/fix-small-check" });
     if (String(url).includes("/contents/src/example.mjs")) return Response.json({ content: { path: "src/example.mjs", html_url: "https://github.com/Akatuki1121/Akatuki-Knowledge/blob/agent/fix-small-check/src/example.mjs" }, commit: { sha: "b".repeat(40) } });
     if (String(url).endsWith("/pulls") && options.method === "POST") return Response.json({ number: 42, html_url: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/42" });
-    if (String(url).endsWith("/pulls/42")) return Response.json({ node_id: "PR_node_id" });
-    if (String(url).endsWith("/graphql")) return Response.json({ data: { enablePullRequestAutoMerge: { pullRequest: { number: 42 } } } });
     throw new Error("unexpected_mock_request");
   };
   const result = await executeApprovedImprovementPlan({ plan, expectedPlanHash: await hashGitHubWritePlan(plan), token: "test-token", fetchImpl });
-  assert.deepEqual(result, { ok: true, pullRequestUrl: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/42", autoMergeEnabled: true });
-  assert.ok(calls.some((call) => call.url.endsWith("/graphql") && call.body.variables.input.mergeMethod === "SQUASH"));
+  assert.deepEqual(result, { ok: true, pullRequestUrl: "https://github.com/Akatuki1121/Akatuki-Knowledge/pull/42", autoMergeEnabled: false, reason: "owner_review_required" });
+  assert.ok(calls.some((call) => call.url.endsWith("/pulls") && call.method === "POST"));
+  assert.ok(!calls.some((call) => call.url.endsWith("/graphql")), "improvement PRs must never enable auto-merge");
 });
 
 test("rejected plan and hash mismatch make no GitHub calls", async () => {

@@ -32,6 +32,7 @@ import { createReplyText } from "./reply-text.mjs";
 import { createNoteSearchText } from "./note-search-text.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
 import { classifyAgentTaskError } from "./background-task-policy.mjs";
+import { runBudgetSelfAudit } from "./budget-self-audit.mjs";
 import { classifyOperationalFailure, describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
 const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
@@ -12012,7 +12013,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           );
           output.reply = executionResult.status === "completed"
             ? "改善依頼の PR を作成しました: " + executionResult.pullRequestUrl
-              + (executionResult.autoMergeEnabled ? "\\n自動マージ（squash）を有効化しました。CI が成功するまで GitHub 側で待機します。" : "\\n自動マージは有効化できませんでした: " + (executionResult.reason || "unknown"))
+              + (executionResult.autoMergeEnabled ? "\n自動マージが有効です。" : "\n自動マージは無効です。レビューとマージはオーナー判断です。")
             : "改善依頼を停止しました。理由: " + (executionResult.reason || executionResult.status);
           output.pendingGitHubWrite = null;
         }
@@ -12189,6 +12190,21 @@ __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/budget-audit" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      try {
+        const result = await env.DB.prepare(
+          "SELECT key, value, updated_at FROM app_meta WHERE key LIKE 'budget-audit:%' ORDER BY updated_at DESC LIMIT 14"
+        ).all();
+        const reports = (result?.results || []).map((row) => {
+          try { return { key: row.key, updatedAt: row.updated_at, report: JSON.parse(row.value) }; }
+          catch { return { key: row.key, updatedAt: row.updated_at, report: null, error: "invalid_report" }; }
+        });
+        return Response.json({ ok: true, reports }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ ok: false, error: "budget_audit_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+    }
     if (url.pathname === "/api/agent-tasks" && request.method === "POST") {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       if (!env.DB || !env.AGENT_TASK_WORKFLOW) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
@@ -12695,6 +12711,25 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === "0 */12 * * *") {
+      try {
+        const audit = await runBudgetSelfAudit(env);
+        let improvementInbox = null;
+        if (audit.improvement?.created === true) improvementInbox = await runImprovementInbox(env);
+        console.log(JSON.stringify({ budgetSelfAudit: {
+          ok: audit.ok === true,
+          recorded: audit.recorded === true,
+          status: audit.report?.status || null,
+          findingCount: audit.report?.findings?.length || 0,
+          improvementCreated: audit.improvement?.created === true,
+          improvementReason: audit.improvement?.reason || null,
+          improvementQueued: Number(improvementInbox?.queued || 0),
+        } }));
+      } catch (error) {
+        console.log(JSON.stringify({ budgetSelfAudit: { ok: false }, failure: describeSafeFailure("budget_self_audit_failed", error) }));
+      }
+      return;
+    }
     if (event.cron === TASK_RECOVERY_CRON) {
       try {
         const recovery = await recoverAgentTaskWorkflows(env, 5);

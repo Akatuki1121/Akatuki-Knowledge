@@ -30,28 +30,10 @@ export async function executeApprovedImprovementPlan({ plan, expectedPlanHash, t
     return { ok: false, reason: "pull_request_result_missing" };
   }
 
-  try {
-    const details = await githubRequest(
-      "/repos/" + plan.repository + "/pulls/" + pullRequest.number,
-      { token, fetchImpl }
-    );
-    if (typeof details.node_id !== "string" || !details.node_id) {
-      return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: false, reason: "pull_request_node_id_missing" };
-    }
-    const result = await githubRequest("/graphql", {
-      token,
-      fetchImpl,
-      method: "POST",
-      body: {
-        query: "mutation EnableAutoMerge($input: EnablePullRequestAutoMergeInput!) { enablePullRequestAutoMerge(input: $input) { pullRequest { number } } }",
-        variables: { input: { pullRequestId: details.node_id, mergeMethod: "SQUASH" } }
-      }
-    });
-    if (Array.isArray(result.errors) && result.errors.length) {
-      return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: false, reason: "auto_merge_not_enabled" };
-    }
-    return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: true };
-  } catch {
-    return { ok: true, pullRequestUrl: pullRequest.url, autoMergeEnabled: false, reason: "auto_merge_not_enabled" };
-  }
+  return {
+    ok: true,
+    pullRequestUrl: pullRequest.url,
+    autoMergeEnabled: false,
+    reason: "owner_review_required"
+  };
 }

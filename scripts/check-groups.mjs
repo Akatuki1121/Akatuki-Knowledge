@@ -29,6 +29,7 @@ export const checks = [
   ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
   ["workers-ai-budget-syntax", process.execPath, ["--check", "src/workers-ai-budget.mjs"]],
   ["workers-ai-budget", process.execPath, ["scripts/test_workers_ai_budget.mjs"]],
+  ["budget-self-audit", process.execPath, ["scripts/test_budget_self_audit.mjs"]],
   ["agent-improvement-policy-syntax", process.execPath, ["--check", "src/agent-improvement-policy.mjs"]],
   ["agent-improvement-executor-syntax", process.execPath, ["--check", "src/agent-improvement-executor.mjs"]],
   ["agent-improvement-automation", process.execPath, ["scripts/test_agent_improvement_automation.mjs"]],
@@ -56,7 +57,7 @@ export function selectChecks(args = []) {
   return args.includes("--sync-only")
   ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name === "sync-contract" || name === "yaos-integration-classifier" || name === "sync-module-syntax")
   : args.includes("--agent-only")
-    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-"))
+    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name.startsWith("budget-"))
     : args.includes("--core-only")
       ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "sync-module-syntax", "notes-create-contract", "sync-identity-repair-contract", "sync-note-reconcile-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "background-task-policy-syntax", "log-hygiene", "wrangler-config"].includes(name))
       : checks;

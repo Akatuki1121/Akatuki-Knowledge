@@ -112,6 +112,11 @@ Authenticated `GET /api/agent-tasks?status=active` lists queued, running, and wa
 
 Workers AI のモデルは `@cf/meta/llama-3.1-8b-instruct` です。出力上限は 1024 tokens、既存の tool loop は最大 5 モデル呼び出し/タスク、改善依頼は最大 3 タスク/日です。Workers AI の無料枠はアカウントや時点で変わりうるため、この上限は無制限利用を防ぐ運用上のガードであり、無料利用を保証するものではありません。
 
-自動実行は計画ハッシュを再計算し、保存された計画と一致する場合だけ許可します。操作はブランチ作成、`src/`・`scripts/`・`docs/` 内のファイル作成/更新、最後の PR 作成に限定されます。`.github/workflows/`、`migrations/`、その他のパス、Issue・コメント、削除、権限変更、リリース、デプロイは対象外です。範囲外の計画は PR 作成前に停止し、理由を元ノートへ追記します。範囲内の PR は squash 自動マージを要求し、GitHub の必須チェックが成功するまでマージを待機します。
+自動実行は計画ハッシュを再計算し、保存された計画と一致する場合だけ許可します。操作はブランチ作成、`src/`・`scripts/`・`docs/` 内のファイル作成/更新、最後の PR 作成に限定されます。`.github/workflows/`、`migrations/`、その他のパス、Issue・コメント、削除、権限変更、リリース、デプロイは対象外です。範囲外の計画は PR 作成前に停止し、理由を元ノートへ追記します。範囲内の PR は作成しますが自動マージは有効化せず、レビューとマージ判断はオーナーに残します。
 
 処理結果（PR URL、自動マージの有効化状態、停止理由、失敗コード）は元ノートへ通常の correction API と同期 outbox 経由で追記されます。Web 調査は本経路では利用できず、一般の `POST /api/agent-tasks` からの Web 調査指定も拒否します。
+
+
+## Budget self-audit
+
+The operational self-audit runs twice daily (00:00 and 12:00 UTC). It records reports at authenticated `GET /api/budget-audit`; actionable findings create at most one audit-origin improvement note per day, then the existing improvement inbox investigates, implements, tests, and opens a PR. Audit-origin notes are capped at three in a rolling 30-day window. PRs are never auto-merged; owner review is required. The audit itself makes no model calls.
