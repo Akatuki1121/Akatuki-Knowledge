@@ -150,3 +150,23 @@ test("a response-less provider failure settles estimated input only and releases
   assert.equal(row.calls_failed, 1);
   sqlite.close();
 });
+
+
+test("unknown model pricing degrades telemetry only and never blocks inference", async () => {
+  const { sqlite, db } = makeDb();
+  const reservation = await reserveWorkersAiBudget(db, {
+    model: "@cf/new-model/not-yet-priced",
+    prompt: "依頼",
+    maxOutputTokens: 2048,
+  });
+  assert.equal(reservation.tracked, false);
+  assert.equal(reservation.reservedNeurons, 0);
+  assert.deepEqual(await settleWorkersAiBudget(db, reservation, {
+    prompt_tokens: 100, completion_tokens: 100,
+  }), { settled: false, reason: "usage_ledger_unavailable" });
+  assert.deepEqual(await settleWorkersAiBudgetFailure(db, reservation, 100), {
+    settled: false, reason: "usage_ledger_unavailable",
+  });
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM workers_ai_daily_usage").get().count, 0);
+  sqlite.close();
+});
