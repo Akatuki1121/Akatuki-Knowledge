@@ -436,16 +436,23 @@ const patchLoop = await runAgentToolLoop({
     if (modelCall === 1) return action("github_read_file", {
       repository: "example/project", path: "src/index.js", ref: "main", start_line: 20, end_line: 30,
     });
-    if (modelCall === 2) return action("github_propose_write", patchPlan);
+    if (modelCall === 2 || modelCall === 3) return action("search_notes", { query: "distinct patch context " + modelCall });
+    if (modelCall === 4) return action("github_propose_write", patchPlan);
     return final("A SHA-verified patch plan is ready.");
   },
-  executeTool: async (tool) => tool === "github_read_file"
-    ? { repository: "example/project", path: "src/index.js", sha: "b".repeat(40), totalLines: 5000, startLine: 20, endLine: 30, truncated: true, content: "function target() {}" }
-    : { pendingGitHubWrite: { status: "pending", plan: patchPlan } },
+  executeTool: async (tool) => {
+    if (tool === "github_read_file") {
+      return { repository: "example/project", path: "src/index.js", sha: "b".repeat(40), totalLines: 5000, startLine: 20, endLine: 30, truncated: true, content: "function target() {}" };
+    }
+    if (tool === "search_notes") return { notes: [] };
+    return { pendingGitHubWrite: { status: "pending", plan: patchPlan } };
+  },
   saveCheckpoint: async () => true,
 });
 assert.equal(patchLoop.reply, "A SHA-verified patch plan is ready.");
-assert.equal(patchLoop.toolCalls[1].tool, "github_propose_write");
+assert.equal(patchLoop.toolCalls[0].result.truncated, true);
+assert.equal(typeof patchLoop.toolCalls[0].result.content, "string", "Compacted file reads must retain SHA-bound diff evidence");
+assert.equal(patchLoop.toolCalls[3].tool, "github_propose_write");
 
 // A write plan whose shape fails validation is returned to the model as fixed feedback
 // (Issue #90) instead of killing the task: the model can correct a malformed plan;
