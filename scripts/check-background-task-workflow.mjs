@@ -211,5 +211,14 @@ assert.ok(deployVerification.includes("未起動"), "Missing or failed deploymen
 assert.ok(deployVerification.includes("inputs:{target_sha:$sha}"), "Recovery dispatch must carry the exact pushed commit SHA");
 assert.ok(deployVerification.includes("statuses: write"), "Verification must be able to record a missing deployment");
 assert.ok(deployVerification.includes("actions: write"), "Verification must be able to dispatch the recovery deploy");
+assert.ok(deployVerification.includes("workflow_dispatch:"), "Auto-merge fallback must be able to start the same one-shot verifier");
+assert.ok(deployVerification.includes("inputs.target_sha || github.sha"), "Verifier dispatch must preserve the merged commit SHA");
+const autoMergeVerification = await readFile(new URL("../.github/workflows/verify-after-auto-merge.yml", import.meta.url), "utf8");
+assert.ok(autoMergeVerification.includes("workflow_run:"), "Auto-merge completion must have a fallback when push-triggered workflows are suppressed");
+assert.ok(autoMergeVerification.includes("自動マージ設定"), "The fallback must observe the existing auto-merge workflow");
+assert.ok(autoMergeVerification.includes("commits/$HEAD_SHA/pulls"), "The fallback must resolve the PR from the completed auto-merge workflow");
+assert.ok(autoMergeVerification.includes(".merge_commit_sha"), "The fallback must verify the actual merge commit, not the PR head commit");
+assert.ok(autoMergeVerification.includes("verify-production-deploy.yml/dispatches"), "The fallback must dispatch the one-shot verifier rather than Deploy directly");
+assert.ok(autoMergeVerification.includes("inputs:{target_sha:$MERGE_SHA}"), "The fallback must pass the exact merge commit SHA");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, retry, and deploy-dispatch contracts passed.");
