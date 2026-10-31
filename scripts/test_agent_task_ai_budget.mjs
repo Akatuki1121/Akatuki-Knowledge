@@ -375,6 +375,41 @@ assert.equal(
   "The payload inputHash must be recalculated after runtime normalization"
 );
 
+const observedV4ToolKeyFailurePayload = {
+  ...observedV3Payload,
+  maxOutputTokens: 131_072,
+  inputHash: "legacy-v4-tool-key-input-hash",
+};
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, budget_reserved, payload_json, attempts, max_attempts,
+    created_at, updated_at, deadline_at, next_attempt_at,
+    last_error_class, last_error, stop_reason, retry_policy_version
+  ) VALUES (?, 'github_query', 'needs_attention', 0, ?, 4, 4,
+    '2026-10-31 13:01:45', '2026-10-31 13:06:42', '2026-10-31 18:00:39',
+    '2026-10-31 13:01:45', 'invalid_input',
+    'Error: invalid_input:tool_argument_keys', 'attempt_budget_exhausted', 4)
+`).run("observed-tool-keys-v4", JSON.stringify(observedV4ToolKeyFailurePayload));
+const observedToolKeyV4 = await reassessImprovementAgentTask(db, "observed-tool-keys-v4", {
+  nowMs: legacyFailureAt + 40 * 60 * 1000,
+  policyVersion: 5,
+  retryable: true,
+  errorClass: "invalid_input",
+});
+assert.equal(observedToolKeyV4.reassessed, true);
+assert.equal(observedToolKeyV4.status, "waiting");
+assert.equal(observedToolKeyV4.attempts, 4);
+assert.equal(observedToolKeyV4.max_attempts, 5);
+assert.equal(observedToolKeyV4.retry_policy_version, 5);
+row = sqlite.prepare("SELECT status, attempts, max_attempts, retry_policy_version, payload_json FROM agent_tasks WHERE task_id = 'observed-tool-keys-v4'").get();
+assert.equal(row.status, "waiting");
+assert.equal(row.attempts, 4);
+assert.equal(row.max_attempts, 5);
+assert.equal(row.retry_policy_version, 5);
+const normalizedToolKeyPayload = JSON.parse(row.payload_json);
+assert.equal(normalizedToolKeyPayload.maxOutputTokens, 8_192);
+assert.equal(normalizedToolKeyPayload.reasoningEffort, "high");
+
 sqlite.prepare("UPDATE agent_tasks SET status = 'running', attempts = 2, lease_token = 'legacy-retry-2', lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
   .run(toSqliteDateTime(legacyFailureAt + 120_000), toSqliteDateTime(legacyFailureAt + 60_000), "observed-attempt-budget-exhausted");
 const legacyRetryFailure = await recordAgentTaskFailure(db, {
