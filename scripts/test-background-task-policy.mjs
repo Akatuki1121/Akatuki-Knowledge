@@ -31,7 +31,7 @@ const quotaRetryAfterReset = decideTaskRetry({
 });
 assert.equal(quotaRetryAfterReset.retryAtMs, Date.parse("2026-10-31T01:01:00.000Z"));
 assert.equal(second.delayMs, 60_000);
-const capped = decideTaskRetry({ ...base, attempts: 4, maxAttempts: 99 });
+const capped = decideTaskRetry({ ...base, attempts: 6, maxAttempts: 99 });
 assert.equal(capped.action, "stop");
 assert.equal(capped.stopReason, "attempt_budget_exhausted");
 
@@ -53,6 +53,7 @@ for (const errorClass of [
   "web_research_sources_missing",
   "web_research_invalid_response",
   "web_research_provider_error",
+  "workers_ai_permanent_failure",
 ]) {
   const decision = decideTaskRetry({ ...base, errorClass });
   assert.equal(decision.action, "stop", errorClass);
@@ -80,7 +81,7 @@ assert.equal(
 assert.equal(decideTaskRetry({ ...base, aiCallsUsed: 1_000_000, aiTokensUsed: 9_000_000_000 }).action, "retry");
 // Persisted row values cannot raise the retry-attempt ceiling.
 assert.equal(
-  decideTaskRetry({ ...base, attempts: 4, maxAttempts: 1_000 }).stopReason,
+  decideTaskRetry({ ...base, attempts: 6, maxAttempts: 1_000 }).stopReason,
   "attempt_budget_exhausted",
 );
 const deadlineClamped = decideTaskRetry({
@@ -90,8 +91,10 @@ const deadlineClamped = decideTaskRetry({
 });
 assert.equal(deadlineClamped.action, "stop");
 assert.equal(deadlineClamped.stopReason, "retry_would_exceed_task_deadline");
+const reassessedDeadline = decideTaskRetry({ ...base, nowMs: 3_590_000, deadlineAtMs: 9_999_999, allowDeadlineExtension: true });
+assert.equal(reassessedDeadline.action, "retry", "An explicit, bounded improvement-task reassessment may extend its persisted deadline.");
 
-assert.equal(TASK_BUDGET_CEILINGS.maxAttempts, 4);
+assert.equal(TASK_BUDGET_CEILINGS.maxAttempts, 6);
 assert.equal(TASK_BUDGET_CEILINGS.maxTaskAgeMs, 3_600_000);
 assert.equal(TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs, 8 * 60 * 60 * 1000);
 assert.equal(TASK_BUDGET_CEILINGS.maxImprovementRetryDelayMs, 3 * 60 * 60 * 1000);
@@ -148,6 +151,8 @@ assert.equal(classifyAgentTaskError(new TypeError("429 from upstream")), "rate_l
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 500")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 503 Service Unavailable")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: WorkersAiError: upstream unavailable (code=503)")), "upstream_5xx");
+assert.equal(classifyAgentTaskError(new Error("Error: workers_ai_request_failed")), "workers_ai_transient_failure");
+assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: HTTP 400 invalid request")), "workers_ai_permanent_failure");
 const nestedProviderFailure = new Error("workers_ai_failure_settlement_failed");
 nestedProviderFailure.workersAiError = { name: "WorkersAiError", message: "upstream unavailable", code: "model_error", status: 503 };
 assert.equal(classifyAgentTaskError(nestedProviderFailure), "upstream_5xx");
