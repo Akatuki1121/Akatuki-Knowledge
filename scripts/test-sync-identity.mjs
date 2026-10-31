@@ -63,9 +63,11 @@ function makeDb(initialNotes = [], initialMappings = []) {
           if (sql.includes("FROM yaos_sync_identity_review")) {
             const classification = sql.match(/classification = '([^']+)'/)?.[1];
             const reason = sql.match(/reason = '([^']+)'/)?.[1];
+            const fileId = sql.includes("file_id = ?") ? values[0] : undefined;
             return { results: reviews.filter((r) =>
               (classification === undefined || r.classification === classification) &&
-              (reason === undefined || r.reason === reason)
+              (reason === undefined || r.reason === reason) &&
+              (fileId === undefined || r.file_id === fileId)
             ).map((r) => ({ ...r })) };
           }
           if (sql.includes("FROM yaos_sync_jobs") && sql.includes("status = 'dead'")) return { results: jobs.filter((j) => j.entity_id === values[0] && j.status === "dead").map((j) => ({ ...j })) };
