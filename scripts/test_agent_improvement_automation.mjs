@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { callWorkersAi, WORKERS_AI_MODEL, WORKERS_AI_MAX_OUTPUT_TOKENS } from "../src/workers-ai-client.mjs";
+import { IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS, IMPROVEMENT_TASK_REASONING_EFFORT } from "../src/task-runtime-config.mjs";
 import { executeApprovedImprovementPlan } from "../src/agent-improvement-executor.mjs";
 import { validateImprovementPlan, improvementIdempotencyKey, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
 import { hashGitHubWritePlan } from "../src/agent-github-tools.mjs";
@@ -52,14 +53,18 @@ test("Workers AI client uses the model context window and returns text", async (
   }; } } };
   const result = await callWorkersAi(env, "prompt", 500, {
     responseMimeType: "application/json",
+    reasoningEffort: IMPROVEMENT_TASK_REASONING_EFFORT,
     onUsage: async (usage) => { usageSeen = usage; }
   });
   assert.equal(result, '{"action":"final","reply":"ok","source_ids":[]}');
   assert.equal(WORKERS_AI_MODEL, "@cf/zai-org/glm-4.7-flash");
   assert.equal(called[0], WORKERS_AI_MODEL);
   assert.equal(called[1].max_completion_tokens, 500);
+  assert.equal(called[1].reasoning_effort, "high");
   assert.deepEqual(called[1].response_format, { type: "json_object" });
   assert.equal(WORKERS_AI_MAX_OUTPUT_TOKENS, 131072);
+  assert.equal(IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS, 8192);
+  assert.equal(IMPROVEMENT_TASK_REASONING_EFFORT, "high");
   assert.deepEqual(usageSeen, { prompt_tokens: 20, completion_tokens: 5 });
 });
 
@@ -69,6 +74,7 @@ test("Workers AI client extracts the GLM-4.7-Flash chat completion fixture", asy
   const env = { DB: createBudgetDb(), AI: { run: async () => fixture.completed } };
   const result = await callWorkersAi(env, "prompt", 2048, {
     responseMimeType: "application/json",
+    reasoningEffort: IMPROVEMENT_TASK_REASONING_EFFORT,
     onUsage: async (usage) => { usageSeen = usage; }
   });
   assert.equal(result, fixture.completed.choices[0].message.content);
@@ -112,6 +118,21 @@ test("Workers AI client preserves sanitized upstream failure and keeps stable re
       return true;
     }
   );
+});
+
+test("Workers AI request failures record elapsed time and the effective per-call cap", async () => {
+  const upstream = new Error("AiError: 3046: Request timeout");
+  const env = { DB: createBudgetDb(), AI: { run: async () => { throw upstream; } } };
+  await assert.rejects(callWorkersAi(env, "prompt", IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS, {
+    responseMimeType: "application/json", reasoningEffort: IMPROVEMENT_TASK_REASONING_EFFORT,
+  }), (error) => {
+    assert.equal(error.reason, "workers_ai_request_failed");
+    assert.match(error.message, /elapsed_ms=\\d+/);
+    assert.match(error.message, /max_tokens=8192/);
+    assert.match(error.message, /reasoning=high/);
+    assert.ok(Number.isSafeInteger(error.workersAiDurationMs));
+    return true;
+  });
 });
 
 test("Workers AI client settles response-less failures as input-only usage", async () => {
@@ -298,7 +319,7 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(storeSource.includes("normalizeImprovementTaskRuntimePayload"));
   assert.ok(storeSource.includes("status IN ('failed', 'needs_attention', 'queued', 'waiting')"));
   assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
-  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 4;"));
+  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 5;"));
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
   assert.ok(inbox.includes("retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION"), "New improvement tasks must start at the current policy version");
   assert.ok(inbox.includes('"needs_attention"'));
