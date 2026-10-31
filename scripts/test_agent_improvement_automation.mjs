@@ -250,6 +250,7 @@ test("improvement result blocks are removed before retrying the original request
 
 test("failed improvement tasks remain unchanged until edited; transient retries use the task retry schedule", async () => {
   const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const storeSource = await readFile(new URL("../src/background-task-store.mjs", import.meta.url), "utf8");
   const appendStart = source.indexOf("async function appendImprovementResult");
   const inboxStart = source.indexOf("async function runImprovementInbox", appendStart);
   const recoveryStart = source.indexOf("async function recoverAgentTaskWorkflows", inboxStart);
@@ -261,7 +262,7 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(inbox.includes("reassessImprovementAgentTask"));
   assert.ok(source.includes("async function reassessTerminalImprovementTasks"));
   assert.ok(source.includes("listReassessableImprovementAgentTasks"));
-  assert.ok(source.includes("superseded_by_newer_task"));
+  assert.ok(storeSource.includes("superseded_by_newer_task"));
   assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
   assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 2;"));
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
