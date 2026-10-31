@@ -342,7 +342,7 @@ const discoverableV3 = await listReassessableImprovementAgentTasks(db, { policyV
 assert.ok(discoverableV3.some((task) => task.task_id === "observed-glm-legacy-v3"),
   "A waiting attempt-3 task on policy v3 must be included in the v4 sweep");
 const v4RuntimeReassessment = await reassessImprovementAgentTask(db, "observed-glm-legacy-v3", {
-  nowMs: legacyFailureAt + 30 * 60 * 1000,
+  nowMs: Date.parse("2026-10-31T10:13:00.000Z"),
   policyVersion: 4,
   retryable: true,
   errorClass: "workers_ai_transient_failure",
