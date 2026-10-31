@@ -219,6 +219,6 @@ assert.ok(autoMergeVerification.includes("自動マージ設定"), "The fallback
 assert.ok(autoMergeVerification.includes("commits/$HEAD_SHA/pulls"), "The fallback must resolve the PR from the completed auto-merge workflow");
 assert.ok(autoMergeVerification.includes(".merge_commit_sha"), "The fallback must verify the actual merge commit, not the PR head commit");
 assert.ok(autoMergeVerification.includes("verify-production-deploy.yml/dispatches"), "The fallback must dispatch the one-shot verifier rather than Deploy directly");
-assert.ok(autoMergeVerification.includes("inputs:{target_sha:$MERGE_SHA}"), "The fallback must pass the exact merge commit SHA");
+assert.ok(autoMergeVerification.includes("inputs:{target_sha:$sha}"), "The fallback must pass the exact merge commit SHA");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, retry, and deploy-dispatch contracts passed.");
