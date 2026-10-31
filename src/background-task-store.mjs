@@ -170,6 +170,7 @@ export async function enqueueAgentTask(db, input) {
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
 
   const maxAttempts = boundedInteger(input.maxAttempts, 4, TASK_BUDGET_CEILINGS.maxAttempts);
+  const retryPolicyVersion = Math.max(0, Math.floor(finiteNumber(input.retryPolicyVersion, 0)));
   // Legacy columns remain for telemetry/schema compatibility; they are not limits.
   const maxAiCalls = Number.MAX_SAFE_INTEGER;
   const maxAiTokens = Number.MAX_SAFE_INTEGER;
@@ -205,14 +206,14 @@ export async function enqueueAgentTask(db, input) {
         task_id, idempotency_key, task_type, status, budget_reserved, payload_json, checkpoint_json,
         attempts, max_attempts, ai_calls_used, max_ai_calls, ai_tokens_used, max_ai_tokens,
         created_at, updated_at, deadline_at, next_attempt_at,
-        notify_chat_id, notification_status, notification_next_attempt_at
+        notify_chat_id, notification_status, notification_next_attempt_at, retry_policy_version
       ) VALUES (?, ?, ?, 'queued', 0, ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?,
-        CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
+        CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?, ?)
       ON CONFLICT(idempotency_key) DO NOTHING
     `).bind(
       taskId, idempotencyKey, input.taskType.trim(), storedPayloadJson,
       maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now,
-      notifyChatId, notifyChatId, now,
+      notifyChatId, notifyChatId, now, retryPolicyVersion,
     ),
     db.prepare(`
       INSERT INTO agent_task_daily_budget (
