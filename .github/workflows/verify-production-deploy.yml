@@ -1,0 +1,70 @@
+name: マージ後の本番デプロイ一回照合
+
+on:
+  # 自動マージ・手動マージを問わず main への push ごとに一度だけ確認する。
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+
+concurrency:
+  group: verify-production-deploy-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: デプロイ完了を待つ
+        run: sleep 300
+
+      - name: 対象コミットの本番デプロイ結果を一度だけ確認
+        id: status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          statuses="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/statuses?per_page=100")"
+          latest="$(jq -c '[.[] | select(.context == "production-deploy")][0] // {}' <<< "$statuses")"
+          state="$(jq -r '.state // ""' <<< "$latest")"
+          description="$(jq -r '.description // ""' <<< "$latest")"
+
+          if [ "$state" = "success" ]; then
+            echo "recovery_needed=false" >> "$GITHUB_OUTPUT"
+            echo "対象コミット $TARGET_SHA の本番デプロイ成功を確認しました。"
+            exit 0
+          fi
+
+          echo "recovery_needed=true" >> "$GITHUB_OUTPUT"
+          if [ -z "$state" ]; then
+            reason="本番デプロイ Status が存在しません（未起動の可能性）"
+          elif [ "$state" = "failure" ]; then
+            reason="本番デプロイ Status が failure です: $description"
+          else
+            reason="本番デプロイ Status が success ではありません（state=$state）: $description"
+          fi
+
+          target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state=failure \
+            -f context=production-deploy \
+            -f "description=5分後の一回照合で未成功を検出。再起動します: $reason" \
+            -f "target_url=$target_url"
+          echo "::warning::$reason"
+
+      - name: 対象コミットの Deploy を明示的に再起動
+        if: steps.status.outputs.recovery_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          jq -n --arg sha "$TARGET_SHA" '{ref:"main",inputs:{target_sha:$sha}}' |
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/dispatches" --input -
+          echo "対象コミット $TARGET_SHA の Deploy 再起動を要求しました。"
