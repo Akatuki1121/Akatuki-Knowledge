@@ -1,0 +1,54 @@
+{
+  "completed": {
+    "id": "chatcmpl-a43012b4540a51f3",
+    "object": "chat.completion",
+    "model": "@cf/zai-org/glm-4.7-flash",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"ok\":true}",
+          "refusal": null,
+          "tool_calls": [],
+          "reasoning": "redacted reasoning text",
+          "reasoning_content": "redacted reasoning text"
+        },
+        "finish_reason": "stop",
+        "stop_reason": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 36,
+      "completion_tokens": 180,
+      "total_tokens": 216,
+      "neurons": 6.75
+    }
+  },
+  "truncated": {
+    "id": "chatcmpl-a43012b4540a51f3",
+    "object": "chat.completion",
+    "model": "@cf/zai-org/glm-4.7-flash",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "refusal": null,
+          "tool_calls": [],
+          "reasoning": "redacted reasoning text",
+          "reasoning_content": "redacted reasoning text"
+        },
+        "finish_reason": "length",
+        "stop_reason": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 37,
+      "completion_tokens": 128,
+      "total_tokens": 165,
+      "neurons": 4.8627
+    }
+  }
+}

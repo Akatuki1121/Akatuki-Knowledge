@@ -56,6 +56,51 @@ function createWorkersAiRequestFailure(error) {
   return failure;
 }
 
+function extractWorkersAiTextContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part && typeof part === "object" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("");
+}
+
+function describeWorkersAiResponse(result) {
+  const choices = Array.isArray(result?.choices) ? result.choices : [];
+  const choice = choices[0] ?? null;
+  const message = choice?.message ?? null;
+  const content = message?.content;
+  const choiceText = extractWorkersAiTextContent(content);
+  const legacyText = typeof result?.response === "string" ? result.response : "";
+  const text = choiceText || legacyText;
+  const rawShape = typeof result?.object === "string"
+    ? result.object
+    : (choices.length ? "choices" : (result === null ? "null" : typeof result));
+  const shape = /^[A-Za-z0-9_.-]{1,32}$/u.test(rawShape) ? rawShape : "unknown";
+  const finishReason = typeof choice?.finish_reason === "string" ? choice.finish_reason : "none";
+  const contentType = content === null ? "null" : Array.isArray(content) ? "array" : typeof content;
+  const reasoning = typeof message?.reasoning === "string"
+    ? message.reasoning
+    : (typeof message?.reasoning_content === "string" ? message.reasoning_content : "");
+  const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls.length : 0;
+  const stage = finishReason === "length" ? "completion" : (!text.trim() ? "extract" : "size");
+  const diagnostic = [
+    "workers_ai_invalid_response", "stage=" + stage, "shape=" + shape,
+    "choices=" + choices.length, "finish=" + finishReason, "content=" + contentType,
+    "chars=" + (typeof content === "string" ? content.length : choiceText.length),
+    "reasoning=" + reasoning.length, "tools=" + toolCalls,
+  ].join(";");
+  return { text, finishReason, diagnostic };
+}
+
+function createWorkersAiInvalidResponse(result) {
+  const detail = describeWorkersAiResponse(result);
+  const failure = new Error(detail.diagnostic.slice(0, 200));
+  failure.reason = "workers_ai_invalid_response";
+  failure.workersAiDiagnostic = detail.diagnostic;
+  return failure;
+}
+
 export async function callWorkersAi(env, prompt, maxOutputTokens = WORKERS_AI_MAX_OUTPUT_TOKENS, options = {}) {
   if (!env?.AI || typeof env.AI.run !== "function") throw new Error("workers_ai_binding_missing");
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("invalid_input");
@@ -107,7 +152,11 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = WORKERS_AI_MA
     await settleWorkersAiBudget(env.DB, budgetReservation, result.usage);
     if (typeof options.onUsage === "function") await options.onUsage(result.usage);
   }
-  const response = typeof result?.response === "string" ? result.response : "";
-  if (!response.trim() || response.length > 524_288) throw new Error("workers_ai_invalid_response");
-  return response;
+  const extracted = describeWorkersAiResponse(result);
+  if (extracted.finishReason === "length"
+    || !extracted.text.trim()
+    || extracted.text.length > 524_288) {
+    throw createWorkersAiInvalidResponse(result);
+  }
+  return extracted.text;
 }
