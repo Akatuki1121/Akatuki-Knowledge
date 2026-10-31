@@ -557,6 +557,7 @@ async function syncNotes(request, env) {
         }
         reconciledRenameFileIds.add(observation.fileId);
         reconciledRenames++;
+        resolvedReviews++;
         continue;
       }
 
@@ -12470,7 +12471,7 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
-  const renameDelivery = body.reconciledRenames > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledRenames)) : null;
+  const renameDelivery = sync.ok && body.reconciledRenames > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledRenames)) : null;
   return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, renameDelivery: renameDelivery ? { sent: renameDelivery.sent, failed: renameDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
 __name(pullFromVault, "pullFromVault");
