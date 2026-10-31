@@ -24,6 +24,7 @@ import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
 import { callWorkersAi, WORKERS_AI_MAX_OUTPUT_TOKENS } from "./workers-ai-client.mjs";
+import { IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS, IMPROVEMENT_TASK_REASONING_EFFORT } from "./task-runtime-config.mjs";
 import { estimateWorkersAiPromptTokens } from "./workers-ai-budget.mjs";
 import { improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { runBudgetSelfAudit } from "./budget-self-audit.mjs";
@@ -11437,7 +11438,7 @@ var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
-var IMPROVEMENT_RETRY_POLICY_VERSION = 4;
+var IMPROVEMENT_RETRY_POLICY_VERSION = 5;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11733,7 +11734,8 @@ async function runImprovementInbox(env) {
         maxTaskAgeMs: 8 * 60 * 60 * 1000,
         payload: {
           prompt: requestContent,
-          maxOutputTokens: WORKERS_AI_MAX_OUTPUT_TOKENS,
+          maxOutputTokens: IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS,
+          reasoningEffort: IMPROVEMENT_TASK_REASONING_EFFORT,
           allowGitHubRead: true,
           allowGitHubWrite: true,
           allowWebResearch: false,
@@ -11891,6 +11893,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             return {
               taskType: task.task_type,
               maxOutputTokens,
+              reasoningEffort: task.payload.improvementRequest === true ? IMPROVEMENT_TASK_REASONING_EFFORT : null,
               improvementRequest: task.payload.improvementRequest === true,
               allowWebResearch,
               allowGitHubRead: task.task_type === "github_query" && task.payload.allowGitHubRead === true,
@@ -11904,6 +11907,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             return {
               taskType: task.task_type,
               maxOutputTokens,
+              reasoningEffort: task.payload.improvementRequest === true ? IMPROVEMENT_TASK_REASONING_EFFORT : null,
               improvementRequest: task.payload.improvementRequest === true,
               allowWebResearch,
               allowGitHubRead: task.task_type === "github_query" && task.payload.allowGitHubRead === true,
@@ -11925,6 +11929,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             taskType: task.task_type,
             safePrompt: inspection.text,
             maxOutputTokens,
+            reasoningEffort: task.payload.improvementRequest === true ? IMPROVEMENT_TASK_REASONING_EFFORT : null,
             improvementRequest: task.payload.improvementRequest === true,
             allowWebResearch,
             allowGitHubRead: task.task_type === "github_query" && task.payload.allowGitHubRead === true,
@@ -12033,7 +12038,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const raw = await callWorkersAi(this.env, inspection.text, prepared.maxOutputTokens, {
                 responseMimeType: "application/json",
-                signal: AbortSignal.timeout(30_000),
+                reasoningEffort: prepared.reasoningEffort,
                 onUsage: async (usage) => {
                   const actualTokens = Number(usage?.prompt_tokens) + Number(usage?.completion_tokens);
                   if (!Number.isSafeInteger(actualTokens) || actualTokens < 0) return;
