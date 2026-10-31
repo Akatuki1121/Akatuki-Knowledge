@@ -260,6 +260,7 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(inbox.includes('sameRequest && previous && ["failed", "needs_attention"].includes(previous.status)'));
   assert.ok(inbox.includes("reassessImprovementAgentTask"));
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
+  assert.ok(inbox.includes("retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION"), "New improvement tasks must start at the current policy version");
   assert.ok(inbox.includes('"needs_attention"'));
   assert.ok(inbox.includes("requeueAgentTaskAfterBudgetWait"));
   assert.ok(inbox.includes("reserveQueuedAgentTaskBudget"));
