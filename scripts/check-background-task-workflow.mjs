@@ -192,19 +192,24 @@ assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must 
 
 
 const deployWorkflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
-const autoMergeDeploy = await readFile(new URL("../.github/workflows/deploy-after-auto-merge.yml", import.meta.url), "utf8");
-assert.ok(deployWorkflow.includes('cron: "*/5 * * * *"'), "A periodic reconciliation must recover missed push-triggered deploys");
+const deployVerification = await readFile(new URL("../.github/workflows/verify-production-deploy.yml", import.meta.url), "utf8");
+assert.ok(deployWorkflow.includes("  push:\n    branches:\n      - main"), "Every main push must trigger the primary production deploy");
+assert.ok(!deployWorkflow.includes("schedule:"), "Production deploy must not use periodic reconciliation");
+assert.ok(!deployWorkflow.includes('cron: "*/5 * * * *"'), "The five-minute cron reconciliation must be removed");
 assert.ok(deployWorkflow.includes("workflow_dispatch:"), "Deploy must support explicit workflow dispatch");
+assert.ok(deployWorkflow.includes("inputs.target_sha || github.sha"), "Manual recovery must deploy the exact verified commit");
 assert.ok(deployWorkflow.includes("statuses: write"), "Deploy must be able to record the result against the target commit");
 assert.ok(deployWorkflow.includes('context=production-deploy'), "Deploy must publish a stable commit status context");
 assert.ok(deployWorkflow.includes("find migrations/pending -maxdepth 1 -type f -name '*.sql'"), "Deploy must keep the pending D1 migration gate");
 assert.ok(deployWorkflow.includes("bash scripts/deploy-production.sh"), "GitHub Actions must use the shared production deployment script");
-assert.ok(autoMergeDeploy.includes("workflow_run:"), "Automatic merge completion must be observed independently of push events");
-assert.ok(autoMergeDeploy.includes("自動マージ設定"), "The auto-merge workflow must trigger the deploy watcher");
-assert.ok(autoMergeDeploy.includes("github.event.workflow_run.head_sha"), "The deploy watcher must identify the triggering commit");
-assert.ok(autoMergeDeploy.includes("commits/$HEAD_SHA/pulls"), "The deploy watcher must resolve the PR from the commit SHA");
-assert.ok(autoMergeDeploy.includes('gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/dispatches" -f ref=main'), "The deploy watcher must use the explicit workflow_dispatch API");
-assert.ok(autoMergeDeploy.includes("timeout-minutes: 35"), "The merge watcher must have a bounded wait");
-assert.ok(!autoMergeDeploy.includes("deploy-on-merge.yml"), "The old pull_request.closed dispatch workflow must not be reintroduced");
+assert.ok(deployVerification.includes("push:\n    branches:\n      - main"), "One-shot verification must run for every main push");
+assert.ok(deployVerification.includes("sleep 300"), "One-shot verification must wait approximately five minutes without blocking deploy");
+assert.ok(deployVerification.includes('commits/$TARGET_SHA/statuses?per_page=100'), "Verification must inspect the exact pushed commit's statuses");
+assert.ok(deployVerification.includes('select(.context == "production-deploy")'), "Verification must inspect the production-deploy status context");
+assert.ok(deployVerification.includes('if [ "$state" = "success" ]'), "A confirmed success must end verification without redispatch");
+assert.ok(deployVerification.includes("未起動"), "Missing or failed deployment must be recorded as a visible failure before recovery");
+assert.ok(deployVerification.includes("inputs[target_sha]"), "Recovery dispatch must carry the exact pushed commit SHA");
+assert.ok(deployVerification.includes("statuses: write"), "Verification must be able to record a missing deployment");
+assert.ok(deployVerification.includes("actions: write"), "Verification must be able to dispatch the recovery deploy");
 
 console.log("Background knowledge-query Workflow, checkpoint, authorization, safety, recovery, retry, and deploy-dispatch contracts passed.");
