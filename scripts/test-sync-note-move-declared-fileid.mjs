@@ -407,6 +407,9 @@ await test("観測済みの改名先と一致するマップのパス不一致�
   const unrelated = await move(db, oldPath, { newPath: "Notes/Test/Unrelated.md", fileId: "renamed-file" });
   equal(unrelated.status, 409, "マップが主張していない移動先は拒否される");
   equal(unrelated.data.error, "sync_identity_mapping_path_mismatch", "実測と同じ409エラー");
+  const unrelatedWithoutFileId = await move(db, oldPath, { newPath: "Notes/Test/Unrelated.md" });
+  equal(unrelatedWithoutFileId.status, 409, "fileId を省略しても第三のパスは拒否される");
+  equal(unrelatedWithoutFileId.data.error, "sync_identity_mapping_path_mismatch", "fileId の有無で拒否理由は変わらない");
   const repaired = await move(db, oldPath, {
     newPath: observedPath,
     fileId: "renamed-file",
