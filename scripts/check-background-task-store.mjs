@@ -32,6 +32,8 @@ for (const required of [
   "export async function reserveQueuedAgentTaskBudget",
   "export async function requeueAgentTaskAfterBudgetWait",
   "export async function reassessImprovementAgentTask",
+  "normalizeImprovementTaskRuntimePayload",
+  "payload_json = ?",
   "status = 'needs_attention'",
   "retry_policy_version",
   "queuedForBudget: true",
