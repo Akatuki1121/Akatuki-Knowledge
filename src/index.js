@@ -520,7 +520,7 @@ async function syncNotes(request, env) {
         const revisionRows = (await env.DB.prepare("SELECT content_hash FROM note_revisions WHERE note_id = ?")
           .bind(row.id).all()).results || [];
         const revisionHashes = new Set(revisionRows.map((revision) => revision.content_hash).filter(Boolean));
-        const normalizeContent = (value) => String(value ?? "").replace(/\\r\\n/g, "\\n");
+        const normalizeContent = (value) => String(value ?? "").replace(/\r\n/g, "\n");
         let chainStarted = false;
         let chainContent = candidate.content;
         let chainReachesCurrentD1 = false;
