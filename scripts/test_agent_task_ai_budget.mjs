@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, toSqliteDateTime } from "../src/background-task-store.mjs";
+import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
 const taskMigration = await readFile(new URL("migrations/0011_agent_tasks.sql", root), "utf8");
 const budgetMigration = await readFile(new URL("migrations/0017_cloudflare_free_workflow_budget.sql", root), "utf8");
+const attentionMigration = await readFile(new URL("migrations/0019_agent_task_attention_and_reassessment.sql", root), "utf8");
 
 class D1Statement {
   constructor(sqlite, sql) { this.sqlite = sqlite; this.sql = sql; this.values = []; }
@@ -39,6 +40,7 @@ sqlite.exec("PRAGMA foreign_keys = ON");
 sqlite.exec(schema);
 sqlite.exec(taskMigration);
 sqlite.exec(budgetMigration);
+sqlite.exec(attentionMigration);
 const db = new D1Database(sqlite);
 const nowMs = Date.now();
 const now = toSqliteDateTime(nowMs);
@@ -254,7 +256,7 @@ assert.equal(staleFailure.applied, true);
 assert.equal(staleFailure.decision.stopReason, "attempt_budget_exhausted");
 row = sqlite.prepare("SELECT status, last_error_class, last_error, stop_reason FROM agent_tasks WHERE task_id = 'expired-lease-failure'").get();
 assert.deepEqual({ ...row }, {
-  status: "failed",
+  status: "needs_attention",
   last_error_class: "upstream_5xx",
   last_error: "WorkersAiError: upstream HTTP 503",
   stop_reason: "attempt_budget_exhausted",
