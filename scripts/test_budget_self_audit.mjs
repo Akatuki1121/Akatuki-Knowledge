@@ -76,6 +76,7 @@ const duplicate = await runBudgetSelfAudit({ DB: duplicateDb }, Date.parse("2026
 });
 assert.equal(duplicate.ok, true);
 assert.equal(duplicate.recorded, false);
+assert.equal(duplicate.noteCreated, true, "A duplicate audit response must report the note state stored in its report");
 assert.deepEqual(duplicate.report, existingReport);
 assert.equal(duplicateNoteCalls, 0);
 assert.equal(duplicateDb.writes.length, 0);
