@@ -121,7 +121,7 @@ The separate existing-note migration is not included. When explicitly authorized
 - Still outstanding: direct public HTTP smoke test, a production-safe request-level test of the deployed Worker, and continued observation of outbox outcomes after real user edits. Do not manufacture test notes or mutate production Vault content solely to claim these checks passed.
 
 
-## 同時改名とD1側編集の競合収束
+## Vault改名・本文編集競合の収束
 
 YAOS の安定した \`fileId\` が同じで、完全観測上のパスだけが変わった場合は、同じファイルの改名候補として扱う。ただし、Vault 本文が D1 本文と異なるだけでは、Vault 側の本文を取り込んだり D1 のパスを無条件に変えたりしない。
 
