@@ -775,13 +775,12 @@ export async function recordAgentTaskFailure(db, input) {
           budget_reserved = CASE WHEN ? = 1 THEN 0 ELSE budget_reserved END,
           next_attempt_at = ?, updated_at = ?,
           last_error_class = ?, last_error = ?, stop_reason = NULL,
-          attempts = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN MAX(0, attempts - 1) ELSE attempts END,
           deadline_at = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN datetime(?, '+1 hour') ELSE deadline_at END,
           lease_token = NULL, lease_expires_at = NULL
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
     `).bind(
       releaseWorkflowBudget ? 1 : 0, retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail),
-      input.errorClass ?? "unknown", input.errorClass ?? "unknown", retryAt,
+      input.errorClass ?? "unknown", retryAt,
       input.taskId, input.leaseToken,
     );
     if (!releaseWorkflowBudget) {
