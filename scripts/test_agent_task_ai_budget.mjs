@@ -359,5 +359,75 @@ assert.equal(policyUpdateReassessment.status, "waiting");
 assert.equal(policyUpdateReassessment.attempts, 4);
 assert.equal(policyUpdateReassessment.max_attempts, 5, "A policy update grants at most one additional cumulative attempt");
 
+sqlite.prepare("UPDATE agent_tasks SET status = 'running', attempts = 5, lease_token = 'legacy-retry-5', lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
+  .run(toSqliteDateTime(legacyFailureAt + 5 * 60 * 60 * 1000), toSqliteDateTime(legacyFailureAt + 5 * 60 * 60 * 1000), "observed-attempt-budget-exhausted");
+const fifthFailure = await recordAgentTaskFailure(db, {
+  taskId: "observed-attempt-budget-exhausted",
+  leaseToken: "legacy-retry-5",
+  errorClass: "workers_ai_transient_failure",
+  errorDetail: "workers_ai_request_failed",
+  retryable: true,
+  nowMs: legacyFailureAt + 5 * 60 * 60 * 1000,
+});
+assert.equal(fifthFailure.status, "needs_attention");
+const thirdPolicyReassessment = await reassessImprovementAgentTask(db, "observed-attempt-budget-exhausted", {
+  nowMs: legacyFailureAt + 6 * 60 * 60 * 1000,
+  policyVersion: 3,
+  retryable: true,
+  errorClass: "workers_ai_transient_failure",
+});
+assert.equal(thirdPolicyReassessment.status, "waiting");
+assert.equal(thirdPolicyReassessment.attempts, 5);
+assert.equal(thirdPolicyReassessment.max_attempts, 6);
+
+sqlite.prepare("UPDATE agent_tasks SET status = 'running', attempts = 6, lease_token = 'legacy-retry-6', lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
+  .run(toSqliteDateTime(legacyFailureAt + 7 * 60 * 60 * 1000), toSqliteDateTime(legacyFailureAt + 7 * 60 * 60 * 1000), "observed-attempt-budget-exhausted");
+const sixthFailure = await recordAgentTaskFailure(db, {
+  taskId: "observed-attempt-budget-exhausted",
+  leaseToken: "legacy-retry-6",
+  errorClass: "workers_ai_transient_failure",
+  errorDetail: "workers_ai_request_failed",
+  retryable: true,
+  nowMs: legacyFailureAt + 7 * 60 * 60 * 1000,
+});
+assert.equal(sixthFailure.status, "needs_attention");
+const cappedReassessment = await reassessImprovementAgentTask(db, "observed-attempt-budget-exhausted", {
+  nowMs: legacyFailureAt + 8 * 60 * 60 * 1000,
+  policyVersion: 4,
+  retryable: true,
+  errorClass: "workers_ai_transient_failure",
+});
+assert.equal(cappedReassessment.status, "needs_attention");
+assert.equal(cappedReassessment.attempts, 6);
+assert.equal(cappedReassessment.max_attempts, 6, "Policy updates must never raise the cumulative six-attempt hard cap");
+
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, payload_json, attempts, max_attempts,
+    created_at, updated_at, deadline_at, next_attempt_at,
+    last_error_class, last_error, stop_reason, retry_policy_version
+  ) VALUES (?, 'github_query', 'failed', ?, 1, 4,
+    '2026-10-31 10:00:00', '2026-10-31 10:00:00', '2026-10-31 18:00:00',
+    '2026-10-31 10:00:00', 'unknown', 'Error: unauthorized',
+    'non_retryable_or_unknown_error', 0)
+`).run("permanent-improvement-failure", JSON.stringify({ improvementRequest: true, prompt: "fix permissions" }));
+const permanentReassessment = await reassessImprovementAgentTask(db, "permanent-improvement-failure", {
+  nowMs: legacyFailureAt,
+  policyVersion: 1,
+  retryable: false,
+  errorClass: "unauthorized",
+});
+assert.equal(permanentReassessment.status, "needs_attention");
+row = sqlite.prepare("SELECT status, attempts, max_attempts, retry_policy_version, last_error_class, last_error, stop_reason FROM agent_tasks WHERE task_id = 'permanent-improvement-failure'").get();
+assert.deepEqual({ ...row }, {
+  status: "needs_attention",
+  attempts: 1,
+  max_attempts: 4,
+  retry_policy_version: 1,
+  last_error_class: "unauthorized",
+  last_error: "Error: unauthorized",
+  stop_reason: "non_retryable_or_unknown_error",
+});
+
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");
