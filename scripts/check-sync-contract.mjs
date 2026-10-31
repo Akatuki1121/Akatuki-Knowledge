@@ -136,6 +136,12 @@ for (const contract of [
   "SELECT file_id FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'sync_identity_mapping_conflict'",
   "SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ?",
   "DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'sync_identity_mapping_conflict'",
+  "compatibleMappingPath = map.last_path === row.path || map.last_path === path",
+  "await sha256(previousRevision.content) !== observation.contentHash",
+  "hasMatchingDeadDelivery",
+  "reconciledRenames",
+  "mapping.last_path !== currentPath && mapping.last_path !== newPath",
+  "await drainSyncOutbox(env, Math.min(20, body.reconciledRenames))",
   "identityConflicts, resolvedReviews, observationComplete",
   '"needsReview", "identityConflicts", "resolvedReviews"',
 ]) {
