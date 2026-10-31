@@ -427,7 +427,7 @@ async function syncNotes(request, env) {
   const isVaultAuthoritativePath = (path) => vaultAuthoritativePaths.has(path);
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0, resolvedReviews = 0;
-  let reconciledRenames = 0;
+  let reconciledRenames = 0, reconciledConflicts = 0;
   const reconciledRenameFileIds = new Set();
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
   const safePath = (value) => typeof value === "string" && value.trim() && !value.startsWith("/") && !value.split("/").includes("..") && value.length <= 1000 && /\.md$/i.test(value);
@@ -490,7 +490,7 @@ async function syncNotes(request, env) {
       // but it does not authorize replacing a newer D1 body with the stale
       // Vault snapshot. Keep the old mapping untouched until both sides can
       // be reconciled using the exact previous revision as the Vault baseline.
-      if (path !== row.path || map.last_path !== row.path) {
+      if (path !== row.path || map.last_path !== row.path || row.content_hash !== observation.contentHash) {
         const compatibleMappingPath = map.last_path === row.path || map.last_path === path;
         if (!compatibleMappingPath || row.deleted_at || !observation.contentHash || row.content_hash === observation.contentHash) continue;
 
@@ -511,27 +511,47 @@ async function syncNotes(request, env) {
           .bind(row.id).first();
         if (activeJob) continue;
 
-        const deadJobs = (await env.DB.prepare("SELECT operation, payload_json, last_error FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status = 'dead' ORDER BY job_id DESC LIMIT 20")
-          .bind(row.id).all()).results || [];
-        const hasMatchingDeadDelivery = deadJobs.some((job) => {
-          if (job.operation !== "upsert" || !String(job.last_error || "").includes("vault_content_conflict")) return false;
-          try {
-            const payload = JSON.parse(job.payload_json || "{}");
-            return payload.id === row.id && payload.path === row.path
-              && payload.syncUuid === row.sync_uuid && payload.contentHash === row.content_hash;
-          } catch { return false; }
-        });
-        if (!hasMatchingDeadDelivery) continue;
+        const candidate = body.notes.find((input) => input?.fileId === observation.fileId
+          && typeof input.path === "string" && stableId(input.path) === path && typeof input.content === "string");
+        if (!candidate || await sha256(candidate.content) !== observation.contentHash) continue;
 
-        const previousRevision = await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1")
-          .bind(row.id).first();
-        if (typeof previousRevision?.content !== "string" || await sha256(previousRevision.content) !== observation.contentHash) continue;
+        const deadJobs = (await env.DB.prepare("SELECT operation, payload_json, last_error FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status = 'dead' ORDER BY job_id ASC LIMIT 40")
+          .bind(row.id).all()).results || [];
+        const revisionRows = (await env.DB.prepare("SELECT content_hash FROM note_revisions WHERE note_id = ?")
+          .bind(row.id).all()).results || [];
+        const revisionHashes = new Set(revisionRows.map((revision) => revision.content_hash).filter(Boolean));
+        const normalizeContent = (value) => String(value ?? "").replace(/\r\n/g, "\n");
+        let chainStarted = false;
+        let chainContent = candidate.content;
+        let chainReachesCurrentD1 = false;
+        for (const job of deadJobs) {
+          if (job.operation !== "upsert" || !String(job.last_error || "").includes("vault_content_conflict")) continue;
+          let payload;
+          try { payload = JSON.parse(job.payload_json || "{}"); } catch { continue; }
+          if (payload.id !== row.id || payload.path !== row.path || payload.syncUuid !== row.sync_uuid
+            || typeof payload.content !== "string" || typeof payload.expectedPreviousContent !== "string"
+            || payload.contentHash !== await sha256(payload.content)) continue;
+          const expectedPreviousHash = await sha256(payload.expectedPreviousContent);
+          if (!revisionHashes.has(expectedPreviousHash)) continue;
+          if (!chainStarted) {
+            if (normalizeContent(payload.expectedPreviousContent) !== normalizeContent(chainContent)) continue;
+            chainStarted = true;
+          } else if (normalizeContent(payload.expectedPreviousContent) !== normalizeContent(chainContent)) {
+            break;
+          }
+          chainContent = payload.content;
+          if (payload.contentHash === row.content_hash && normalizeContent(chainContent) === normalizeContent(row.content)) {
+            chainReachesCurrentD1 = true;
+            break;
+          }
+        }
+        if (!chainStarted || !chainReachesCurrentD1) continue;
 
         const prepared = await prepareSyncJob(env, "notes", row.id, "upsert", {
           jobGuard: { checks: [["path", path], ["deleted_at", null]] }
         }, {
           row: { ...row, path, deleted_at: null },
-          previousRevisionContent: previousRevision.content
+          previousRevisionContent: candidate.content
         });
         if (!prepared) continue;
 
@@ -556,7 +576,8 @@ async function syncNotes(request, env) {
           continue;
         }
         reconciledRenameFileIds.add(observation.fileId);
-        reconciledRenames++;
+        if (path !== row.path) reconciledRenames++;
+        reconciledConflicts++;
         resolvedReviews++;
         continue;
       }
@@ -813,7 +834,7 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
@@ -12471,8 +12492,8 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
-  const renameDelivery = sync.ok && body.reconciledRenames > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledRenames)) : null;
-  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, renameDelivery: renameDelivery ? { sent: renameDelivery.sent, failed: renameDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
+  const renameDelivery = sync.ok && body.reconciledConflicts > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledConflicts)) : null;
+  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, reconciledConflicts: body.reconciledConflicts || 0, renameDelivery: renameDelivery ? { sent: renameDelivery.sent, failed: renameDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
 __name(pullFromVault, "pullFromVault");
 var wrapper_default = {

@@ -121,7 +121,7 @@ The separate existing-note migration is not included. When explicitly authorized
 - Still outstanding: direct public HTTP smoke test, a production-safe request-level test of the deployed Worker, and continued observation of outbox outcomes after real user edits. Do not manufacture test notes or mutate production Vault content solely to claim these checks passed.
 
 
-## 同時改名とD1側編集の競合収束
+## Vault改名・本文編集競合の収束
 
 YAOS の安定した \`fileId\` が同じで、完全観測上のパスだけが変わった場合は、同じファイルの改名候補として扱う。ただし、Vault 本文が D1 本文と異なるだけでは、Vault 側の本文を取り込んだり D1 のパスを無条件に変えたりしない。
 
@@ -132,9 +132,9 @@ YAOS の安定した \`fileId\` が同じで、完全観測上のパスだけが
 3. \`vault_pull_live_content_conflict\` のレビュー行が今回の観測パス・観測本文 hash に一致する。
 4. 同じ D1 ノートに pending/processing の outbox が存在しない。
 5. \`vault_content_conflict\` で dead になった D1 upsert の payload が、現行 D1 の \`id\`・旧パス・\`sync_uuid\`・本文 hash と一致する。
-6. 直近の D1 revision 本文の hash が現在の Vault 観測本文 hash と一致する。つまり、Vault 本文が「D1 の最新編集直前の版」であることを確認できる。
+6. Vault の現在本文が、dead になった D1 upsert 群のいずれかの expectedPreviousContent と改行正規化後に一致し、その baseline hash が note_revisions に存在する。そこから各 upsert の expectedPreviousContent → content が連続し、最後の payload hash と本文が現行 D1 と一致する。複数回の API 編集が連続して dead になった場合も、この履歴チェーンで欠落なく説明できることを確認する。
 
-条件を満たした場合、本文は一切変更せず、D1 の \`path\` と同一性マップの \`last_path\` を同一 batch で新パスへ更新し、D1 の最新本文を持つ新しい upsert を同じ batch に追加する。古い dead job は診断証跡として保持し、解決したレビュー行は live work queue から削除する。レビューの初回観測時刻は今回の回帰 fixture で再現し、解決後の履歴としては保持しない。新しい upsert は YAOS の既存 \`fileId\` を指定して改名と本文更新を同時に行い、pull の完了後に bounded drain で配送する。
+条件を満たした場合、本文は一切変更せず、D1 の \`path\` と同一性マップの \`last_path\` を同一 batch で新パスへ更新し、D1 の最新本文を持つ新しい upsert を同じ batch に追加する。新しい upsert の expectedPreviousContent には、実際に観測した Vault 本文をそのまま格納し、YAOS 側の比較で同じ baseline を使う。古い dead job は診断証跡として保持し、解決したレビュー行は live work queue から削除する。レビューの初回観測時刻は今回の回帰 fixture で再現し、解決後の履歴としては保持しない。新しい upsert は YAOS の既存 \`fileId\` を指定して改名と本文更新を同時に行い、pull の完了後に bounded drain で配送する。
 
 直近 revision と Vault 本文が一致しない、outbox の失敗 payload が現行 D1 本文を証明しない、観測が不完全、または別のノート／マッピングが移動先を占有する場合は自動修復しない。レビューを残して fail-closed とする。D1 migration や YAOS 側の変更は不要。
 
