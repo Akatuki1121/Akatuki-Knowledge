@@ -1,23 +1,16 @@
 name: Deploy Akatuki Knowledge Worker
 
 on:
-  # 通常の main 更新では即時に反映する。
+  # main への push は手動・自動マージを問わずすべてデプロイ対象にする。
   push:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "scripts/deploy-production.sh"
-      - "wrangler.toml"
-      - "package.json"
-      - "package-lock.json"
-      - "migrations/**"
-      - ".github/workflows/deploy.yml"
-  # GITHUB_TOKEN による自動マージで push 起点の workflow が抑制されても、
-  # main と本番反映済みコミットの差を定期的に検出して追いつかせる。
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "デプロイ対象のコミット SHA（空欄なら起動元の SHA）"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,7 +28,7 @@ jobs:
       - name: main の最新コミットを取得
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.target_sha || github.sha }}
           fetch-depth: 1
 
       - name: デプロイ対象コミットを確定
@@ -43,6 +36,11 @@ jobs:
         run: |
           set -euo pipefail
           target_sha="$(git rev-parse HEAD)"
+          expected_sha="${{ inputs.target_sha || github.sha }}"
+          if [ "$target_sha" != "$expected_sha" ]; then
+            echo "::error::指定されたデプロイ対象 SHA と checkout した SHA が一致しません。"
+            exit 1
+          fi
           echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
           {
             echo "## 本番デプロイ対象"
