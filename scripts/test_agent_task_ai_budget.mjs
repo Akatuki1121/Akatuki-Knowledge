@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { classifyAgentTaskError } from "../src/background-task-policy.mjs";
@@ -313,6 +314,65 @@ assert.deepEqual({ ...row }, {
   max_attempts: 4,
   deadline_at: toSqliteDateTime(legacyFailureAt + 8 * 60 * 60 * 1000),
 });
+
+const observedV3Payload = {
+  prompt: "同じ改善依頼を再評価する",
+  maxOutputTokens: 1024,
+  allowGitHubRead: true,
+  allowGitHubWrite: true,
+  allowWebResearch: false,
+  improvementRequest: true,
+  improvementNotePath: "Notes/改善/状態集約.md",
+  sourceSyncUuid: "9eaaeb6a-19b1-4b4e-bfb5-4a6b4c8c44d1",
+  sourceContentHash: "a".repeat(64),
+  inputHash: "legacy-v3-input-hash",
+};
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, budget_reserved, payload_json, attempts, max_attempts,
+    created_at, updated_at, deadline_at, next_attempt_at,
+    last_error_class, last_error, stop_reason, retry_policy_version
+  ) VALUES (?, 'github_query', 'waiting', 1, ?, 3, 4,
+    '2026-10-31 10:01:35', '2026-10-31 10:01:48', '2026-10-31 18:00:36',
+    '2026-10-31 13:01:48', 'workers_ai_transient_failure',
+    'Error: workers_ai_invalid_response;stage=completion;shape=chat.completion;choices=1;finish=length;content=null;chars=0;reasoning=4096;tools=0',
+    NULL, 3)
+`).run("observed-glm-legacy-v3", JSON.stringify(observedV3Payload));
+const discoverableV3 = await listReassessableImprovementAgentTasks(db, { policyVersion: 4, limit: 20 });
+assert.ok(discoverableV3.some((task) => task.task_id === "observed-glm-legacy-v3"),
+  "A waiting attempt-3 task on policy v3 must be included in the v4 sweep");
+const v4RuntimeReassessment = await reassessImprovementAgentTask(db, "observed-glm-legacy-v3", {
+  nowMs: legacyFailureAt + 30 * 60 * 1000,
+  policyVersion: 4,
+  retryable: true,
+  errorClass: "workers_ai_transient_failure",
+});
+assert.equal(v4RuntimeReassessment.reassessed, true);
+assert.equal(v4RuntimeReassessment.status, "waiting");
+assert.equal(v4RuntimeReassessment.attempts, 3, "Runtime normalization must not reset cumulative attempts");
+assert.equal(v4RuntimeReassessment.max_attempts, 4);
+assert.equal(v4RuntimeReassessment.retry_policy_version, 4);
+row = sqlite.prepare("SELECT status, attempts, max_attempts, retry_policy_version, budget_reserved, next_attempt_at, deadline_at, payload_json FROM agent_tasks WHERE task_id = 'observed-glm-legacy-v3'").get();
+assert.equal(row.status, "waiting");
+assert.equal(row.attempts, 3);
+assert.equal(row.max_attempts, 4);
+assert.equal(row.retry_policy_version, 4);
+assert.equal(row.budget_reserved, 1);
+assert.equal(row.next_attempt_at, "2026-10-31 13:01:48", "An active task keeps its already-scheduled retry time");
+assert.equal(row.deadline_at, "2026-10-31 18:00:36", "An active task keeps its existing deadline");
+const normalizedV3Payload = JSON.parse(row.payload_json);
+assert.equal(normalizedV3Payload.maxOutputTokens, 131_072);
+assert.equal(normalizedV3Payload.allowWebResearch, false);
+assert.equal(normalizedV3Payload.allowGitHubRead, true, "GitHub read authorization must be preserved");
+assert.equal(normalizedV3Payload.allowGitHubWrite, true, "GitHub write authorization must be preserved");
+assert.notEqual(normalizedV3Payload.inputHash, observedV3Payload.inputHash);
+const normalizedHashPayload = { ...normalizedV3Payload };
+delete normalizedHashPayload.inputHash;
+assert.equal(
+  normalizedV3Payload.inputHash,
+  createHash("sha256").update(JSON.stringify(normalizedHashPayload)).digest("hex"),
+  "The payload inputHash must be recalculated after runtime normalization"
+);
 
 sqlite.prepare("UPDATE agent_tasks SET status = 'running', attempts = 2, lease_token = 'legacy-retry-2', lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
   .run(toSqliteDateTime(legacyFailureAt + 120_000), toSqliteDateTime(legacyFailureAt + 60_000), "observed-attempt-budget-exhausted");
