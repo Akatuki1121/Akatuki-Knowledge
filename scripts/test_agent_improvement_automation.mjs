@@ -127,7 +127,7 @@ test("Workers AI request failures record elapsed time and the effective per-call
     responseMimeType: "application/json", reasoningEffort: IMPROVEMENT_TASK_REASONING_EFFORT,
   }), (error) => {
     assert.equal(error.reason, "workers_ai_request_failed");
-    assert.match(error.message, /elapsed_ms=\\d+/);
+    assert.match(error.message, /elapsed_ms=\d+/);
     assert.match(error.message, /max_tokens=8192/);
     assert.match(error.message, /reasoning=high/);
     assert.ok(Number.isSafeInteger(error.workersAiDurationMs));
