@@ -577,6 +577,7 @@ for (const path of [
     true
   ), { DB: db });
   const result = await response.json();
+  console.log("DEBUG rename conflict", JSON.stringify({ result, stats: db.stats, notes: db.notes, mappings: db.mappings, reviews: db.reviews, jobs: db.jobs.map((job) => ({ status: job.status, last_error: job.last_error, payload_json: job.payload_json.slice(0, 160) })) }));
   assert.equal(response.status, 200);
   assert.equal(result.reconciledRenames, 1, "the observed rename converges even when the latest D1 revision is not the Vault baseline");
   assert.equal(result.reconciledConflicts, 1);
