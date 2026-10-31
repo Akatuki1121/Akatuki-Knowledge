@@ -593,6 +593,9 @@ async function syncNotes(request, env) {
       if (path !== row.path || map.last_path !== row.path) {
         const compatibleMappingPath = map.last_path === row.path || map.last_path === path;
         if (!compatibleMappingPath || row.deleted_at) continue;
+        const destinationMapping = await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map WHERE last_path = ? AND file_id <> ? LIMIT 1")
+          .bind(path, observation.fileId).first();
+        if (destinationMapping) continue;
       }
       try { await insertMapping(observation.fileId, row, path); }
       catch { await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict"); }
