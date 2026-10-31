@@ -84,8 +84,14 @@ assert.equal(duplicateDb.writes.length, 0);
 
 const missingNoteDb = fakeDb({
   day: "2026-10-30",
+  checkedAt: "2026-10-30T23:55:00.000Z",
   status: "attention",
-  findings: [{ code: "repeated_error_class" }],
+  findings: [{ code: "repeated_error_class", details: { count: 3 } }],
+  metrics: {
+    tasksTotal: 0, failedTasks: 0, workflowStepsReserved: 0,
+    workersAiNeuronsReserved: 0, workersAiNeuronsActual: 0,
+    workersAiCallsCompleted: 0, workersAiCallsFailed: 0,
+  },
   noteCreated: false,
 });
 let noteAttempts = 0;
