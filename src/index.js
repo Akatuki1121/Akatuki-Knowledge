@@ -505,6 +505,7 @@ async function syncNotes(request, env) {
           || stableId(candidateInput.path || "") !== path
           || await sha256(candidateInput.content) !== observation.contentHash) continue;
 
+        const pathWasOutOfSync = path !== row.path || map.last_path !== row.path;
         const compatibleMappingPath = map.last_path === row.path || map.last_path === path;
         if (!compatibleMappingPath) continue;
 
@@ -583,7 +584,7 @@ async function syncNotes(request, env) {
         }
         reconciledConflictFileIds.add(observation.fileId);
         reconciledConflicts++;
-        if (path !== row.path || map.last_path !== row.path) reconciledRenames++;
+        if (pathWasOutOfSync) reconciledRenames++;
         resolvedReviews++;
         continue;
       }
