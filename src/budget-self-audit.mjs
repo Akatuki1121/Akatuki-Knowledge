@@ -126,6 +126,41 @@ function buildAuditNote(day, report) {
   ].join("\n");
 }
 
+async function tryCreateAuditNote(env, day, report, options, checkedAt) {
+  const shouldCreate = typeof options.createNote === "function"
+    && (options.includeSystemAudit === true || report.findings.length > 0);
+  if (!shouldCreate) return { attempted: false, noteCreated: false, noteError: null };
+
+  const path = "Notes/改善/自己監査-" + day + ".md";
+  try {
+    const response = await options.createNote({
+      path,
+      title: "Akatuki-Knowledge 定期自己監査 " + day,
+      content: buildAuditNote(day, report),
+      tags: ["Akatuki-Knowledge", "自己監査", "自動改善"],
+    });
+    if (response?.ok === true || response?.status === 201 || response?.alreadyExists === true) {
+      return { attempted: true, noteCreated: true, noteError: null };
+    }
+    if (response?.status === 409) {
+      const existingNote = await env.DB.prepare(
+        "SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL"
+      ).bind(path).first();
+      if (existingNote) return { attempted: true, noteCreated: true, noteError: null };
+    }
+    return { attempted: true, noteCreated: false, noteError: "audit_note_creation_failed" };
+  } catch {
+    // Keep the report durable and retry note creation on the next audit run.
+    return { attempted: true, noteCreated: false, noteError: "audit_note_creation_failed" };
+  }
+}
+
+async function saveAuditReport(env, auditKey, report, checkedAt) {
+  await env.DB.prepare(
+    "INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+  ).bind(auditKey, JSON.stringify(report), checkedAt).run();
+}
+
 export async function runBudgetSelfAudit(env, nowMs = Date.now(), options = {}) {
   if (!env?.DB || typeof env.DB.prepare !== "function") {
     return { ok: false, recorded: false, reason: "audit_database_unavailable" };
@@ -138,7 +173,28 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now(), options = {}) 
   if (existing?.value) {
     let report = null;
     try { report = JSON.parse(existing.value); } catch { report = null; }
-    return { ok: true, recorded: false, report };
+    if (!report) return { ok: false, recorded: false, reason: "audit_report_unreadable" };
+
+    if (report.noteCreated === true) {
+      return { ok: true, recorded: false, noteCreated: true, report };
+    }
+    const noteResult = await tryCreateAuditNote(env, day, report, options, checkedAt);
+    if (!noteResult.attempted) {
+      return { ok: true, recorded: false, noteCreated: report.noteCreated === true, report };
+    }
+    const updatedReport = {
+      ...report,
+      noteCreated: noteResult.noteCreated,
+      noteError: noteResult.noteError,
+      noteLastAttemptAt: checkedAt,
+    };
+    await saveAuditReport(env, auditKey, updatedReport, checkedAt);
+    return {
+      ok: true,
+      recorded: false,
+      noteCreated: noteResult.noteCreated,
+      report: updatedReport,
+    };
   }
 
   let budget = null;
@@ -183,29 +239,24 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now(), options = {}) 
     },
   };
 
-  let noteCreated = false;
-  if (typeof options.createNote === "function"
-    && (options.includeSystemAudit === true || report.findings.length > 0)) {
-    const path = "Notes/改善/自己監査-" + day + ".md";
-    const response = await options.createNote({
-      path,
-      title: "Akatuki-Knowledge 定期自己監査 " + day,
-      content: buildAuditNote(day, report),
-      tags: ["Akatuki-Knowledge", "自己監査", "自動改善"],
-    });
-    if (response?.ok === true || response?.status === 201 || response?.alreadyExists === true) {
-      noteCreated = true;
-    } else if (response?.status === 409) {
-      const existingNote = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL").bind(path).first();
-      noteCreated = Boolean(existingNote);
-    } else {
-      throw new Error("budget_audit_note_creation_failed");
-    }
+  // Persist the report before attempting the note write. A note/API failure
+  // must not erase the daily audit, and the next run can retry the note.
+  const initialReport = { ...report, noteCreated: false };
+  await saveAuditReport(env, auditKey, initialReport, checkedAt);
+  const noteResult = await tryCreateAuditNote(env, day, report, options, checkedAt);
+  const storedReport = {
+    ...report,
+    noteCreated: noteResult.noteCreated,
+    ...(noteResult.noteError ? { noteError: noteResult.noteError, noteLastAttemptAt: checkedAt } : {}),
+  };
+  if (noteResult.attempted) {
+    await saveAuditReport(env, auditKey, storedReport, checkedAt);
   }
 
-  await env.DB.prepare(
-    "INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-  ).bind(auditKey, JSON.stringify({ ...report, noteCreated }), checkedAt).run();
-
-  return { ok: true, recorded: true, noteCreated, report: { ...report, noteCreated } };
+  return {
+    ok: true,
+    recorded: true,
+    noteCreated: noteResult.noteCreated,
+    report: storedReport,
+  };
 }
