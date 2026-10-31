@@ -257,7 +257,10 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   const append = source.slice(appendStart, inboxStart);
   const inbox = source.slice(inboxStart, recoveryStart);
   assert.ok(append.includes('if (result?.status === "failed") return false;'));
-  assert.ok(inbox.includes('sameRequest && previous?.status === "failed" && previous.stop_reason !== "daily_workflow_budget_exhausted"'));
+  assert.ok(inbox.includes('sameRequest && previous && ["failed", "needs_attention"].includes(previous.status)'));
+  assert.ok(inbox.includes("reassessImprovementAgentTask"));
+  assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
+  assert.ok(inbox.includes('"needs_attention"'));
   assert.ok(inbox.includes("requeueAgentTaskAfterBudgetWait"));
   assert.ok(inbox.includes("reserveQueuedAgentTaskBudget"));
   assert.ok(!inbox.includes('":retry:" + day'));
