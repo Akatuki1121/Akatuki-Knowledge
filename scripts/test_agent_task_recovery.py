@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "background-task-store.mjs"
 SCHEMA = ROOT / "schema-snapshots" / "live-d1-schema-2026-10-19.sql"
 MIGRATION = ROOT / "migrations" / "0011_agent_tasks.sql"
+ATTENTION_MIGRATION = ROOT / "migrations" / "0019_agent_task_attention_and_reassessment.sql"
 
 source = SOURCE.read_text(encoding="utf-8")
 statements = [
@@ -42,6 +43,7 @@ def create_database(connection):
     connection.execute("PRAGMA foreign_keys = ON")
     connection.executescript(SCHEMA.read_text(encoding="utf-8"))
     connection.executescript(MIGRATION.read_text(encoding="utf-8"))
+    connection.executescript(ATTENTION_MIGRATION.read_text(encoding="utf-8"))
 
 
 def insert_task(connection, task_id, *, status="queued", deadline=FUTURE, checkpoint="{}"):
