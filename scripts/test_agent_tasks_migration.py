@@ -4,11 +4,13 @@ import sqlite3
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "schema-snapshots" / "live-d1-schema-2026-10-19.sql"
 MIGRATION = ROOT / "migrations" / "0011_agent_tasks.sql"
+ATTENTION_MIGRATION = ROOT / "migrations" / "pending" / "0019_agent_task_attention_and_reassessment.sql"
 
 connection = sqlite3.connect(":memory:")
 connection.execute("PRAGMA foreign_keys = ON")
 connection.executescript(SCHEMA.read_text(encoding="utf-8"))
 connection.executescript(MIGRATION.read_text(encoding="utf-8"))
+connection.executescript(ATTENTION_MIGRATION.read_text(encoding="utf-8"))
 
 columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_tasks)")}
 required = {
@@ -18,7 +20,7 @@ required = {
     "next_attempt_at", "lease_token", "lease_expires_at", "last_error_class",
     "last_error", "stop_reason", "notify_chat_id", "notification_status",
     "notification_attempts", "notification_next_attempt_at",
-    "notification_lease_expires_at", "notification_last_error_class",
+    "notification_lease_expires_at", "notification_last_error_class", "retry_policy_version",
 }
 assert required <= columns, f"Missing agent task columns: {required - columns}"
 
@@ -74,6 +76,9 @@ except sqlite3.IntegrityError:
     pass
 else:
     raise AssertionError("Invalid notification status was not rejected")
+
+connection.execute("INSERT INTO agent_tasks (task_id, task_type, status, deadline_at) VALUES ('task-needs-attention', 'test', 'needs_attention', '2099-01-01 00:00:00')")
+assert connection.execute("SELECT status, retry_policy_version FROM agent_tasks WHERE task_id = 'task-needs-attention'").fetchone() == ("needs_attention", 0)
 
 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 assert "agent_task_daily_budget" in tables, "Daily Workflow budget table is missing"

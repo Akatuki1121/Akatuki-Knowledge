@@ -58,6 +58,9 @@ for (const required of [
   "recoverAgentTaskWorkflows",
   "reserveQueuedAgentTaskBudget",
   "requeueAgentTaskAfterBudgetWait",
+  "reassessImprovementAgentTask",
+  "IMPROVEMENT_RETRY_POLICY_VERSION",
+  '"needs_attention"',
   "allowRestart: true",
   'return "restart_deferred"',
   "allowRestart = false",
@@ -74,6 +77,9 @@ assert.ok(
 );
 const taskMigration = await readFile(new URL("../migrations/0011_agent_tasks.sql", import.meta.url), "utf8");
 assert.ok(taskMigration.includes("budget_reserved INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved IN (0, 1))"), "Pending task schema must include budget reservation admission flag");
+const attentionMigration = await readFile(new URL("../migrations/pending/0019_agent_task_attention_and_reassessment.sql", import.meta.url), "utf8");
+assert.ok(attentionMigration.includes("needs_attention"), "Task migration must add the durable needs_attention state");
+assert.ok(attentionMigration.includes("retry_policy_version"), "Task migration must persist the reassessment policy version");
 assert.ok(config.includes('binding = "AGENT_TASK_WORKFLOW"'));
 assert.ok(config.includes('class_name = "AgentTaskWorkflow"'));
 assert.ok(config.includes('"*/15 * * * *"'));

@@ -15,6 +15,7 @@ import {
   saveAgentTaskCheckpoint,
   completeAgentTask,
   recordAgentTaskFailure,
+  reassessImprovementAgentTask,
   listRecoverableAgentTasks,
   toSqliteDateTime
 } from "./background-task-store.mjs";
@@ -11433,6 +11434,9 @@ var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-s
 var PULL_CRON = "0 * * * *";
 var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
+// Bump only when the improvement retry/reassessment policy changes materially.
+// Each task is reassessed at most once per version and cumulative attempts cap at six.
+var IMPROVEMENT_RETRY_POLICY_VERSION = 1;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11498,7 +11502,6 @@ async function appendImprovementResult(env, payload, taskId, result) {
     .bind(payload.improvementNotePath).first();
   if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
   const marker = "<!-- akatuki-improvement-result:" + taskId + " -->";
-  if (row.content.includes(marker)) return true;
   const recordedError = result.error || null;
   const resultText = JSON.stringify({
     taskId,
@@ -11509,8 +11512,19 @@ async function appendImprovementResult(env, payload, taskId, result) {
     error: recordedError,
     recordedAt: new Date().toISOString()
   });
-  const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
-    + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n" + resultText + "\n\x60\x60\x60\n";
+  const resultBlock = marker + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n"
+    + resultText + "\n\x60\x60\x60\n";
+  const existingMarker = row.content.indexOf(marker);
+  let content;
+  if (existingMarker >= 0) {
+    const heading = row.content.indexOf("\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n", existingMarker);
+    const fenceEnd = heading >= 0 ? row.content.indexOf("\n\x60\x60\x60\n", heading) : -1;
+    if (heading < 0 || fenceEnd < 0) throw new Error("improvement_result_marker_malformed");
+    const blockEnd = fenceEnd + "\n\x60\x60\x60\n".length;
+    content = row.content.slice(0, existingMarker) + resultBlock + row.content.slice(blockEnd);
+  } else {
+    content = row.content.replace(/\s*$/, "") + "\n\n" + resultBlock;
+  }
   const route = new URL("/api/notes/" + encodeURIComponent(row.id) + "/correction", "https://internal");
   const request = new Request(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
   const response = await correctNote(request, route, env);
@@ -11547,7 +11561,8 @@ async function runImprovementInbox(env) {
     const seenKey = await improvementSeenKey(note.sync_uuid, note.content_hash);
     const seen = await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first();
     const previous = await env.DB.prepare(`
-      SELECT task_id, status, stop_reason, payload_json
+      SELECT task_id, status, stop_reason, payload_json, retry_policy_version,
+        last_error_class, last_error, attempts, max_attempts, budget_reserved
       FROM agent_tasks
       WHERE json_extract(payload_json, '$.improvementRequest') = 1
         AND json_extract(payload_json, '$.sourceSyncUuid') = ?
@@ -11568,11 +11583,41 @@ async function runImprovementInbox(env) {
       if (!seen) await markImprovementSeen(env, note.sync_uuid, note.content_hash);
       continue;
     }
-    // A terminal failure/cancellation is not retried unchanged. Editing the
-    // request changes its content hash and creates a fresh attempt; transient
-    // errors are retried by the Workflow's bounded task retry schedule.
     if (sameRequest && previous?.status === "cancelled") continue;
-    if (sameRequest && previous?.status === "failed" && previous.stop_reason !== "daily_workflow_budget_exhausted") continue;
+    if (sameRequest && previous && ["failed", "needs_attention"].includes(previous.status)) {
+      // Reassess once when the policy version changes. Reclassify the stored,
+      // sanitized error using the current classifier instead of trusting an
+      // old "unknown" classification forever.
+      const reassessedClass = previous.stop_reason === "daily_workflow_budget_exhausted"
+        ? "workers_ai_daily_quota_exhausted"
+        : (previous.last_error_class && previous.last_error_class !== "unknown"
+          ? previous.last_error_class
+          : (previous.last_error ? classifyAgentTaskError(new Error(previous.last_error)) : "unknown"));
+      const retryable = [
+        "network_error", "timeout", "rate_limited", "upstream_5xx",
+        "executor_interrupted", "workers_ai_daily_quota_exhausted",
+        "workers_ai_transient_failure"
+      ].includes(reassessedClass);
+      const reassessed = await reassessImprovementAgentTask(env.DB, previous.task_id, {
+        nowMs: Date.now(),
+        policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
+        retryable,
+        errorClass: reassessedClass
+      });
+      if (reassessed.status === "waiting") {
+        const nowMs = Date.now();
+        await reserveQueuedAgentTaskBudget(env.DB, { nowMs });
+        const requeuedTask = await env.DB.prepare(
+          "SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = ?"
+        ).bind(previous.task_id).first();
+        if (requeuedTask?.status === "waiting" && requeuedTask.budget_reserved === 1
+          && requeuedTask.next_attempt_at <= toSqliteDateTime(nowMs)) {
+          await ensureAgentTaskWorkflow(env, previous.task_id, { allowRestart: true });
+        }
+        if (reassessed.reassessed) queued++;
+      }
+      continue;
+    }
     if (seen) continue;
     const requestTokens = estimateWorkersAiPromptTokens(requestContent);
     if (requestTokens >= 131_072 || !requestContent.trim()) {
@@ -11603,6 +11648,7 @@ async function runImprovementInbox(env) {
         taskType: "github_query",
         idempotencyKey: taskIdempotencyKey,
         maxAttempts: 4,
+        retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
         maxTaskAgeMs: 8 * 60 * 60 * 1000,
         payload: {
           prompt: requestContent,
@@ -12124,25 +12170,31 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
       } catch (error) {
         const errorClass = classifyAgentTaskError(error);
         const errorDetail = describeAgentTaskError(error, this.env);
-        try {
-          const failedTask = await getAgentTask(this.env.DB, taskId);
-          if (failedTask?.payload?.improvementRequest === true) {
-            await appendImprovementResult(this.env, failedTask.payload, taskId, {
-              status: "failed",
-              reason: errorClass,
-              error: errorDetail
-            });
-          }
-        } catch (writebackError) {
-          console.log(JSON.stringify({ improvementResultWriteback: { ok: false }, failure: describeSafeFailure("improvement_result_writeback_failed", writebackError) }));
-        }
-        const retryable = ["network_error", "timeout", "rate_limited", "upstream_5xx", "executor_interrupted", "workers_ai_daily_quota_exhausted"].includes(errorClass);
+        const retryable = [
+          "network_error", "timeout", "rate_limited", "upstream_5xx",
+          "executor_interrupted", "workers_ai_daily_quota_exhausted",
+          "workers_ai_transient_failure"
+        ].includes(errorClass);
         const failure = await step.do("record-failure-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
           return recordAgentTaskFailure(this.env.DB, { taskId, leaseToken, errorClass, errorDetail, retryable, nowMs: Date.now() });
         });
         if (!failure.applied) {
           const current = await getAgentTask(this.env.DB, taskId);
           return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
+        }
+        if (failure.status === "needs_attention") {
+          try {
+            const terminalTask = await getAgentTask(this.env.DB, taskId);
+            if (terminalTask?.payload?.improvementRequest === true) {
+              await appendImprovementResult(this.env, terminalTask.payload, taskId, {
+                status: "needs_attention",
+                reason: errorClass,
+                error: errorDetail
+              });
+            }
+          } catch (writebackError) {
+            console.log(JSON.stringify({ improvementResultWriteback: { ok: false }, failure: describeSafeFailure("improvement_result_writeback_failed", writebackError) }));
+          }
         }
         if (failure.decision?.action === "retry") {
           const retryAt = new Date(failure.decision.retryAtMs).toISOString();
@@ -12160,7 +12212,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           await step.sleepUntil("retry-" + attempt, failure.decision.retryAtMs);
           continue;
         }
-        return { taskId, status: "failed", stopReason: failure.decision?.stopReason || "non_retryable_or_unknown_error" };
+        return { taskId, status: failure.status || "failed", stopReason: failure.decision?.stopReason || "non_retryable_or_unknown_error" };
       }
     }
     return { taskId, status: "failed", stopReason: "attempt_budget_exhausted" };
@@ -12355,7 +12407,7 @@ var wrapper_default = {
           dispatchPending = true;
         }
       }
-      const terminal = ["succeeded", "failed", "cancelled"].includes(task.status);
+      const terminal = ["succeeded", "failed", "cancelled", "needs_attention"].includes(task.status);
       return Response.json({
         taskId: task.task_id,
         status: task.status,
@@ -12367,7 +12419,7 @@ var wrapper_default = {
       if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
       if (!env.DB) return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
       const statusFilter = url.searchParams.get("status") || "active";
-      if (!["active", "terminal", "failed", "succeeded", "cancelled", "all"].includes(statusFilter)) {
+      if (!["active", "terminal", "failed", "needs_attention", "succeeded", "cancelled", "all"].includes(statusFilter)) {
         return Response.json({ error: "invalid_status_filter" }, { status: 400, headers: JSON_HEADERS2 });
       }
       const requestedLimit = Number(url.searchParams.get("limit") || 10);

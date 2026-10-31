@@ -76,8 +76,56 @@ const duplicate = await runBudgetSelfAudit({ DB: duplicateDb }, Date.parse("2026
 });
 assert.equal(duplicate.ok, true);
 assert.equal(duplicate.recorded, false);
+assert.equal(duplicate.noteCreated, true, "A duplicate audit response must report the note state stored in its report");
 assert.deepEqual(duplicate.report, existingReport);
 assert.equal(duplicateNoteCalls, 0);
 assert.equal(duplicateDb.writes.length, 0);
+
+
+const missingNoteDb = fakeDb({
+  day: "2026-10-30",
+  checkedAt: "2026-10-30T23:55:00.000Z",
+  status: "attention",
+  findings: [{ code: "repeated_error_class", details: { count: 3 } }],
+  metrics: {
+    tasksTotal: 0, failedTasks: 0, workflowStepsReserved: 0,
+    workersAiNeuronsReserved: 0, workersAiNeuronsActual: 0,
+    workersAiCallsCompleted: 0, workersAiCallsFailed: 0,
+  },
+  noteCreated: false,
+});
+let noteAttempts = 0;
+const noteFailure = await runBudgetSelfAudit({ DB: missingNoteDb }, Date.parse("2026-10-30T23:55:00.000Z"), {
+  includeSystemAudit: true,
+  createNote: async () => { noteAttempts++; return { ok: false, status: 503 }; },
+});
+assert.equal(noteFailure.ok, true, "A note API failure must not discard the already-recorded audit report");
+assert.equal(noteFailure.recorded, false);
+assert.equal(noteFailure.noteCreated, false);
+assert.equal(noteFailure.report.noteError, "audit_note_creation_failed");
+assert.equal(noteAttempts, 1);
+
+const noteRetry = await runBudgetSelfAudit({ DB: missingNoteDb }, Date.parse("2026-10-31T00:05:00.000Z"), {
+  includeSystemAudit: true,
+  createNote: async () => { noteAttempts++; return { ok: true, status: 201 }; },
+});
+assert.equal(noteRetry.ok, true);
+assert.equal(noteRetry.recorded, false);
+assert.equal(noteRetry.noteCreated, true, "An existing report without its note must retry note creation on a later run");
+assert.equal(noteRetry.report.noteError, null);
+assert.equal(noteAttempts, 2);
+assert.equal(missingNoteDb.writes.length, 2, "Both note failure and successful retry must update the durable audit report");
+
+const cronInstant = new Date("2026-10-30T23:55:00.000Z");
+const tokyoParts = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+}).formatToParts(cronInstant);
+const tokyoDay = [
+  tokyoParts.find((part) => part.type === "year").value,
+  tokyoParts.find((part) => part.type === "month").value,
+  tokyoParts.find((part) => part.type === "day").value,
+].join("-");
+assert.equal(cronInstant.toISOString().slice(0, 10), "2026-10-30");
+assert.equal(tokyoDay, "2026-10-31", "The 23:55 UTC audit is dated on the following local Japan day");
 
 console.log("budget self-audit tests passed");

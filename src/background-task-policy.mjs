@@ -1,5 +1,5 @@
 export const TASK_BUDGET_CEILINGS = Object.freeze({
-  maxAttempts: 4,
+  maxAttempts: 6,
   maxTaskAgeMs: 60 * 60 * 1000,
   maxImprovementTaskAgeMs: 8 * 60 * 60 * 1000,
   maxDelayMs: 30 * 60 * 1000,
@@ -25,6 +25,7 @@ const NON_RETRYABLE = new Set([
   "web_research_sources_missing",
   "web_research_invalid_response",
   "web_research_provider_error",
+  "workers_ai_permanent_failure",
 ]);
 
 const TRANSIENT = new Set([
@@ -33,6 +34,7 @@ const TRANSIENT = new Set([
   "rate_limited",
   "upstream_5xx",
   "executor_interrupted",
+  "workers_ai_transient_failure",
 ]);
 
 function finiteNumber(value, fallback) {
@@ -53,7 +55,9 @@ export function decideTaskRetry(input) {
   );
   const hardDeadlineMs = createdAtMs + maxTaskAgeMs;
   const suppliedDeadlineMs = finiteNumber(input.deadlineAtMs, hardDeadlineMs);
-  const deadlineMs = Math.min(suppliedDeadlineMs, hardDeadlineMs);
+  const deadlineMs = input.allowDeadlineExtension === true && Number.isFinite(input.deadlineAtMs)
+    ? suppliedDeadlineMs
+    : Math.min(suppliedDeadlineMs, hardDeadlineMs);
 
   const attempts = Math.max(0, Math.floor(finiteNumber(input.attempts, 0)));
   const maxAttempts = Math.min(
@@ -68,6 +72,7 @@ export function decideTaskRetry(input) {
   // Neurons allocation is exhausted. Keep the task queued until the next UTC
   // reset instead of applying an application-specific call/token ceiling.
   if (errorClass === "workers_ai_daily_quota_exhausted" && input.retryable === true) {
+    if (attempts >= maxAttempts) return stop("attempt_budget_exhausted");
     const current = new Date(nowMs);
     const nextUtcResetCheck = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
     // Cloudflare documents a UTC daily reset. If the first post-reset probe is
@@ -167,6 +172,9 @@ export function classifyAgentTaskError(error) {
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
   if (/\b5\d\d\b/i.test(message)
     || /Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
+  if (/workers_ai_(?:request|failure_settlement)_failed/i.test(message)) {
+    return /\b4\d\d\b/i.test(message) ? "workers_ai_permanent_failure" : "workers_ai_transient_failure";
+  }
   if (error?.name === "TimeoutError" || error?.name === "AbortError" || /timeout/i.test(message)) return "timeout";
   if (error instanceof TypeError || /network|fetch failed|connection/i.test(message)) return "network_error";
   return "unknown";

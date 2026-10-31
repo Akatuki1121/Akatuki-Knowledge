@@ -10,6 +10,7 @@ MIGRATIONS = [
     Path("migrations/0009_yaos_sync_jobs.sql"),
     Path("migrations/0010_bot_organization_candidates.sql"),
     Path("migrations/0011_agent_tasks.sql"),
+    Path("migrations/pending/0019_agent_task_attention_and_reassessment.sql"),
     Path("migrations/0012_bot_ai_permission_previews.sql"),
     Path("migrations/0013_agent_memory_metadata.sql"),
     Path("migrations/0015_yaos_file_identity_map.sql"),

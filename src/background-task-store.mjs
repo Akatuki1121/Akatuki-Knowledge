@@ -40,7 +40,7 @@ export async function getAgentTask(db, taskId) {
 
 export async function listAgentTasks(db, input = {}) {
   const status = typeof input.status === "string" ? input.status : "active";
-  if (!["active", "terminal", "failed", "succeeded", "cancelled", "all"].includes(status)) {
+  if (!["active", "terminal", "failed", "needs_attention", "succeeded", "cancelled", "all"].includes(status)) {
     throw new TypeError("Unsupported task status filter");
   }
   const notifyChatId = typeof input.notifyChatId === "string" && input.notifyChatId.trim()
@@ -50,12 +50,13 @@ export async function listAgentTasks(db, input = {}) {
     SELECT task_id, task_type, status, attempts, max_attempts, created_at,
       updated_at, next_attempt_at, stop_reason, last_error_class,
       checkpoint_json, notify_chat_id, notification_status,
-      notification_attempts, notification_last_error_class
+      notification_attempts, notification_last_error_class, retry_policy_version
     FROM agent_tasks
     WHERE (
       (? = 'active' AND status IN ('queued', 'running', 'waiting'))
-      OR (? = 'terminal' AND status IN ('succeeded', 'failed', 'cancelled'))
+      OR (? = 'terminal' AND status IN ('succeeded', 'failed', 'cancelled', 'needs_attention'))
       OR (? = 'failed' AND status = 'failed')
+      OR (? = 'needs_attention' AND status = 'needs_attention')
       OR (? = 'succeeded' AND status = 'succeeded')
       OR (? = 'cancelled' AND status = 'cancelled')
       OR (? = 'all')
@@ -64,7 +65,7 @@ export async function listAgentTasks(db, input = {}) {
     ORDER BY updated_at DESC
     LIMIT ?
   `).bind(
-    status, status, status, status, status, status,
+    status, status, status, status, status, status, status,
     notifyChatId, notifyChatId, limit,
   ).all();
   return (result?.results || []).map((row) => ({
@@ -79,7 +80,8 @@ export async function expireAgentTasks(db, input = {}) {
   const now = toSqliteDateTime(finiteNumber(input.nowMs, Date.now()));
   const result = await db.prepare(`
     UPDATE agent_tasks
-    SET status = 'failed',
+    SET status = CASE WHEN json_extract(payload_json, '$.improvementRequest') = 1
+          THEN 'needs_attention' ELSE 'failed' END,
         stop_reason = CASE
           WHEN deadline_at <= ? THEN 'task_deadline_exceeded'
           ELSE 'attempt_budget_exhausted'
@@ -168,6 +170,7 @@ export async function enqueueAgentTask(db, input) {
   if (deadlineAtMs <= nowMs) throw new RangeError("deadline must be in the future");
 
   const maxAttempts = boundedInteger(input.maxAttempts, 4, TASK_BUDGET_CEILINGS.maxAttempts);
+  const retryPolicyVersion = Math.max(0, Math.floor(finiteNumber(input.retryPolicyVersion, 0)));
   // Legacy columns remain for telemetry/schema compatibility; they are not limits.
   const maxAiCalls = Number.MAX_SAFE_INTEGER;
   const maxAiTokens = Number.MAX_SAFE_INTEGER;
@@ -203,14 +206,14 @@ export async function enqueueAgentTask(db, input) {
         task_id, idempotency_key, task_type, status, budget_reserved, payload_json, checkpoint_json,
         attempts, max_attempts, ai_calls_used, max_ai_calls, ai_tokens_used, max_ai_tokens,
         created_at, updated_at, deadline_at, next_attempt_at,
-        notify_chat_id, notification_status, notification_next_attempt_at
+        notify_chat_id, notification_status, notification_next_attempt_at, retry_policy_version
       ) VALUES (?, ?, ?, 'queued', 0, ?, '{}', 0, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?,
-        CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?)
+        CASE WHEN ? IS NULL THEN 'none' ELSE 'pending' END, ?, ?)
       ON CONFLICT(idempotency_key) DO NOTHING
     `).bind(
       taskId, idempotencyKey, input.taskType.trim(), storedPayloadJson,
       maxAttempts, maxAiCalls, maxAiTokens, now, now, deadline, now,
-      notifyChatId, notifyChatId, now,
+      notifyChatId, notifyChatId, now, retryPolicyVersion,
     ),
     db.prepare(`
       INSERT INTO agent_task_daily_budget (
@@ -507,6 +510,67 @@ export async function requeueAgentTaskAfterBudgetWait(db, taskId, nowMs = Date.n
   return Boolean(result?.task_id);
 }
 
+
+/**
+ * Reassess a terminal improvement task once per retry-policy version.
+ * The original task row and cumulative attempts are retained. Legacy tasks
+ * whose old max_attempts was 1 receive the normal four-attempt budget; later
+ * policy revisions may grant at most one additional attempt, capped at six.
+ */
+export async function reassessImprovementAgentTask(db, taskId, input = {}) {
+  const nowMs = finiteNumber(input.nowMs, Date.now());
+  const now = toSqliteDateTime(nowMs);
+  const policyVersion = Math.max(1, Math.floor(finiteNumber(input.policyVersion, 1)));
+  const row = await db.prepare(`
+    SELECT status, payload_json, attempts, max_attempts, retry_policy_version,
+      budget_reserved, next_attempt_at
+    FROM agent_tasks
+    WHERE task_id = ? AND status IN ('failed', 'needs_attention')
+  `).bind(taskId).first();
+  if (!row || parseJson(row.payload_json, {})?.improvementRequest !== true) {
+    return { reassessed: false, status: row?.status ?? null, reason: "not_an_improvement_task" };
+  }
+  if (Number(row.retry_policy_version || 0) >= policyVersion) {
+    return { reassessed: false, status: row.status, reason: "policy_already_reviewed" };
+  }
+
+  const attempts = Math.max(0, Math.floor(finiteNumber(row.attempts, 0)));
+  const currentMax = Math.max(1, Math.floor(finiteNumber(row.max_attempts, 4)));
+  const nextMax = Math.min(6, Math.max(currentMax, attempts < 4 ? 4 : attempts + 1));
+  const canRetry = input.retryable === true && attempts < nextMax;
+  const deadline = toSqliteDateTime(nowMs + TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs);
+  const result = await db.prepare(`
+    UPDATE agent_tasks
+    SET status = ?,
+        max_attempts = ?,
+        deadline_at = CASE WHEN ? = 1 THEN ? ELSE deadline_at END,
+        next_attempt_at = CASE WHEN ? = 1 THEN ? ELSE next_attempt_at END,
+        completed_at = CASE WHEN ? = 1 THEN NULL ELSE completed_at END,
+        stop_reason = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(stop_reason, 'needs_attention') END,
+        last_error_class = COALESCE(?, last_error_class),
+        retry_policy_version = ?,
+        updated_at = ?,
+        lease_token = NULL,
+        lease_expires_at = NULL
+    WHERE task_id = ?
+      AND status IN ('failed', 'needs_attention')
+      AND retry_policy_version < ?
+    RETURNING status, max_attempts, attempts, budget_reserved, next_attempt_at
+  `).bind(
+    canRetry ? "waiting" : "needs_attention",
+    canRetry ? nextMax : currentMax,
+    canRetry ? 1 : 0, deadline,
+    canRetry ? 1 : 0, now,
+    canRetry ? 1 : 0,
+    canRetry ? 1 : 0,
+    typeof input.errorClass === "string" && input.errorClass ? input.errorClass : null,
+    policyVersion, now, taskId, policyVersion,
+  ).first();
+  return result
+    ? { reassessed: true, ...result, retryable: canRetry }
+    : { reassessed: false, status: row.status, reason: "concurrent_reassessment" };
+}
+
 /**
  * Cancel a task only when it belongs to the requesting Telegram chat and is
  * still active. Clearing the lease makes every in-flight checkpoint/completion
@@ -689,6 +753,7 @@ export async function recordAgentTaskFailure(db, input) {
     maxTaskAgeMs: isImprovementRequest
       ? TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs
       : TASK_BUDGET_CEILINGS.maxTaskAgeMs,
+    allowDeadlineExtension: isImprovementRequest,
     maxRetryDelayMs: isImprovementRequest
       ? TASK_BUDGET_CEILINGS.maxImprovementRetryDelayMs
       : TASK_BUDGET_CEILINGS.maxDelayMs,
@@ -710,13 +775,12 @@ export async function recordAgentTaskFailure(db, input) {
           budget_reserved = CASE WHEN ? = 1 THEN 0 ELSE budget_reserved END,
           next_attempt_at = ?, updated_at = ?,
           last_error_class = ?, last_error = ?, stop_reason = NULL,
-          attempts = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN MAX(0, attempts - 1) ELSE attempts END,
           deadline_at = CASE WHEN ? = 'workers_ai_daily_quota_exhausted' THEN datetime(?, '+1 hour') ELSE deadline_at END,
           lease_token = NULL, lease_expires_at = NULL
       WHERE task_id = ? AND status = 'running' AND lease_token = ?
     `).bind(
       releaseWorkflowBudget ? 1 : 0, retryAt, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail),
-      input.errorClass ?? "unknown", input.errorClass ?? "unknown", retryAt,
+      input.errorClass ?? "unknown", retryAt,
       input.taskId, input.leaseToken,
     );
     if (!releaseWorkflowBudget) {
@@ -739,14 +803,15 @@ export async function recordAgentTaskFailure(db, input) {
     return { applied: results?.[0]?.meta?.changes === 1, decision, workflowBudgetReleased: true };
   }
 
+  const taskStatus = isImprovementRequest ? "needs_attention" : "failed";
   const result = await db.prepare(`
     UPDATE agent_tasks
-    SET status = 'failed', completed_at = ?, updated_at = ?,
+    SET status = ?, completed_at = ?, updated_at = ?,
         last_error_class = ?, last_error = ?, stop_reason = ?,
         lease_token = NULL, lease_expires_at = NULL
     WHERE task_id = ? AND status = 'running' AND lease_token = ?
-  `).bind(now, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), decision.stopReason, input.taskId, input.leaseToken).run();
-  return { applied: result?.meta?.changes === 1, decision };
+  `).bind(taskStatus, now, now, input.errorClass ?? "unknown", safeErrorDetail(input.errorDetail), decision.stopReason, input.taskId, input.leaseToken).run();
+  return { applied: result?.meta?.changes === 1, decision, status: taskStatus };
 }
 
 // Diagnostic text for a failed attempt. Callers pass an already redacted, content-free string; keep it short.
