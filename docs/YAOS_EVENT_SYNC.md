@@ -121,21 +121,24 @@ The separate existing-note migration is not included. When explicitly authorized
 - Still outstanding: direct public HTTP smoke test, a production-safe request-level test of the deployed Worker, and continued observation of outbox outcomes after real user edits. Do not manufacture test notes or mutate production Vault content solely to claim these checks passed.
 
 
-## 同時改名とD1側編集の競合収束
+## Vault 編集・改名と D1 編集の競合収束
 
-YAOS の安定した \`fileId\` が同じで、完全観測上のパスだけが変わった場合は、同じファイルの改名候補として扱う。ただし、Vault 本文が D1 本文と異なるだけでは、Vault 側の本文を取り込んだり D1 のパスを無条件に変えたりしない。
+YAOS の安定した `fileId` が同じで、完全観測上のパスだけが変わった場合は、同じファイルの改名として扱う。D1 と Vault の本文が異なる場合は、単に片方を上書きしない。
 
-自動収束を許可するのは、次の条件をすべて満たす場合だけとする。
+自動収束は、次の条件をすべて満たす場合に限る。
 
-1. 対象 \`fileId\` のマッピングが一意で、\`note_id\` と \`sync_uuid\` が生存中の D1 ノートに一致する。
-2. マッピングの \`last_path\` が旧 D1 パスまたは今回の観測パスのどちらかであり、移動先パスを別のノート／マッピングが占有していない。
-3. \`vault_pull_live_content_conflict\` のレビュー行が今回の観測パス・観測本文 hash に一致する。
+1. `fileId` のマッピングが一意で、`note_id` と `sync_uuid` が生存中の D1 ノートに一致する。
+2. マッピングの `last_path` が旧 D1 パスまたは今回の観測パスであり、移動先を別ノート／別マッピングが占有していない。
+3. 完全な Vault 観測と候補本文が同じ `contentHash` を示し、`vault_pull_live_content_conflict` のレビュー行も同じ fileId・パス・hash を示す。
 4. 同じ D1 ノートに pending/processing の outbox が存在しない。
-5. \`vault_content_conflict\` で dead になった D1 upsert の payload が、現行 D1 の \`id\`・旧パス・\`sync_uuid\`・本文 hash と一致する。
-6. 直近の D1 revision 本文の hash が現在の Vault 観測本文 hash と一致する。つまり、Vault 本文が「D1 の最新編集直前の版」であることを確認できる。
+5. `vault_content_conflict` で dead になった upsert の payload が、現在の D1 の `id`・旧パス・`sync_uuid`・本文 hash と一致する。
 
-条件を満たした場合、本文は一切変更せず、D1 の \`path\` と同一性マップの \`last_path\` を同一 batch で新パスへ更新し、D1 の最新本文を持つ新しい upsert を同じ batch に追加する。古い dead job は診断証跡として保持し、解決したレビュー行は live work queue から削除する。レビューの初回観測時刻は今回の回帰 fixture で再現し、解決後の履歴としては保持しない。新しい upsert は YAOS の既存 \`fileId\` を指定して改名と本文更新を同時に行い、pull の完了後に bounded drain で配送する。
+直近の D1 revision だけを Vault の基準本文とみなしてはならない。複数の D1 更新が Vault 配信より先に進むと、Vault は複数世代前の本文のままでも、最新 revision はその本文と一致しないためである。
 
-直近 revision と Vault 本文が一致しない、outbox の失敗 payload が現行 D1 本文を証明しない、観測が不完全、または別のノート／マッピングが移動先を占有する場合は自動修復しない。レビューを残して fail-closed とする。D1 migration や YAOS 側の変更は不要。
+条件を満たした場合は、今回観測した Vault 本文を `note_revisions` に保存してから、D1 のパスと同一性マップを同じ batch で観測パスへ揃える。D1 の最新本文は変更せず、最新本文を持つ upsert を新規作成し、その `expectedPreviousContent` には今回観測した Vault 本文そのものを設定する。これにより YAOS 側でも、pull と outbox 配信の間に Vault 本文が変わっていない場合だけ更新できる。元の dead job は診断証跡として残し、解決したレビュー行だけを live work queue から削除する。
 
-\`POST /api/notes/<旧パス>/move\` も、既存マッピングが要求された移動先パスをすでに指している場合に限り、そのパス不一致を解消できる。マッピングが要求先以外の第三のパスを指す場合は従来どおり \`sync_identity_mapping_path_mismatch\` で拒否する。
+この処理は改名を伴う衝突だけでなく、同じパスで複数世代の D1 更新が Vault 配信に追いつかなかった衝突にも適用する。再配送は pull 完了後に対象件数分だけ bounded drain する。レビュー hash と観測本文 hash の不一致、identity mapping の不一致、第三者によるパス占有、active outbox の存在、dead upsert と現行 D1 本文の不一致、完全でない観測の場合は fail-closed でレビューを残す。
+
+`POST /api/notes/<旧パス>/move` は、既存マッピングの `last_path` が現在パスまたは要求された移動先のどちらかなら移動を続行できる。マッピングが要求先以外の第三のパスを指す場合は、fileId の指定有無にかかわらず `sync_identity_mapping_path_mismatch` で拒否する。
+
+この修理に D1 migration や YAOS Worker の変更は不要。
