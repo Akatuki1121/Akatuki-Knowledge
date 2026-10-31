@@ -11636,6 +11636,7 @@ async function runImprovementInbox(env) {
         taskType: "github_query",
         idempotencyKey: taskIdempotencyKey,
         maxAttempts: 4,
+        retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
         maxTaskAgeMs: 8 * 60 * 60 * 1000,
         payload: {
           prompt: requestContent,
