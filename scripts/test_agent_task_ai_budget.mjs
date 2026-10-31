@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
+import { classifyAgentTaskError } from "../src/background-task-policy.mjs";
 import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, listReassessableImprovementAgentTasks, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -462,6 +463,12 @@ assert.deepEqual({ ...row }, {
   retry_policy_version: 2,
   stop_reason: "superseded_by_newer_task",
 });
+
+assert.equal(
+  classifyAgentTaskError(new Error("D1_ERROR: no such table: workers_ai_daily_usage: SQLITE_ERROR")),
+  "workers_ai_transient_failure",
+  "The best-effort Workers AI usage ledger must not strand a task after a transient schema/runtime mismatch"
+);
 
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");
