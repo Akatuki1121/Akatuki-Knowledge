@@ -427,8 +427,11 @@ async function syncNotes(request, env) {
   const isVaultAuthoritativePath = (path) => vaultAuthoritativePaths.has(path);
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0, resolvedReviews = 0;
-  let reconciledRenames = 0;
-  const reconciledRenameFileIds = new Set();
+  let reconciledRenames = 0, reconciledConflicts = 0;
+  const reconciledConflictFileIds = new Set();
+  const noteInputByFileId = new Map(body.notes
+    .filter((input) => input && typeof input.fileId === "string")
+    .map((input) => [input.fileId, input]));
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
   const safePath = (value) => typeof value === "string" && value.trim() && !value.startsWith("/") && !value.split("/").includes("..") && value.length <= 1000 && /\.md$/i.test(value);
   const recordReview = async (fileId, path, contentHash, classification, reason) => {
@@ -486,17 +489,29 @@ async function syncNotes(request, env) {
         continue;
       }
 
-      // A stable YAOS fileId proves that this is the same file after a rename,
-      // but it does not authorize replacing a newer D1 body with the stale
-      // Vault snapshot. Keep the old mapping untouched until both sides can
-      // be reconciled using the exact previous revision as the Vault baseline.
-      if (path !== row.path || map.last_path !== row.path) {
+      // A stable YAOS fileId binds the observed Vault body to this D1 note.
+      // A matching dead upsert proves that D1's current body was rejected by
+      // YAOS. Preserve the exact observed Vault body as a revision, then enqueue
+      // the current D1 body with that observation as the compare-and-swap
+      // baseline. This handles both a rename and multiple missed D1 updates:
+      // the latest note_revisions row is not necessarily the version still in
+      // the Vault. If the Vault changes again before delivery, YAOS rejects the
+      // stale baseline and no concurrent edit is overwritten.
+      const candidateInput = noteInputByFileId.get(observation.fileId);
+      const hasContentConflict = row.content_hash !== observation.contentHash;
+      if (hasContentConflict) {
+        if (row.deleted_at || !observation.contentHash || !candidateInput
+          || typeof candidateInput.content !== "string"
+          || stableId(candidateInput.path || "") !== path
+          || await sha256(candidateInput.content) !== observation.contentHash) continue;
+
         const compatibleMappingPath = map.last_path === row.path || map.last_path === path;
-        if (!compatibleMappingPath || row.deleted_at || !observation.contentHash || row.content_hash === observation.contentHash) continue;
+        if (!compatibleMappingPath) continue;
 
         const reviews = (await env.DB.prepare("SELECT file_id, path, content_hash, classification, reason, first_seen_at FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'")
           .bind(observation.fileId).all()).results || [];
-        if (reviews.length !== 1 || reviews[0].path !== path || reviews[0].content_hash !== observation.contentHash
+        if (reviews.length !== 1 || reviews[0].path !== path
+          || reviews[0].content_hash !== observation.contentHash
           || reviews[0].classification !== "needs_review") continue;
 
         const identityRows = await mappingsFor(observation.fileId, row.id, row.sync_uuid);
@@ -504,6 +519,9 @@ async function syncNotes(request, env) {
           || identityRows[0].note_id !== row.id || identityRows[0].sync_uuid !== row.sync_uuid
           || identityRows[0].last_path !== map.last_path) continue;
 
+        const destinationNote = await env.DB.prepare("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL AND id <> ? LIMIT 1")
+          .bind(path, row.id).first();
+        if (destinationNote) continue;
         const destinationMapping = await env.DB.prepare("SELECT file_id FROM yaos_file_identity_map WHERE last_path = ? AND file_id <> ? LIMIT 1")
           .bind(path, observation.fileId).first();
         if (destinationMapping) continue;
@@ -523,45 +541,59 @@ async function syncNotes(request, env) {
         });
         if (!hasMatchingDeadDelivery) continue;
 
-        const previousRevision = await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1")
-          .bind(row.id).first();
-        if (typeof previousRevision?.content !== "string" || await sha256(previousRevision.content) !== observation.contentHash) continue;
-
+        const existingVaultRevision = await env.DB.prepare("SELECT revision_id FROM note_revisions WHERE note_id = ? AND content_hash = ? LIMIT 1")
+          .bind(row.id, observation.contentHash).first();
+        const preserveVaultRevision = existingVaultRevision ? [] : [
+          env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(row.id, path, row.title, candidateInput.content, observation.contentHash, now)
+        ];
         const prepared = await prepareSyncJob(env, "notes", row.id, "upsert", {
           jobGuard: { checks: [["path", path], ["deleted_at", null]] }
         }, {
           row: { ...row, path, deleted_at: null },
-          previousRevisionContent: previousRevision.content
+          previousRevisionContent: candidateInput.content
         });
         if (!prepared) continue;
 
         const nowAt = new Date().toISOString();
-        const results = await env.DB.batch([
+        const identityStatements = [
           env.DB.prepare("UPDATE notes SET path = ? WHERE id = ? AND path = ? AND sync_uuid = ? AND content_hash = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ?)")
             .bind(path, row.id, row.path, row.sync_uuid, row.content_hash, observation.fileId, row.id, row.sync_uuid, map.last_path),
           env.DB.prepare("UPDATE yaos_file_identity_map SET last_path = ?, updated_at = ? WHERE file_id = ? AND note_id = ? AND sync_uuid = ? AND last_path = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND path = ? AND sync_uuid = ? AND content_hash = ? AND deleted_at IS NULL)")
-            .bind(path, nowAt, observation.fileId, row.id, row.sync_uuid, map.last_path, row.id, path, row.sync_uuid, row.content_hash),
+            .bind(path, nowAt, observation.fileId, row.id, row.sync_uuid, map.last_path, row.id, path, row.sync_uuid, row.content_hash)
+        ];
+        const results = await env.DB.batch([
+          ...preserveVaultRevision,
+          ...identityStatements,
           ...prepared.statements,
           env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'").bind(observation.fileId)
         ]);
-        if (!results[0]?.meta?.changes || !results[1]?.meta?.changes) {
+        const identityOffset = preserveVaultRevision.length;
+        if (!results[identityOffset]?.meta?.changes || !results[identityOffset + 1]?.meta?.changes) {
           await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "identity_persistence_conflict");
           continue;
         }
         const verified = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, deleted_at FROM notes WHERE id = ?").bind(row.id).first();
         const verifiedMap = await env.DB.prepare("SELECT file_id, note_id, sync_uuid, last_path FROM yaos_file_identity_map WHERE file_id = ?").bind(observation.fileId).first();
         if (!verified || verified.path !== path || verified.sync_uuid !== row.sync_uuid || verified.content_hash !== row.content_hash
-          || verified.deleted_at || !verifiedMap || verifiedMap.note_id !== row.id || verifiedMap.sync_uuid !== row.sync_uuid || verifiedMap.last_path !== path) {
+          || verified.deleted_at || !verifiedMap || verifiedMap.note_id !== row.id
+          || verifiedMap.sync_uuid !== row.sync_uuid || verifiedMap.last_path !== path) {
           await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "identity_persistence_conflict");
           continue;
         }
-        reconciledRenameFileIds.add(observation.fileId);
-        reconciledRenames++;
+        reconciledConflictFileIds.add(observation.fileId);
+        reconciledConflicts++;
+        if (path !== row.path || map.last_path !== row.path) reconciledRenames++;
         resolvedReviews++;
         continue;
       }
 
-      if (map.last_path !== row.path) continue;
+      // A path-only rename with identical content is handled by the ordinary
+      // candidate update below. A third-party path claim remains fail-closed.
+      if (path !== row.path || map.last_path !== row.path) {
+        const compatibleMappingPath = map.last_path === row.path || map.last_path === path;
+        if (!compatibleMappingPath || row.deleted_at) continue;
+      }
       try { await insertMapping(observation.fileId, row, path); }
       catch { await recordReview(observation.fileId, path, observation.contentHash, "needs_review", "sync_identity_mapping_conflict"); }
       continue;
@@ -652,7 +684,7 @@ async function syncNotes(request, env) {
     if (!safePath(path) || path.split("/").some((part) => part.startsWith(".")) || path.startsWith(RESERVED_ROOT + "/")) continue;
     if (input.content.length > MAX_NOTE_CHARS) continue;
     const fileId = typeof input.fileId === "string" && input.fileId.length > 0 && input.fileId.length <= 256 ? input.fileId : null;
-    if (fileId && reconciledRenameFileIds.has(fileId)) continue;
+    if (fileId && reconciledConflictFileIds.has(fileId)) continue;
     const title = titleFrom(path, input.title);
     const content = input.content;
     const contentHash = await sha256(content);
@@ -813,7 +845,7 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
@@ -12471,8 +12503,8 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
-  const renameDelivery = sync.ok && body.reconciledRenames > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledRenames)) : null;
-  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, renameDelivery: renameDelivery ? { sent: renameDelivery.sent, failed: renameDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
+  const conflictDelivery = sync.ok && body.reconciledConflicts > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledConflicts)) : null;
+  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, reconciledConflicts: body.reconciledConflicts || 0, conflictDelivery: conflictDelivery ? { sent: conflictDelivery.sent, failed: conflictDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
 __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
