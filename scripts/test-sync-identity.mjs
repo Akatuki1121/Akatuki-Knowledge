@@ -574,7 +574,8 @@ for (const path of [
   ), { DB: db });
   const result = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(result.reconciledRenames, 1, "known fileId plus the exact previous D1 revision safely reconciles the rename");
+  assert.equal(result.reconciledRenames, 1, "known fileId plus the dead delivery chain safely reconciles the rename");
+  assert.equal(result.reconciledConflicts, 1);
   assert.equal(result.resolvedReviews, 1, "the resolved conflict is counted");
   assert.equal(db.notes[0].path, newPath, "D1 adopts the Vault's renamed path");
   assert.equal(db.notes[0].content, latestContent, "the newer D1 correction body is preserved");
@@ -630,6 +631,7 @@ for (const path of [
   ), { DB: db });
   const result = await response.json();
   assert.equal(result.reconciledRenames, 1, "a continuous chain of dead D1 upserts proves multiple API edits after the Vault baseline");
+  assert.equal(result.reconciledConflicts, 1);
   assert.equal(db.notes[0].path, newPath);
   assert.equal(db.notes[0].content, latest);
   assert.equal(db.notes[0].sync_uuid, syncUuid);
@@ -637,6 +639,56 @@ for (const path of [
   const pending = db.jobs.find((job) => job.status === "pending");
   assert.ok(pending);
   const payload = JSON.parse(pending.payload_json);
+  assert.equal(payload.content, latest);
+  assert.equal(payload.expectedPreviousContent, vaultContent);
+}
+
+{
+  const path = "Notes/改善/同期の状態を1か所で確認できるようにする.md";
+  const fileId = "improvement-content-only-file";
+  const syncUuid = "123e4567-e89b-42d3-a456-426614174098";
+  const vaultContent = "# 同期状態\n\nVault に残った本文。\n";
+  const intermediate = vaultContent + "\n## 中間更新\n\n1回目の correction。\n";
+  const latest = intermediate + "\n## 最新更新\n\n2回目の correction。\n";
+  const observedAt = "2026-10-31T14:35:47.890Z";
+  const db = makeDb(
+    [note(path, path, latest, syncUuid)],
+    [{ file_id: fileId, sync_uuid: syncUuid, note_id: path, last_path: path, created_at: observedAt, updated_at: observedAt }]
+  );
+  db.revisions.push(
+    { note_id: path, content: vaultContent, content_hash: hash(vaultContent), saved_at: observedAt },
+    { note_id: path, content: intermediate, content_hash: hash(intermediate), saved_at: observedAt }
+  );
+  db.reviews.push({
+    file_id: fileId, path, content_hash: hash(vaultContent), classification: "needs_review",
+    reason: "vault_pull_live_content_conflict", first_seen_at: observedAt, last_seen_at: observedAt
+  });
+  db.jobs.push(
+    { job_id: 61, entity_type: "notes", entity_id: path, operation: "upsert", status: "dead",
+      payload_json: JSON.stringify({ id: path, path, content: intermediate, contentHash: hash(intermediate), syncUuid, expectedPreviousContent: vaultContent }),
+      last_error: "Error: vault_content_conflict" },
+    { job_id: 62, entity_type: "notes", entity_id: path, operation: "upsert", status: "dead",
+      payload_json: JSON.stringify({ id: path, path, content: latest, contentHash: hash(latest), syncUuid, expectedPreviousContent: intermediate }),
+      last_error: "Error: vault_content_conflict" }
+  );
+  const response = await syncNotes(request(
+    [{ fileId, path, content: vaultContent }],
+    [observation(fileId, path, vaultContent)],
+    true,
+    true
+  ), { DB: db });
+  const result = await response.json();
+  assert.equal(result.reconciledRenames, 0, "same-path content conflicts do not count as renames");
+  assert.equal(result.reconciledConflicts, 1, "same-path dead outbox conflicts use the same safe chain reconciliation");
+  assert.equal(db.notes[0].path, path, "path remains unchanged");
+  assert.equal(db.notes[0].content, latest, "latest D1 content is preserved");
+  assert.equal(db.notes[0].sync_uuid, syncUuid);
+  assert.equal(db.mappings[0].last_path, path);
+  assert.equal(db.reviews.length, 0);
+  const pending = db.jobs.find((job) => job.status === "pending");
+  assert.ok(pending);
+  const payload = JSON.parse(pending.payload_json);
+  assert.equal(payload.path, path);
   assert.equal(payload.content, latest);
   assert.equal(payload.expectedPreviousContent, vaultContent);
 }
