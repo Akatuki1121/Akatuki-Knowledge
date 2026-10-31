@@ -72,6 +72,7 @@ export function decideTaskRetry(input) {
   // Neurons allocation is exhausted. Keep the task queued until the next UTC
   // reset instead of applying an application-specific call/token ceiling.
   if (errorClass === "workers_ai_daily_quota_exhausted" && input.retryable === true) {
+    if (attempts >= maxAttempts) return stop("attempt_budget_exhausted");
     const current = new Date(nowMs);
     const nextUtcResetCheck = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1, 0, 1, 0);
     // Cloudflare documents a UTC daily reset. If the first post-reset probe is
