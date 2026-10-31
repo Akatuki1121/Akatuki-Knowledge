@@ -54,7 +54,7 @@ def enqueue(day, task_id):
     now = day + " 12:00:00"
     deadline = (datetime.strptime(day, "%Y-%m-%d") + timedelta(hours=20)).strftime("%Y-%m-%d %H:%M:%S")
     params = [
-        (task_id, None, "test", "{}", 4, 9_007_199_254_740_991, 9_007_199_254_740_991, now, now, deadline, now, None, None, now),
+        (task_id, None, "test", "{}", 4, 9_007_199_254_740_991, 9_007_199_254_740_991, now, now, deadline, now, None, None, now, 0),
         (day, now),
         (day, task_id, day),
         (task_id, day, day),
