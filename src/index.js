@@ -11590,7 +11590,9 @@ async function runImprovementInbox(env) {
       // old "unknown" classification forever.
       const reassessedClass = previous.stop_reason === "daily_workflow_budget_exhausted"
         ? "workers_ai_daily_quota_exhausted"
-        : (previous.last_error ? classifyAgentTaskError(new Error(previous.last_error)) : previous.last_error_class || "unknown");
+        : (previous.last_error_class && previous.last_error_class !== "unknown"
+          ? previous.last_error_class
+          : (previous.last_error ? classifyAgentTaskError(new Error(previous.last_error)) : "unknown"));
       const retryable = [
         "network_error", "timeout", "rate_limited", "upstream_5xx",
         "executor_interrupted", "workers_ai_daily_quota_exhausted",
