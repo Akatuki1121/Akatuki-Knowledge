@@ -1,5 +1,5 @@
 export const TASK_BUDGET_CEILINGS = Object.freeze({
-  maxAttempts: 4,
+  maxAttempts: 6,
   maxTaskAgeMs: 60 * 60 * 1000,
   maxImprovementTaskAgeMs: 8 * 60 * 60 * 1000,
   maxDelayMs: 30 * 60 * 1000,
@@ -25,6 +25,7 @@ const NON_RETRYABLE = new Set([
   "web_research_sources_missing",
   "web_research_invalid_response",
   "web_research_provider_error",
+  "workers_ai_permanent_failure",
 ]);
 
 const TRANSIENT = new Set([
@@ -33,6 +34,7 @@ const TRANSIENT = new Set([
   "rate_limited",
   "upstream_5xx",
   "executor_interrupted",
+  "workers_ai_transient_failure",
 ]);
 
 function finiteNumber(value, fallback) {
@@ -53,7 +55,9 @@ export function decideTaskRetry(input) {
   );
   const hardDeadlineMs = createdAtMs + maxTaskAgeMs;
   const suppliedDeadlineMs = finiteNumber(input.deadlineAtMs, hardDeadlineMs);
-  const deadlineMs = Math.min(suppliedDeadlineMs, hardDeadlineMs);
+  const deadlineMs = input.allowDeadlineExtension === true && Number.isFinite(input.deadlineAtMs)
+    ? suppliedDeadlineMs
+    : Math.min(suppliedDeadlineMs, hardDeadlineMs);
 
   const attempts = Math.max(0, Math.floor(finiteNumber(input.attempts, 0)));
   const maxAttempts = Math.min(
