@@ -102,3 +102,13 @@ wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実�
 - この待機はWorkers AIの独自上限ではなく、Cloudflare FreeのWorkers AI/Workflows各サービスが持つ別々の日次枠に対する回復処理。AI呼び出し回数・token数にアプリ独自の上限は設けない。
 
 UTC日跨ぎの通常再試行も同じ扱いにし、現在のWorkflow runを終了して翌日のWorkflow stepsを再予約する。
+
+
+## 改善エージェントのWorkers AI実行設定（2026-10-31確認）
+
+- GLM-4.7-Flashの一般的なコンテキスト上限131072と、改善タスク1回の生成上限を分離する。改善タスクは `max_completion_tokens=8192`、`reasoning_effort=high` を使用し、一般タスクの上限は従来どおり131072。
+- 2026-10-31の本番Workflow実測では、改善タスクの `agent-model` stepは10分設定だったが、Workers AIが約235948〜239420msで3046 Request timeoutを返した。Workflow stepの10分 timeoutではなく、同期推論要求側の時間切れ。
+- 1024上限では約23625〜31232msでfinish=lengthとなったため、1024には戻さない。8192とreasoning_effort=highで、推論と最終JSONの両方に枠を残す。
+- 失敗時は `elapsed_ms`、`max_tokens`、`reasoning` を安全な固定形式でlast_errorへ記録し、本文・推論内容は記録しない。
+- GitHub read_fileの `repository,path` は必須、`ref,start_line,end_line` は任意。省略時は既定ブランチ・先頭から最大1000行に正規化する。
+- これらはコード・payload設定のみであり、D1 schema変更やmigrationは不要。

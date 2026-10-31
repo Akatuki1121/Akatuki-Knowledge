@@ -45,14 +45,18 @@ export function describeWorkersAiFailure(error) {
   };
 }
 
-function createWorkersAiRequestFailure(error) {
+function createWorkersAiRequestFailure(error, request = {}) {
   const detail = describeWorkersAiFailure(error);
+  const timing = Number.isSafeInteger(request.durationMs) ? `;elapsed_ms=${request.durationMs}` : "";
+  const cap = Number.isSafeInteger(request.maxOutputTokens) ? `;max_tokens=${request.maxOutputTokens}` : "";
+  const reasoning = request.reasoningEffort === "high" ? ";reasoning=high" : "";
   const suffix = detail.message ? `: ${detail.name}: ${detail.message}` : "";
   const codeSuffix = detail.code === void 0 ? "" : ` (code=${detail.code})`;
-  const failure = new Error(`workers_ai_request_failed${suffix}${codeSuffix}`);
-  // 先頭の理由コードは従来どおり安定させる。詳細は後置するだけ。
+  const failure = new Error(`workers_ai_request_failed${timing}${cap}${reasoning}${suffix}${codeSuffix}`);
   failure.reason = "workers_ai_request_failed";
   failure.workersAiError = detail;
+  failure.workersAiDurationMs = request.durationMs;
+  failure.workersAiRequest = { durationMs: request.durationMs, maxOutputTokens: request.maxOutputTokens, reasoningEffort: request.reasoningEffort || null };
   failure.cause = error;
   return failure;
 }
@@ -120,13 +124,15 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = WORKERS_AI_MA
     model: WORKERS_AI_MODEL, prompt, maxOutputTokens: maxTokens
   });
   let result;
+  const requestStartedAt = Date.now();
+  const reasoningEffort = options.reasoningEffort === "high" ? "high" : null;
   try {
-    // AI バインディングの文書化された options は gateway のみで、signal は未文書化。
-    // そのため env.AI.run には第3引数を渡さない。options.signal が渡されても無視する。
+    // AI.run の第3引数はGateway options用。推論設定はリクエスト本文に含める。
     result = await env.AI.run(WORKERS_AI_MODEL, {
       messages,
       max_completion_tokens: maxTokens,
       temperature: 0.1,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(options.responseMimeType === "application/json" ? { response_format: { type: "json_object" } } : {})
     });
   } catch (error) {
@@ -142,7 +148,7 @@ export async function callWorkersAi(env, prompt, maxOutputTokens = WORKERS_AI_MA
       failure.workersAiError = describeWorkersAiFailure(error);
       throw failure;
     }
-    throw createWorkersAiRequestFailure(error);
+    throw createWorkersAiRequestFailure(error, { durationMs: Math.max(0, Date.now() - requestStartedAt), maxOutputTokens: maxTokens, reasoningEffort });
   }
   // Provider usage is authoritative when present. If omitted, keep both
   // reservations so missing telemetry cannot silently undercount consumption.

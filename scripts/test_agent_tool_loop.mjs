@@ -99,7 +99,7 @@ assert.ok(saved.every((checkpoint) => checkpoint.initialPrompt === "What deploym
 // invalid_input keeps its class (substring match) and carries a fixed reason for last_error.
 for (const [response, reason] of [
   [{ action: "tool", tool: "search_notes", arguments: { query: "x" } }, "search_notes_query"],
-  [{ action: "tool", tool: "search_notes", arguments: { query: "deployment", extra: true } }, "tool_argument_keys"],
+  [{ action: "tool", tool: "search_notes", arguments: { query: "deployment", extra: true } }, "tool_argument_keys:tool=search_notes;missing=none;unexpected=extra"],
   [{ action: "final", reply: "Answer", source_ids: ["note-1"], extra: true }, "final_action_shape"],
   [{ action: "answer", reply: "Answer" }, "action_shape"],
   [{ action: "tool", tool: "get_note", arguments: { id: "" } }, "get_note_id"],
@@ -110,6 +110,15 @@ for (const [response, reason] of [
     `expected invalid_input:${reason}`,
   );
 }
+// Production-observed v4 response: github_read_file omitted optional ref and line-range keys.
+const productionObservedReadFile = validateAgentToolAction({
+  action: "tool", tool: "github_read_file",
+  arguments: { repository: "Akatuki1121/Akatuki-Knowledge", path: "README.md" },
+}, { allowGitHubRead: true });
+assert.deepEqual(productionObservedReadFile.arguments, {
+  repository: "Akatuki1121/Akatuki-Knowledge", path: "README.md", ref: "", start_line: null, end_line: null,
+});
+
 for (const [raw, reason] of [
   ["The count is 12.", "model_response_not_json"],
   ["[1, 2]", "model_response_not_object"],

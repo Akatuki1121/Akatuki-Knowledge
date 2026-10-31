@@ -28,7 +28,8 @@ export const GITHUB_READ_TOOLS = Object.freeze({
   github_read_file: Object.freeze({
     description: "Read a text file from a public GitHub repository branch. Optional line ranges are supported; sensitive file paths are blocked.",
     sideEffect: "external_read",
-    arguments: Object.freeze(["repository", "path", "ref", "start_line", "end_line"]),
+    arguments: Object.freeze(["repository", "path"]),
+    optionalArguments: Object.freeze(["ref", "start_line", "end_line"]),
   }),
 });
 
