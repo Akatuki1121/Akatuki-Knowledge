@@ -574,7 +574,7 @@ for (const path of [
   ), { DB: db });
   const result = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(result.reconciledRenames, 1, "known fileId plus the dead delivery chain safely reconciles the rename");
+  assert.equal(result.reconciledRenames, 1, JSON.stringify({ result, stats: db.stats, note: db.notes[0], mapping: db.mappings[0], reviews: db.reviews, jobs: db.jobs }));
   assert.equal(result.reconciledConflicts, 1);
   assert.equal(result.resolvedReviews, 1, "the resolved conflict is counted");
   assert.equal(db.notes[0].path, newPath, "D1 adopts the Vault's renamed path");
