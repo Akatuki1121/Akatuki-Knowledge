@@ -427,7 +427,7 @@ async function syncNotes(request, env) {
   const isVaultAuthoritativePath = (path) => vaultAuthoritativePaths.has(path);
   const now = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0, resolvedReviews = 0;
-  let reconciledRenames = 0;
+  let reconciledRenames = 0, reconciledConflicts = 0;
   const reconciledRenameFileIds = new Set();
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
   const safePath = (value) => typeof value === "string" && value.trim() && !value.startsWith("/") && !value.split("/").includes("..") && value.length <= 1000 && /\.md$/i.test(value);
@@ -490,7 +490,7 @@ async function syncNotes(request, env) {
       // but it does not authorize replacing a newer D1 body with the stale
       // Vault snapshot. Keep the old mapping untouched until both sides can
       // be reconciled using the exact previous revision as the Vault baseline.
-      if (path !== row.path || map.last_path !== row.path) {
+      if (path !== row.path || map.last_path !== row.path || row.content_hash !== observation.contentHash) {
         const compatibleMappingPath = map.last_path === row.path || map.last_path === path;
         if (!compatibleMappingPath || row.deleted_at || !observation.contentHash || row.content_hash === observation.contentHash) continue;
 
@@ -576,7 +576,8 @@ async function syncNotes(request, env) {
           continue;
         }
         reconciledRenameFileIds.add(observation.fileId);
-        reconciledRenames++;
+        if (path !== row.path) reconciledRenames++;
+        reconciledConflicts++;
         resolvedReviews++;
         continue;
       }
@@ -833,7 +834,7 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
 async function syncManifest(url, env) {
@@ -12491,8 +12492,8 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
-  const renameDelivery = sync.ok && body.reconciledRenames > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledRenames)) : null;
-  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, renameDelivery: renameDelivery ? { sent: renameDelivery.sent, failed: renameDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
+  const renameDelivery = sync.ok && body.reconciledConflicts > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledConflicts)) : null;
+  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, reconciledConflicts: body.reconciledConflicts || 0, renameDelivery: renameDelivery ? { sent: renameDelivery.sent, failed: renameDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
 __name(pullFromVault, "pullFromVault");
 var wrapper_default = {
