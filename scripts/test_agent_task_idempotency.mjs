@@ -6,7 +6,7 @@ import { enqueueAgentTask } from "../src/background-task-store.mjs";
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
 const migration = await readFile(new URL("migrations/0011_agent_tasks.sql", root), "utf8");
-const attentionMigration = await readFile(new URL("migrations/pending/0019_agent_task_attention_and_reassessment.sql", root), "utf8");
+const attentionMigration = await readFile(new URL("migrations/0019_agent_task_attention_and_reassessment.sql", root), "utf8");
 
 class D1Statement {
   constructor(database, sql) {
