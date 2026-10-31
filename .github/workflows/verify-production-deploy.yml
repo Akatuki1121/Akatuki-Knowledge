@@ -5,6 +5,13 @@ on:
   push:
     branches:
       - main
+  # 自動マージ時に GITHUB_TOKEN による push イベントが抑制された場合の補完経路。
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "確認対象の main コミット SHA"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,8 +19,8 @@ permissions:
   statuses: write
 
 concurrency:
-  group: verify-production-deploy-${{ github.sha }}
-  cancel-in-progress: false
+  group: verify-production-deploy-${{ inputs.target_sha || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -27,7 +34,7 @@ jobs:
         id: status
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha || github.sha }}
         run: |
           set -euo pipefail
           statuses="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/statuses?per_page=100")"
