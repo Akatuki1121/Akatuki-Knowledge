@@ -407,6 +407,9 @@ await test("観測済みの改名先と一致するマップのパス不一致�
   const unrelated = await move(db, oldPath, { newPath: "Notes/Test/Unrelated.md", fileId: "renamed-file" });
   equal(unrelated.status, 409, "マップが主張していない移動先は拒否される");
   equal(unrelated.data.error, "sync_identity_mapping_path_mismatch", "実測と同じ409エラー");
+  const unrelatedWithoutFileId = await move(db, oldPath, { newPath: "Notes/Test/Unrelated.md" });
+  equal(unrelatedWithoutFileId.status, 409, "fileId を省略しても第三のパスは拒否される");
+  equal(unrelatedWithoutFileId.data.error, "sync_identity_mapping_path_mismatch", "fileId の有無で拒否理由は変わらない");
   const repaired = await move(db, oldPath, {
     newPath: observedPath,
     fileId: "renamed-file",
@@ -417,6 +420,25 @@ await test("観測済みの改名先と一致するマップのパス不一致�
   equal(state.mappings.length, 1, "同じマッピングだけが残る");
   equal(state.mappings[0].last_path, observedPath, "マップのパスは維持される");
   equal(state.mappings[0].sync_uuid, created.syncUuid, "sync_uuid は維持される");
+});
+
+await test("観測済みの改名先は fileId 省略時も移動できる", async () => {
+  const { db, state } = createMockDb();
+  const oldPath = "Notes/Test/OldWithoutFileId.md";
+  const observedPath = "Notes/Test/RenamedWithoutFileId.md";
+  const created = await create(db, oldPath, contentA);
+  state.mappings.push({
+    file_id: "renamed-file-no-declared-id",
+    sync_uuid: created.syncUuid,
+    note_id: created.id,
+    last_path: observedPath,
+    created_at: "2026-10-31T14:31:10Z",
+    updated_at: "2026-10-31T14:31:10Z",
+  });
+  const repaired = await move(db, oldPath, { newPath: observedPath });
+  equal(repaired.status, 200, "既存マップが要求先を示すなら fileId なしでも成功する");
+  equal(state.notes.find((n) => n.id === created.id).path, observedPath);
+  equal(state.mappings[0].last_path, observedPath);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

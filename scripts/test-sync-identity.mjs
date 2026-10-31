@@ -44,12 +44,14 @@ function makeDb(initialNotes = [], initialMappings = []) {
         async first() {
           stats.first++;
           if (sql.includes("FROM note_archive_events")) return { archive_event_id: 1, previous_ai_allowed: 1, previous_review_state: "ready" };
+          if (sql.includes("FROM note_revisions") && sql.includes("content_hash = ?")) return revisions.some((r) => r.note_id === values[0] && r.content_hash === values[1]) ? { revision_id: 1 } : null;
           if (sql.includes("FROM note_revisions")) return revisions.length ? { content: revisions.at(-1).content } : null;
           if (sql.includes("FROM yaos_file_identity_map WHERE last_path = ? AND file_id <> ?")) return mappings.find((m) => m.last_path === values[0] && m.file_id !== values[1]) ?? null;
           if (sql.includes("FROM yaos_file_identity_map")) {
             const rows = await this.all();
             return rows.results[0] ?? null;
           }
+          if (sql.includes("FROM notes WHERE path = ?") && sql.includes("id <> ?")) return notes.find((n) => n.path === values[0] && n.id !== values[1] && !n.deleted_at) ?? null;
           if (sql.includes("FROM notes WHERE path = ?")) return notes.find((n) => n.path === values[0]) ?? null;
           if (sql.includes("FROM notes WHERE id = ?")) return notes.find((n) => n.id === values[0]) ?? null;
           if (sql.includes("FROM yaos_sync_jobs") && sql.includes("entity_id = ?")) return jobs.find((j) => j.entity_id === values[0] && ["pending", "processing"].includes(j.status)) ?? null;
@@ -61,9 +63,11 @@ function makeDb(initialNotes = [], initialMappings = []) {
           if (sql.includes("FROM yaos_sync_identity_review")) {
             const classification = sql.match(/classification = '([^']+)'/)?.[1];
             const reason = sql.match(/reason = '([^']+)'/)?.[1];
+            const fileId = sql.includes("file_id = ?") ? values[0] : undefined;
             return { results: reviews.filter((r) =>
               (classification === undefined || r.classification === classification) &&
-              (reason === undefined || r.reason === reason)
+              (reason === undefined || r.reason === reason) &&
+              (fileId === undefined || r.file_id === fileId)
             ).map((r) => ({ ...r })) };
           }
           if (sql.includes("FROM yaos_sync_jobs") && sql.includes("status = 'dead'")) return { results: jobs.filter((j) => j.entity_id === values[0] && j.status === "dead").map((j) => ({ ...j })) };
@@ -547,48 +551,98 @@ for (const path of [
   const newPath = "Notes/私について/私について.md";
   const fileId = "D-StnCzgUF3w5Zdl";
   const syncUuid = "5bd3f3ba-818d-4a4d-ac95-074ea2a9fe28";
-  const oldContent = "# 石田について\n\n既存の本文。\n";
-  const latestContent = oldContent + "\n## 追記した節\n\nAPI correction で追加した本文。\n";
   const observedAt = "2026-10-31T14:31:10Z";
+  const vaultContent = "# 石田について\n\nVault 側に残っていた本文。\n";
+  const priorD1Revision = "# 石田について\n\nD1 の直近 revision は Vault の観測本文と一致しない。\n";
+  const latestContent = vaultContent + "\n## 天気と月のお知らせ\n\nAPI correction で追加した本文。\n";
   const db = makeDb(
     [note(oldPath, oldPath, latestContent, syncUuid)],
     [{ file_id: fileId, sync_uuid: syncUuid, note_id: oldPath, last_path: newPath, created_at: observedAt, updated_at: observedAt }]
   );
-  db.revisions.push({ note_id: oldPath, content: oldContent, content_hash: hash(oldContent), saved_at: observedAt });
+  db.revisions.push({ note_id: oldPath, content: priorD1Revision, content_hash: hash(priorD1Revision), saved_at: observedAt });
   db.reviews.push({
-    file_id: fileId, path: newPath, content_hash: hash(oldContent), classification: "needs_review",
+    file_id: fileId, path: newPath, content_hash: hash(vaultContent), classification: "needs_review",
     reason: "vault_pull_live_content_conflict", first_seen_at: observedAt, last_seen_at: observedAt
   });
   db.jobs.push({
-    job_id: 41, entity_type: "notes", entity_id: oldPath, operation: "upsert", status: "dead",
-    payload_json: JSON.stringify({ id: oldPath, path: oldPath, content: latestContent, contentHash: hash(latestContent), syncUuid }),
-    last_error: "vault_content_conflict"
+    job_id: 425, entity_type: "notes", entity_id: oldPath, operation: "upsert", status: "dead",
+    payload_json: JSON.stringify({
+      id: oldPath, path: oldPath, content: latestContent, contentHash: hash(latestContent), syncUuid,
+      expectedPreviousContent: priorD1Revision
+    }),
+    last_error: "Error: vault_content_conflict"
   });
   const response = await syncNotes(request(
-    [{ fileId, path: newPath, content: oldContent }],
-    [observation(fileId, newPath, oldContent)],
+    [{ fileId, path: newPath, content: vaultContent }],
+    [observation(fileId, newPath, vaultContent)],
     true,
     true
   ), { DB: db });
   const result = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(result.reconciledRenames, 1, "known fileId plus the exact previous D1 revision safely reconciles the rename");
-  assert.equal(result.resolvedReviews, 1, "the resolved conflict is counted");
-  assert.equal(db.notes[0].path, newPath, "D1 adopts the Vault's renamed path");
-  assert.equal(db.notes[0].content, latestContent, "the newer D1 correction body is preserved");
-  assert.equal(db.notes[0].sync_uuid, syncUuid, "the authoritative sync_uuid is unchanged");
-  assert.equal(db.mappings[0].last_path, newPath, "the identity mapping converges on the new path");
+  assert.equal(result.reconciledRenames, 1, "the observed rename converges even when the latest D1 revision is not the Vault baseline");
+  assert.equal(result.reconciledConflicts, 1);
+  assert.equal(result.resolvedReviews, 1);
+  assert.equal(db.notes[0].path, newPath);
+  assert.equal(db.notes[0].content, latestContent, "the latest D1 correction body remains authoritative");
+  assert.equal(db.notes[0].sync_uuid, syncUuid);
+  assert.equal(db.mappings[0].last_path, newPath);
   assert.equal(db.mappings[0].sync_uuid, syncUuid);
-  assert.equal(db.reviews.length, 0, "the exact live-content conflict review is removed");
+  assert.equal(db.reviews.length, 0);
+  assert.ok(db.revisions.some((revision) => revision.content === vaultContent && revision.path === newPath),
+    "the exact Vault body is preserved as a revision before it is replaced");
   const pending = db.jobs.find((job) => job.status === "pending");
-  assert.ok(pending, "a fresh upsert is queued after the old dead delivery");
+  assert.ok(pending, "a fresh upsert is queued");
   const payload = JSON.parse(pending.payload_json);
   assert.equal(payload.path, newPath);
   assert.equal(payload.content, latestContent);
   assert.equal(payload.contentHash, hash(latestContent));
   assert.equal(payload.syncUuid, syncUuid);
-  assert.equal(payload.expectedPreviousContent, oldContent, "YAOS can compare against the exact observed old body");
-  assert.equal(db.jobs.find((job) => job.job_id === 41).status, "dead", "the original dead-letter evidence is preserved");
+  assert.equal(payload.expectedPreviousContent, vaultContent, "YAOS compares against the exact body observed by this pull");
+  assert.equal(db.jobs.find((job) => job.job_id === 425).status, "dead", "the original dead-letter evidence is preserved");
+}
+
+{
+  const cases = [
+    { path: "Notes/改善/同期の状態を1か所で確認できるようにする.md", fileId: "JnrAMr1Q0Uqyy6co", syncUuid: "6c4e4eb5-d1da-424e-b8a6-9acc6a9144e8", jobId: 422 },
+    { path: "Notes/改善/修理の手順を共通化する.md", fileId: "kJptFF07erhMalFA", syncUuid: "20f10493-b0df-45c3-8aae-4b8605cfbb2e", jobId: 421 },
+    { path: "Notes/改善/作った直後のノートも移動できるようにする.md", fileId: "jKt9Ct-s6jKnXph2", syncUuid: "6ea917bc-953a-464d-842f-81302727eaf9", jobId: 423 },
+  ];
+  const db = makeDb();
+  const inputs = [];
+  const observations = [];
+  const expected = [];
+  for (const item of cases) {
+    const vaultContent = "# " + item.path.split("/").at(-1) + "\n\nVault に残っていた旧本文。\n";
+    const priorRevision = "# " + item.path.split("/").at(-1) + "\n\nD1 の直近 revision。\n";
+    const latestContent = vaultContent + "\nD1 側の最新追記。\n";
+    const observedAt = "2026-10-31T15:00:23.677Z";
+    db.notes.push(note(item.path, item.path, latestContent, item.syncUuid));
+    db.mappings.push({ file_id: item.fileId, sync_uuid: item.syncUuid, note_id: item.path, last_path: item.path, created_at: observedAt, updated_at: observedAt });
+    db.revisions.push({ note_id: item.path, content: priorRevision, content_hash: hash(priorRevision), saved_at: observedAt });
+    db.reviews.push({ file_id: item.fileId, path: item.path, content_hash: hash(vaultContent), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: observedAt, last_seen_at: observedAt });
+    db.jobs.push({ job_id: item.jobId, entity_type: "notes", entity_id: item.path, operation: "upsert", status: "dead", payload_json: JSON.stringify({ id: item.path, path: item.path, content: latestContent, contentHash: hash(latestContent), syncUuid: item.syncUuid }), last_error: "Error: vault_content_conflict" });
+    inputs.push({ fileId: item.fileId, path: item.path, content: vaultContent });
+    observations.push(observation(item.fileId, item.path, vaultContent));
+    expected.push({ ...item, latestContent, vaultContent });
+  }
+  const response = await syncNotes(request(inputs, observations, true, true), { DB: db });
+  const result = await response.json();
+  assert.equal(result.reconciledConflicts, 3, "all three improvement conflicts converge in one pull");
+  assert.equal(result.reconciledRenames, 0, "same-path conflicts are not counted as renames");
+  assert.equal(result.resolvedReviews, 3);
+  assert.equal(db.reviews.length, 0);
+  for (const item of expected) {
+    const pending = db.jobs.find((job) => job.entity_id === item.path && job.status === "pending");
+    assert.ok(pending, "a latest-body upsert is queued for " + item.path);
+    const payload = JSON.parse(pending.payload_json);
+    assert.equal(payload.content, item.latestContent);
+    assert.equal(payload.expectedPreviousContent, item.vaultContent);
+    const current = db.notes.find((n) => n.id === item.path);
+    assert.equal(current.content, item.latestContent);
+    assert.ok(db.revisions.some((revision) => revision.note_id === item.path && revision.content === item.vaultContent),
+      "the displaced Vault body remains recoverable for " + item.path);
+  }
 }
 
 console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content and identity-mapping review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
