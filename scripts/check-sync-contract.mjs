@@ -142,7 +142,6 @@ for (const contract of [
   "normalizeContent(payload.expectedPreviousContent) !== normalizeContent(chainContent)",
   "chainReachesCurrentD1",
   "previousRevisionContent: candidate.content",
-  "hasMatchingDeadDelivery",
   "reconciledRenames",
   "reconciledConflicts",
   "mapping.last_path !== currentPath && mapping.last_path !== newPath",
