@@ -11583,11 +11583,13 @@ async function reassessOutdatedImprovementTasks(env, limit = 20) {
       : (task.last_error_class && task.last_error_class !== "unknown"
         ? task.last_error_class
         : (task.last_error ? classifyAgentTaskError(new Error(task.last_error)) : "unknown"));
-    const retryable = [
-      "network_error", "timeout", "rate_limited", "upstream_5xx",
-      "executor_interrupted", "workers_ai_daily_quota_exhausted",
-      "workers_ai_transient_failure"
-    ].includes(errorClass);
+    const retryable = (errorClass === "invalid_input"
+      && task.last_error?.includes("invalid_input:tool_argument_keys"))
+      || [
+        "network_error", "timeout", "rate_limited", "upstream_5xx",
+        "executor_interrupted", "workers_ai_daily_quota_exhausted",
+        "workers_ai_transient_failure"
+      ].includes(errorClass);
     const result = await reassessImprovementAgentTask(env.DB, task.task_id, {
       nowMs: Date.now(),
       policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
