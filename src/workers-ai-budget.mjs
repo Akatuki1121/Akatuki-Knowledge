@@ -1,3 +1,5 @@
+import { WORKERS_AI_MAX_OUTPUT_TOKENS } from "./task-runtime-config.mjs";
+
 export const WORKERS_AI_FREE_DAILY_NEURONS = 10_000;
 
 const MODEL_NEURON_RATES = Object.freeze({
@@ -32,7 +34,7 @@ function modelRates(model) {
 export function estimateWorkersAiNeurons(input) {
   const rates = modelRates(input.model);
   const promptTokens = estimateWorkersAiPromptTokens(input.prompt);
-  const outputTokens = Math.max(1, Math.min(131_072, Math.floor(Number(input.maxOutputTokens) || 131_072)));
+  const outputTokens = Math.max(1, Math.min(WORKERS_AI_MAX_OUTPUT_TOKENS, Math.floor(Number(input.maxOutputTokens) || WORKERS_AI_MAX_OUTPUT_TOKENS)));
   return Math.max(1, Math.ceil((promptTokens * rates.input + outputTokens * rates.output) / 1_000_000));
 }
 

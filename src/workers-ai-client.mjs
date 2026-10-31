@@ -4,10 +4,11 @@ import {
   settleWorkersAiBudget,
   settleWorkersAiBudgetFailure,
 } from "./workers-ai-budget.mjs";
+import { WORKERS_AI_MAX_OUTPUT_TOKENS } from "./task-runtime-config.mjs";
+export { WORKERS_AI_MAX_OUTPUT_TOKENS };
 
 // GLM-4.7-Flash remains available on Workers Free and supports multilingual tool-calling.
 export const WORKERS_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
-export const WORKERS_AI_MAX_OUTPUT_TOKENS = 131_072;
 
 // 元エラーのサニタイズ規則。src/log-sanitize.mjs と同じ考え方で、
 // 名前・メッセージ・コードだけを残し、プロンプト本文や認証情報は含めない。

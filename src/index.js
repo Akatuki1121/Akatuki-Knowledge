@@ -23,7 +23,7 @@ import {
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
-import { callWorkersAi } from "./workers-ai-client.mjs";
+import { callWorkersAi, WORKERS_AI_MAX_OUTPUT_TOKENS } from "./workers-ai-client.mjs";
 import { estimateWorkersAiPromptTokens } from "./workers-ai-budget.mjs";
 import { improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { runBudgetSelfAudit } from "./budget-self-audit.mjs";
@@ -11437,7 +11437,7 @@ var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
-var IMPROVEMENT_RETRY_POLICY_VERSION = 3;
+var IMPROVEMENT_RETRY_POLICY_VERSION = 4;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11536,7 +11536,7 @@ async function appendImprovementResult(env, payload, taskId, result) {
   }
   return true;
 }
-async function reassessTerminalImprovementTasks(env, limit = 20) {
+async function reassessOutdatedImprovementTasks(env, limit = 20) {
   const tasks = await listReassessableImprovementAgentTasks(env.DB, {
     policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
     limit
@@ -11595,14 +11595,14 @@ async function reassessTerminalImprovementTasks(env, limit = 20) {
     });
     if (!result.reassessed) continue;
     reassessedCount++;
-    if (result.status !== "waiting") continue;
+    if (!["waiting", "queued"].includes(result.status)) continue;
 
     const nowMs = Date.now();
     await reserveQueuedAgentTaskBudget(env.DB, { nowMs });
     const requeuedTask = await env.DB.prepare(
       "SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = ?"
     ).bind(task.task_id).first();
-    if (requeuedTask?.status === "waiting" && requeuedTask.budget_reserved === 1
+    if (["waiting", "queued"].includes(requeuedTask?.status) && requeuedTask.budget_reserved === 1
       && requeuedTask.next_attempt_at <= toSqliteDateTime(nowMs)) {
       await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: true });
       queued++;
@@ -11610,13 +11610,13 @@ async function reassessTerminalImprovementTasks(env, limit = 20) {
   }
   return { scanned: tasks.length, reassessed: reassessedCount, queued, superseded };
 }
-__name(reassessTerminalImprovementTasks, "reassessTerminalImprovementTasks");
+__name(reassessOutdatedImprovementTasks, "reassessOutdatedImprovementTasks");
 
 async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
   // Reassess terminal improvement tasks independently of note updated_at. The
   // note cursor is an intake optimization, not the recovery queue.
-  const terminalSweep = await reassessTerminalImprovementTasks(env);
+  const terminalSweep = await reassessOutdatedImprovementTasks(env);
   const cursorKey = "agent_improvement_inbox_cursor";
   const cursorRow = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(cursorKey).first();
   let cursor = null;
@@ -11733,7 +11733,7 @@ async function runImprovementInbox(env) {
         maxTaskAgeMs: 8 * 60 * 60 * 1000,
         payload: {
           prompt: requestContent,
-          maxOutputTokens: 131_072,
+          maxOutputTokens: WORKERS_AI_MAX_OUTPUT_TOKENS,
           allowGitHubRead: true,
           allowGitHubWrite: true,
           allowWebResearch: false,
@@ -11881,8 +11881,8 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           if (task.payload.allowWebResearch === true) throw new Error("web_research_disabled");
 
           const checkpoint = task.checkpoint || {};
-          const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : 131_072;
-          const maxOutputTokens = Math.max(1, Math.min(131_072, requested));
+          const requested = Number.isSafeInteger(task.payload.maxOutputTokens) ? task.payload.maxOutputTokens : WORKERS_AI_MAX_OUTPUT_TOKENS;
+          const maxOutputTokens = Math.max(1, Math.min(WORKERS_AI_MAX_OUTPUT_TOKENS, requested));
           const allowWebResearch = false;
           if (checkpoint.stage === "completed" && typeof checkpoint.result === "string") {
             return { resumeCompleted: true, maxOutputTokens };
@@ -12461,8 +12461,8 @@ var wrapper_default = {
       if (!inspection.ok || hasSensitiveCategory(inspection.findings)) {
         return Response.json({ error: "sensitive_input_blocked" }, { status: 422, headers: JSON_HEADERS2 });
       }
-      const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : 131_072;
-      const maxOutputTokens = Math.max(1, Math.min(131_072, requestedTokens));
+      const requestedTokens = Number.isSafeInteger(body.maxOutputTokens) ? body.maxOutputTokens : WORKERS_AI_MAX_OUTPUT_TOKENS;
+      const maxOutputTokens = Math.max(1, Math.min(WORKERS_AI_MAX_OUTPUT_TOKENS, requestedTokens));
       let queued;
       try {
         queued = await enqueueAgentTask(env.DB, {

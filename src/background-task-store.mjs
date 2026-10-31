@@ -1,4 +1,5 @@
 import { decideTaskRetry, TASK_BUDGET_CEILINGS } from "./background-task-policy.mjs";
+import { normalizeImprovementTaskRuntimePayload } from "./task-runtime-config.mjs";
 
 function finiteNumber(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
@@ -512,8 +513,9 @@ export async function requeueAgentTaskAfterBudgetWait(db, taskId, nowMs = Date.n
 
 
 /**
- * List terminal improvement tasks that have not yet been reviewed by the
- * current retry policy. This sweep is independent of the note-update cursor,
+ * List terminal and active improvement tasks that have not yet been reviewed
+ * by the current retry policy. Active waiting tasks must receive runtime fixes
+ * before their already-scheduled next attempt. This sweep is independent of the note-update cursor,
  * so an unchanged note cannot strand an old failed task forever.
  */
 export async function listReassessableImprovementAgentTasks(db, input = {}) {
@@ -524,7 +526,7 @@ export async function listReassessableImprovementAgentTasks(db, input = {}) {
       retry_policy_version, budget_reserved, last_error_class, last_error,
       stop_reason, created_at, updated_at
     FROM agent_tasks
-    WHERE status IN ('failed', 'needs_attention')
+    WHERE status IN ('failed', 'needs_attention', 'queued', 'waiting')
       AND json_extract(payload_json, '$.improvementRequest') = 1
       AND COALESCE(retry_policy_version, 0) < ?
     ORDER BY updated_at ASC, created_at ASC, task_id ASC
@@ -537,20 +539,20 @@ export async function listReassessableImprovementAgentTasks(db, input = {}) {
 }
 
 /**
- * Reassess a terminal improvement task once per retry-policy version.
- * The original task row and cumulative attempts are retained. Legacy tasks
- * whose old max_attempts was 1 receive the normal four-attempt budget; later
- * policy revisions may grant at most one additional attempt, capped at six.
+ * Reassess an improvement task once per retry-policy version.
+ * The original task row, identity, authorization flags, checkpoints, and
+ * cumulative attempts are retained. Active tasks keep their existing schedule;
+ * terminal tasks may be requeued. Later policy revisions remain capped at six attempts.
  */
 export async function reassessImprovementAgentTask(db, taskId, input = {}) {
   const nowMs = finiteNumber(input.nowMs, Date.now());
   const now = toSqliteDateTime(nowMs);
   const policyVersion = Math.max(1, Math.floor(finiteNumber(input.policyVersion, 1)));
   const row = await db.prepare(`
-    SELECT status, payload_json, attempts, max_attempts, retry_policy_version,
+    SELECT status, task_type, payload_json, attempts, max_attempts, retry_policy_version,
       budget_reserved, next_attempt_at
     FROM agent_tasks
-    WHERE task_id = ? AND status IN ('failed', 'needs_attention')
+    WHERE task_id = ? AND status IN ('failed', 'needs_attention', 'queued', 'waiting')
   `).bind(taskId).first();
   if (!row || parseJson(row.payload_json, {})?.improvementRequest !== true) {
     return { reassessed: false, status: row?.status ?? null, reason: "not_an_improvement_task" };
@@ -559,42 +561,57 @@ export async function reassessImprovementAgentTask(db, taskId, input = {}) {
     return { reassessed: false, status: row.status, reason: "policy_already_reviewed" };
   }
 
+  const storedPayload = parseJson(row.payload_json, {});
+  const { inputHash: _previousInputHash, ...payloadWithoutHash } = storedPayload;
+  const normalizedPayload = normalizeImprovementTaskRuntimePayload(payloadWithoutHash);
+  const normalizedPayloadSource = safeJson(normalizedPayload, "payload");
+  const normalizedInputHash = await sha256Hex(normalizedPayloadSource);
+  const normalizedPayloadJson = safeJson({ ...normalizedPayload, inputHash: normalizedInputHash }, "payload");
+
   const attempts = Math.max(0, Math.floor(finiteNumber(row.attempts, 0)));
   const currentMax = Math.max(1, Math.floor(finiteNumber(row.max_attempts, 4)));
   const nextMax = Math.min(6, Math.max(currentMax, attempts < 4 ? 4 : attempts + 1));
   const supersededByTaskId = typeof input.supersededByTaskId === "string" && input.supersededByTaskId
     ? input.supersededByTaskId : null;
-  const canRetry = !supersededByTaskId && input.retryable === true && attempts < nextMax;
+  const activeTask = ["queued", "waiting"].includes(row.status) && !supersededByTaskId;
+  const canRetry = !supersededByTaskId && (activeTask || (input.retryable === true && attempts < nextMax));
+  const scheduleRetry = canRetry && !activeTask;
+  const nextStatus = activeTask ? row.status : (canRetry ? "waiting" : "needs_attention");
   const deadline = toSqliteDateTime(nowMs + TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs);
   const result = await db.prepare(`
     UPDATE agent_tasks
     SET status = ?,
+        payload_json = ?,
         max_attempts = ?,
         deadline_at = CASE WHEN ? = 1 THEN ? ELSE deadline_at END,
         next_attempt_at = CASE WHEN ? = 1 THEN ? ELSE next_attempt_at END,
         completed_at = CASE WHEN ? = 1 THEN NULL ELSE completed_at END,
         stop_reason = CASE WHEN ? = 1 THEN NULL
           WHEN ? = 1 THEN 'superseded_by_newer_task'
+          WHEN ? = 1 THEN stop_reason
           ELSE COALESCE(stop_reason, 'needs_attention') END,
         last_error_class = COALESCE(?, last_error_class),
         retry_policy_version = ?,
         updated_at = ?,
-        lease_token = NULL,
-        lease_expires_at = NULL
+        lease_token = CASE WHEN ? = 1 THEN lease_token ELSE NULL END,
+        lease_expires_at = CASE WHEN ? = 1 THEN lease_expires_at ELSE NULL END
     WHERE task_id = ?
-      AND status IN ('failed', 'needs_attention')
+      AND status IN ('failed', 'needs_attention', 'queued', 'waiting')
       AND retry_policy_version < ?
-    RETURNING status, max_attempts, attempts, budget_reserved, next_attempt_at
+    RETURNING status, max_attempts, attempts, budget_reserved, next_attempt_at, retry_policy_version, payload_json
   `).bind(
-    canRetry ? "waiting" : "needs_attention",
-    canRetry ? nextMax : currentMax,
-    canRetry ? 1 : 0, deadline,
-    canRetry ? 1 : 0, now,
-    canRetry ? 1 : 0,
-    canRetry ? 1 : 0,
+    nextStatus, normalizedPayloadJson, canRetry ? nextMax : currentMax,
+    scheduleRetry ? 1 : 0, deadline,
+    scheduleRetry ? 1 : 0, now,
+    scheduleRetry ? 1 : 0,
+    scheduleRetry ? 1 : 0,
     supersededByTaskId ? 1 : 0,
+    activeTask ? 1 : 0,
     typeof input.errorClass === "string" && input.errorClass ? input.errorClass : null,
-    policyVersion, now, taskId, policyVersion,
+    policyVersion, now,
+    activeTask ? 1 : 0,
+    activeTask ? 1 : 0,
+    taskId, policyVersion,
   ).first();
   return result
     ? {
