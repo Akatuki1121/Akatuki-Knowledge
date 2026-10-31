@@ -573,6 +573,7 @@ for (const path of [
   const result = await response.json();
   assert.equal(response.status, 200);
   assert.equal(result.reconciledRenames, 1, "known fileId plus the exact previous D1 revision safely reconciles the rename");
+  assert.equal(result.resolvedReviews, 1, "the resolved conflict is counted");
   assert.equal(db.notes[0].path, newPath, "D1 adopts the Vault's renamed path");
   assert.equal(db.notes[0].content, latestContent, "the newer D1 correction body is preserved");
   assert.equal(db.notes[0].sync_uuid, syncUuid, "the authoritative sync_uuid is unchanged");
