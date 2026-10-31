@@ -14,9 +14,9 @@
 
 queued → running → waiting → running → succeeded
 
-terminal stateは failed / cancelled。lease期限切れ時は、D1の期限・状態・budget reservationを再確認してからWorkflowを回復する。完了checkpointがある場合はAIを再実行せず、結果書き戻し・完了処理から再開する。pending tool actionはcheckpointに保存され、実行済みtool結果を二重実行しない。
+terminal stateは failed / cancelled / needs_attention。needs_attentionは改善タスクの恒久エラーまたは試行上限到達を示し、理由はlast_error_class / last_error / stop_reasonに保持する。lease期限切れ時は、D1の期限・状態・budget reservationを再確認してからWorkflowを回復する。完了checkpointがある場合はAIを再実行せず、結果書き戻し・完了処理から再開する。pending tool actionはcheckpointに保存され、実行済みtool結果を二重実行しない。
 
-通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは最大4試行・最大経過時間8時間。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは安全側で停止する。
+通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは通常4試行・最大経過時間8時間。改善タスクは一時障害を1時間→3時間→3時間のbackoffで再試行し、試行回数・次回時刻・期限を同じD1 task rowに保持する。再試行上限や恒久エラーに達したタスクはfailedに埋没させずneeds_attentionへ移し、last_error_class / last_error / stop_reasonを残す。改善retry policy versionを上げた場合に限り、needs_attentionを再評価できる。累積試行は最大6回で、再評価ごとに最大1回だけ追加できる。通常の毎時走査ではversionが変わらない限り再起動しない。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは要対応に残して自動再試行しない。
 
 ## Workers AIの利用方針
 
@@ -59,7 +59,7 @@ Web調査は背景タスク経路では無効。GitHubファイル・Issue・PR�
 
 ## 定期自己監査
 
-wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実行し、異常の有無にかかわらず毎日1件の自己監査ノートを作成する。監査はD1のtask status/error group、Workflow step予約、Workers AI telemetryを読み取り、監査レポートをapp_metaに冪等保存する。メトリクスの異常や定期監査対象があればNotes/改善/に自己監査ノートを作成し、通常の改善ノート処理へ渡す。
+wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実行し、異常の有無にかかわらずUTC日付ごとに1件の自己監査ノートを作成する。日本時間では翌日08:55の実行となるため、例として2026-10-30 23:55 UTCの監査は日本時間2026-10-31 08:55に実行され、レポートの日付は2026-10-30となる。監査はD1のtask status/error group、Workflow step予約、Workers AI telemetryを読み取り、監査レポートをapp_metaに冪等保存する。レポートはノート作成前に保存し、ノート作成が失敗した場合はnoteCreated=falseと失敗理由を記録する。既存レポートにノートがない場合は次回監査でノート作成を再試行する。メトリクスの異常や定期監査対象があればNotes/改善/に自己監査ノートを作成し、通常の改善ノート処理へ渡す。
 
 自己監査ノートにはorigin: budget-auditとaudit_generated: trueを付ける。監査タスクが別の監査タスクを起票する再帰経路は作らない。日次の監査レポートは一意キーで重複生成を防ぐ。監査結果は認証済みGET /api/budget-auditから最新14件を取得できる。監査結果から必要な修正が見つかった場合は、改善エージェントが実装・テスト・migration・ドキュメントを含むPRを作る。自己監査の定量値だけで不具合がないと断定せず、コード・Workflow・CI・DB schema・Cloudflare quotaの整合性も確認するよう監査依頼に明記する。
 
