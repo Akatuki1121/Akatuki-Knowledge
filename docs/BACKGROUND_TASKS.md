@@ -94,7 +94,7 @@ wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実�
 
 ## Quota待機中のタスク再開
 
-- Workers AIがCloudflareの日次Neurons枠に到達した場合、エラー3036をworkers_ai_daily_quota_exhaustedとして扱う。現在のWorkflow runを終了し、タスクをwaitingにしてattemptを消費せず、Workflow予約を翌UTC日へ移す。
+- Workers AIがCloudflareの日次Neurons枠に到達した場合、エラー3036をworkers_ai_daily_quota_exhaustedとして扱う。現在のWorkflow runを終了し、タスクをwaitingにして次のUTCリセット後に再開する。無料枠待機もタスク単位の累積試行回数に含め、最大試行回数に達したらneeds_attentionへ移す。Workflow予約は翌UTC日へ移す。
 - 次のUTC日00:01以降、15分ごとのrecovery Cronが空きWorkflow stepsを予約し、完了済みWorkflow instanceを再起動する。これによりAI枠のリセット待ちでWorkflow runを長時間sleepさせず、翌日分のWorkflow枠も再予約する。
 - Workflowsの日次予約が満杯で新規タスクを受け付けられない場合も、タスクをfailedにせずqueuedに残す。next_attempt_atとdeadline_atを翌日枠に合わせ、recovery Cronが空き枠を予約する。古い実装でdaily_workflow_budget_exhaustedとしてfailedになったタスクも再キュー可能。
 - この待機はWorkers AIの独自上限ではなく、Cloudflare FreeのWorkers AI/Workflows各サービスが持つ別々の日次枠に対する回復処理。AI呼び出し回数・token数にアプリ独自の上限は設けない。
