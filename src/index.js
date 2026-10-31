@@ -11502,7 +11502,6 @@ async function appendImprovementResult(env, payload, taskId, result) {
     .bind(payload.improvementNotePath).first();
   if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
   const marker = "<!-- akatuki-improvement-result:" + taskId + " -->";
-  if (row.content.includes(marker)) return true;
   const recordedError = result.error || null;
   const resultText = JSON.stringify({
     taskId,
@@ -11513,8 +11512,19 @@ async function appendImprovementResult(env, payload, taskId, result) {
     error: recordedError,
     recordedAt: new Date().toISOString()
   });
-  const content = row.content.replace(/\s*$/, "") + "\n\n" + marker
-    + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n" + resultText + "\n\x60\x60\x60\n";
+  const resultBlock = marker + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n"
+    + resultText + "\n\x60\x60\x60\n";
+  const existingMarker = row.content.indexOf(marker);
+  let content;
+  if (existingMarker >= 0) {
+    const heading = row.content.indexOf("\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n", existingMarker);
+    const fenceEnd = heading >= 0 ? row.content.indexOf("\n\x60\x60\x60\n", heading) : -1;
+    if (heading < 0 || fenceEnd < 0) throw new Error("improvement_result_marker_malformed");
+    const blockEnd = fenceEnd + "\n\x60\x60\x60\n".length;
+    content = row.content.slice(0, existingMarker) + resultBlock + row.content.slice(blockEnd);
+  } else {
+    content = row.content.replace(/\s*$/, "") + "\n\n" + resultBlock;
+  }
   const route = new URL("/api/notes/" + encodeURIComponent(row.id) + "/correction", "https://internal");
   const request = new Request(route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
   const response = await correctNote(request, route, env);
