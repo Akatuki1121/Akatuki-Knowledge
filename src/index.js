@@ -511,27 +511,47 @@ async function syncNotes(request, env) {
           .bind(row.id).first();
         if (activeJob) continue;
 
-        const deadJobs = (await env.DB.prepare("SELECT operation, payload_json, last_error FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status = 'dead' ORDER BY job_id DESC LIMIT 20")
-          .bind(row.id).all()).results || [];
-        const hasMatchingDeadDelivery = deadJobs.some((job) => {
-          if (job.operation !== "upsert" || !String(job.last_error || "").includes("vault_content_conflict")) return false;
-          try {
-            const payload = JSON.parse(job.payload_json || "{}");
-            return payload.id === row.id && payload.path === row.path
-              && payload.syncUuid === row.sync_uuid && payload.contentHash === row.content_hash;
-          } catch { return false; }
-        });
-        if (!hasMatchingDeadDelivery) continue;
+        const candidate = body.notes.find((input) => input?.fileId === observation.fileId
+          && typeof input.path === "string" && stableId(input.path) === path && typeof input.content === "string");
+        if (!candidate || await sha256(candidate.content) !== observation.contentHash) continue;
 
-        const previousRevision = await env.DB.prepare("SELECT content FROM note_revisions WHERE note_id = ? ORDER BY revision_id DESC LIMIT 1")
-          .bind(row.id).first();
-        if (typeof previousRevision?.content !== "string" || await sha256(previousRevision.content) !== observation.contentHash) continue;
+        const deadJobs = (await env.DB.prepare("SELECT operation, payload_json, last_error FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status = 'dead' ORDER BY job_id ASC LIMIT 40")
+          .bind(row.id).all()).results || [];
+        const revisionRows = (await env.DB.prepare("SELECT content_hash FROM note_revisions WHERE note_id = ?")
+          .bind(row.id).all()).results || [];
+        const revisionHashes = new Set(revisionRows.map((revision) => revision.content_hash).filter(Boolean));
+        const normalizeContent = (value) => String(value ?? "").replace(/\\r\\n/g, "\\n");
+        let chainStarted = false;
+        let chainContent = candidate.content;
+        let chainReachesCurrentD1 = false;
+        for (const job of deadJobs) {
+          if (job.operation !== "upsert" || !String(job.last_error || "").includes("vault_content_conflict")) continue;
+          let payload;
+          try { payload = JSON.parse(job.payload_json || "{}"); } catch { continue; }
+          if (payload.id !== row.id || payload.path !== row.path || payload.syncUuid !== row.sync_uuid
+            || typeof payload.content !== "string" || typeof payload.expectedPreviousContent !== "string"
+            || payload.contentHash !== await sha256(payload.content)) continue;
+          const expectedPreviousHash = await sha256(payload.expectedPreviousContent);
+          if (!revisionHashes.has(expectedPreviousHash)) continue;
+          if (!chainStarted) {
+            if (normalizeContent(payload.expectedPreviousContent) !== normalizeContent(chainContent)) continue;
+            chainStarted = true;
+          } else if (normalizeContent(payload.expectedPreviousContent) !== normalizeContent(chainContent)) {
+            break;
+          }
+          chainContent = payload.content;
+          if (payload.contentHash === row.content_hash && normalizeContent(chainContent) === normalizeContent(row.content)) {
+            chainReachesCurrentD1 = true;
+            break;
+          }
+        }
+        if (!chainStarted || !chainReachesCurrentD1) continue;
 
         const prepared = await prepareSyncJob(env, "notes", row.id, "upsert", {
           jobGuard: { checks: [["path", path], ["deleted_at", null]] }
         }, {
           row: { ...row, path, deleted_at: null },
-          previousRevisionContent: previousRevision.content
+          previousRevisionContent: candidate.content
         });
         if (!prepared) continue;
 
