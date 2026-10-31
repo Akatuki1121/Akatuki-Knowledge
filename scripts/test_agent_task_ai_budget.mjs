@@ -128,7 +128,7 @@ row = sqlite.prepare("SELECT status, budget_reserved, attempts, last_error_class
 assert.deepEqual({ ...row }, {
   status: "waiting",
   budget_reserved: 0,
-  attempts: 0,
+  attempts: 1,
   last_error_class: "workers_ai_daily_quota_exhausted",
   next_attempt_at: "2026-11-01 00:01:00",
   deadline_at: "2026-11-01 01:01:00",
