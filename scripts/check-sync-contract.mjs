@@ -144,8 +144,9 @@ for (const contract of [
   "previousRevisionContent: candidate.content",
   "hasMatchingDeadDelivery",
   "reconciledRenames",
+  "reconciledConflicts",
   "mapping.last_path !== currentPath && mapping.last_path !== newPath",
-  "await drainSyncOutbox(env, Math.min(20, body.reconciledRenames))",
+  "await drainSyncOutbox(env, Math.min(20, body.reconciledConflicts))",
   "identityConflicts, resolvedReviews, observationComplete",
   '"needsReview", "identityConflicts", "resolvedReviews"',
 ]) {
