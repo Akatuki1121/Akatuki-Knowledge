@@ -134,7 +134,7 @@ YAOS の安定した \`fileId\` が同じで、完全観測上のパスだけが
 5. \`vault_content_conflict\` で dead になった D1 upsert の payload が、現行 D1 の \`id\`・旧パス・\`sync_uuid\`・本文 hash と一致する。
 6. 直近の D1 revision 本文の hash が現在の Vault 観測本文 hash と一致する。つまり、Vault 本文が「D1 の最新編集直前の版」であることを確認できる。
 
-条件を満たした場合、本文は一切変更せず、D1 の \`path\` と同一性マップの \`last_path\` を同一 batch で新パスへ更新し、D1 の最新本文を持つ新しい upsert を同じ batch に追加する。古い dead job とレビューの初回観測時刻は監査証跡として保持し、レビュー行だけを解決する。新しい upsert は YAOS の既存 \`fileId\` を指定して改名と本文更新を同時に行い、pull の完了後に bounded drain で配送する。
+条件を満たした場合、本文は一切変更せず、D1 の \`path\` と同一性マップの \`last_path\` を同一 batch で新パスへ更新し、D1 の最新本文を持つ新しい upsert を同じ batch に追加する。古い dead job は診断証跡として保持し、解決したレビュー行は live work queue から削除する。レビューの初回観測時刻は今回の回帰 fixture で再現し、解決後の履歴としては保持しない。新しい upsert は YAOS の既存 \`fileId\` を指定して改名と本文更新を同時に行い、pull の完了後に bounded drain で配送する。
 
 直近 revision と Vault 本文が一致しない、outbox の失敗 payload が現行 D1 本文を証明しない、観測が不完全、または別のノート／マッピングが移動先を占有する場合は自動修復しない。レビューを残して fail-closed とする。D1 migration や YAOS 側の変更は不要。
 
