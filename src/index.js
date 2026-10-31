@@ -16,6 +16,7 @@ import {
   completeAgentTask,
   recordAgentTaskFailure,
   reassessImprovementAgentTask,
+  listReassessableImprovementAgentTasks,
   listRecoverableAgentTasks,
   toSqliteDateTime
 } from "./background-task-store.mjs";
@@ -11436,7 +11437,7 @@ var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
-var IMPROVEMENT_RETRY_POLICY_VERSION = 1;
+var IMPROVEMENT_RETRY_POLICY_VERSION = 2;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11535,8 +11536,87 @@ async function appendImprovementResult(env, payload, taskId, result) {
   }
   return true;
 }
+async function reassessTerminalImprovementTasks(env, limit = 20) {
+  const tasks = await listReassessableImprovementAgentTasks(env.DB, {
+    policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
+    limit
+  });
+  let reassessedCount = 0;
+  let queued = 0;
+  let superseded = 0;
+  for (const task of tasks) {
+    const payload = task.payload || {};
+    let newerTask = null;
+    if (typeof payload.sourceSyncUuid === "string" && payload.sourceSyncUuid
+      && typeof payload.improvementNotePath === "string" && payload.improvementNotePath) {
+      newerTask = await env.DB.prepare(`
+        SELECT task_id
+        FROM agent_tasks
+        WHERE task_id <> ?
+          AND status <> 'cancelled'
+          AND json_extract(payload_json, '$.improvementRequest') = 1
+          AND json_extract(payload_json, '$.sourceSyncUuid') = ?
+          AND json_extract(payload_json, '$.improvementNotePath') = ?
+          AND created_at > ?
+        ORDER BY created_at DESC, task_id DESC
+        LIMIT 1
+      `).bind(task.task_id, payload.sourceSyncUuid, payload.improvementNotePath, task.created_at).first();
+    }
+
+    if (newerTask?.task_id) {
+      const result = await reassessImprovementAgentTask(env.DB, task.task_id, {
+        nowMs: Date.now(),
+        policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
+        retryable: false,
+        supersededByTaskId: newerTask.task_id
+      });
+      if (result.reassessed) {
+        reassessedCount++;
+        superseded++;
+      }
+      continue;
+    }
+
+    const errorClass = task.stop_reason === "daily_workflow_budget_exhausted"
+      ? "workers_ai_daily_quota_exhausted"
+      : (task.last_error_class && task.last_error_class !== "unknown"
+        ? task.last_error_class
+        : (task.last_error ? classifyAgentTaskError(new Error(task.last_error)) : "unknown"));
+    const retryable = [
+      "network_error", "timeout", "rate_limited", "upstream_5xx",
+      "executor_interrupted", "workers_ai_daily_quota_exhausted",
+      "workers_ai_transient_failure"
+    ].includes(errorClass);
+    const result = await reassessImprovementAgentTask(env.DB, task.task_id, {
+      nowMs: Date.now(),
+      policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
+      retryable,
+      errorClass
+    });
+    if (!result.reassessed) continue;
+    reassessedCount++;
+    if (result.status !== "waiting") continue;
+
+    const nowMs = Date.now();
+    await reserveQueuedAgentTaskBudget(env.DB, { nowMs });
+    const requeuedTask = await env.DB.prepare(
+      "SELECT status, budget_reserved, next_attempt_at FROM agent_tasks WHERE task_id = ?"
+    ).bind(task.task_id).first();
+    if (requeuedTask?.status === "waiting" && requeuedTask.budget_reserved === 1
+      && requeuedTask.next_attempt_at <= toSqliteDateTime(nowMs)) {
+      await ensureAgentTaskWorkflow(env, task.task_id, { allowRestart: true });
+      queued++;
+    }
+  }
+  return { scanned: tasks.length, reassessed: reassessedCount, queued, superseded };
+}
+__name(reassessTerminalImprovementTasks, "reassessTerminalImprovementTasks");
+
 async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
+  // Reassess terminal improvement tasks independently of note updated_at. The
+  // note cursor is an intake optimization, not the recovery queue.
+  const terminalSweep = await reassessTerminalImprovementTasks(env);
   const cursorKey = "agent_improvement_inbox_cursor";
   const cursorRow = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(cursorKey).first();
   let cursor = null;
@@ -11577,7 +11657,8 @@ async function runImprovementInbox(env) {
     } catch {
       previousPayload = null;
     }
-    const sameRequest = previousPayload?.prompt === requestContent;
+    const sameRequest = typeof previousPayload?.prompt === "string"
+      && previousPayload.prompt.trimEnd() === requestContent.trimEnd();
     if (sameRequest && previous && ["queued", "running", "waiting"].includes(previous.status)) continue;
     if (sameRequest && previous?.status === "succeeded") {
       if (!seen) await markImprovementSeen(env, note.sync_uuid, note.content_hash);
@@ -11681,7 +11762,13 @@ async function runImprovementInbox(env) {
   } else {
     await env.DB.prepare("DELETE FROM app_meta WHERE key = ?").bind(cursorKey).run();
   }
-  return { scanned, queued, hasMore: rows.length >= 30 };
+  return {
+    scanned,
+    queued: queued + terminalSweep.queued,
+    reassessed: terminalSweep.reassessed,
+    superseded: terminalSweep.superseded,
+    hasMore: rows.length >= 30
+  };
 }
 async function recoverAgentTaskWorkflows(env, limit = 20) {
   const nowMs = Date.now();

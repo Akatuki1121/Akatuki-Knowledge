@@ -169,6 +169,9 @@ export function classifyAgentTaskError(error) {
     if (message.includes(fixed)) return fixed;
   }
   if (/workers_ai_(?:request|failure_settlement)_failed/i.test(message) && (/(daily|neuron|quota|allocation)/i.test(message) || /code=3036\b/iu.test(message))) return "workers_ai_daily_quota_exhausted";
+  // The usage ledger is best-effort telemetry. A missing-table error from an
+  // older Workflow runtime is safe to retry once the current Worker is active.
+  if (/D1_ERROR:\s*no such table:\s*workers_ai_daily_usage\b/i.test(message)) return "workers_ai_transient_failure";
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
   if (/\b5\d\d\b/i.test(message)
     || /Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";

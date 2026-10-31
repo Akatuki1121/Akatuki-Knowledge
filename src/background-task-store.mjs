@@ -512,6 +512,31 @@ export async function requeueAgentTaskAfterBudgetWait(db, taskId, nowMs = Date.n
 
 
 /**
+ * List terminal improvement tasks that have not yet been reviewed by the
+ * current retry policy. This sweep is independent of the note-update cursor,
+ * so an unchanged note cannot strand an old failed task forever.
+ */
+export async function listReassessableImprovementAgentTasks(db, input = {}) {
+  const policyVersion = Math.max(1, Math.floor(finiteNumber(input.policyVersion, 1)));
+  const limit = Math.max(1, Math.min(20, Math.floor(finiteNumber(input.limit, 20))));
+  const result = await db.prepare(`
+    SELECT task_id, status, payload_json, attempts, max_attempts,
+      retry_policy_version, budget_reserved, last_error_class, last_error,
+      stop_reason, created_at, updated_at
+    FROM agent_tasks
+    WHERE status IN ('failed', 'needs_attention')
+      AND json_extract(payload_json, '$.improvementRequest') = 1
+      AND COALESCE(retry_policy_version, 0) < ?
+    ORDER BY updated_at ASC, created_at ASC, task_id ASC
+    LIMIT ?
+  `).bind(policyVersion, limit).all();
+  return (result?.results || []).map((row) => ({
+    ...row,
+    payload: parseJson(row.payload_json, {}),
+  }));
+}
+
+/**
  * Reassess a terminal improvement task once per retry-policy version.
  * The original task row and cumulative attempts are retained. Legacy tasks
  * whose old max_attempts was 1 receive the normal four-attempt budget; later
@@ -537,7 +562,9 @@ export async function reassessImprovementAgentTask(db, taskId, input = {}) {
   const attempts = Math.max(0, Math.floor(finiteNumber(row.attempts, 0)));
   const currentMax = Math.max(1, Math.floor(finiteNumber(row.max_attempts, 4)));
   const nextMax = Math.min(6, Math.max(currentMax, attempts < 4 ? 4 : attempts + 1));
-  const canRetry = input.retryable === true && attempts < nextMax;
+  const supersededByTaskId = typeof input.supersededByTaskId === "string" && input.supersededByTaskId
+    ? input.supersededByTaskId : null;
+  const canRetry = !supersededByTaskId && input.retryable === true && attempts < nextMax;
   const deadline = toSqliteDateTime(nowMs + TASK_BUDGET_CEILINGS.maxImprovementTaskAgeMs);
   const result = await db.prepare(`
     UPDATE agent_tasks
@@ -546,7 +573,9 @@ export async function reassessImprovementAgentTask(db, taskId, input = {}) {
         deadline_at = CASE WHEN ? = 1 THEN ? ELSE deadline_at END,
         next_attempt_at = CASE WHEN ? = 1 THEN ? ELSE next_attempt_at END,
         completed_at = CASE WHEN ? = 1 THEN NULL ELSE completed_at END,
-        stop_reason = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(stop_reason, 'needs_attention') END,
+        stop_reason = CASE WHEN ? = 1 THEN NULL
+          WHEN ? = 1 THEN 'superseded_by_newer_task'
+          ELSE COALESCE(stop_reason, 'needs_attention') END,
         last_error_class = COALESCE(?, last_error_class),
         retry_policy_version = ?,
         updated_at = ?,
@@ -563,11 +592,15 @@ export async function reassessImprovementAgentTask(db, taskId, input = {}) {
     canRetry ? 1 : 0, now,
     canRetry ? 1 : 0,
     canRetry ? 1 : 0,
+    supersededByTaskId ? 1 : 0,
     typeof input.errorClass === "string" && input.errorClass ? input.errorClass : null,
     policyVersion, now, taskId, policyVersion,
   ).first();
   return result
-    ? { reassessed: true, ...result, retryable: canRetry }
+    ? {
+      reassessed: true, ...result, retryable: canRetry,
+      ...(supersededByTaskId ? { supersededByTaskId } : {}),
+    }
     : { reassessed: false, status: row.status, reason: "concurrent_reassessment" };
 }
 

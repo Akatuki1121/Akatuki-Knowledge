@@ -16,7 +16,7 @@ queued → running → waiting → running → succeeded
 
 terminal stateは failed / cancelled / needs_attention。needs_attentionは改善タスクの恒久エラーまたは試行上限到達を示し、理由はlast_error_class / last_error / stop_reasonに保持する。lease期限切れ時は、D1の期限・状態・budget reservationを再確認してからWorkflowを回復する。完了checkpointがある場合はAIを再実行せず、結果書き戻し・完了処理から再開する。pending tool actionはcheckpointに保存され、実行済みtool結果を二重実行しない。
 
-通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは通常4試行・最大経過時間8時間。改善タスクは一時障害を1時間→3時間→3時間のbackoffで再試行し、試行回数・次回時刻・期限を同じD1 task rowに保持する。再試行上限や恒久エラーに達したタスクはfailedに埋没させずneeds_attentionへ移し、last_error_class / last_error / stop_reasonを残す。改善retry policy versionを上げた場合に限り、needs_attentionを再評価できる。累積試行は最大6回で、再評価ごとに最大1回だけ追加できる。通常の毎時走査ではversionが変わらない限り再起動しない。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは要対応に残して自動再試行しない。
+通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは通常4試行・最大経過時間8時間。改善タスクは一時障害を1時間→3時間→3時間のbackoffで再試行し、試行回数・次回時刻・期限を同じD1 task rowに保持する。再試行上限や恒久エラーに達したタスクはfailedに埋没させずneeds_attentionへ移し、last_error_class / last_error / stop_reasonを残す。改善retry policy versionを上げた場合に限り、needs_attentionを再評価できる。累積試行は最大6回で、再評価ごとに最大1回だけ追加できる。毎時のPull後はノートの更新カーソルとは独立して、現在のpolicy versionを適用していないfailed/needs_attentionの改善タスクを最大20件ずつ再評価する。後発タスクが同じノート識別子に存在する場合、古い行はsuperseded_by_newer_taskとしてneeds_attentionに残し、重複実行しない。再評価時も累積attemptsはリセットせず、旧max_attempts=1は4へ補正する。再試行はretryable分類かつattempts<max_attemptsの場合だけ行い、累積6回を超えない。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは要対応に残して自動再試行しない。
 
 ## Workers AIの利用方針
 

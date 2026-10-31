@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, toSqliteDateTime } from "../src/background-task-store.mjs";
+import { classifyAgentTaskError } from "../src/background-task-policy.mjs";
+import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, listReassessableImprovementAgentTasks, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
@@ -428,6 +429,46 @@ assert.deepEqual({ ...row }, {
   last_error: "Error: unauthorized",
   stop_reason: "non_retryable_or_unknown_error",
 });
+
+// Terminal improvement tasks are discoverable even when their source notes did not change.
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, payload_json, attempts, max_attempts,
+    created_at, updated_at, deadline_at, next_attempt_at,
+    last_error_class, last_error, stop_reason, retry_policy_version
+  ) VALUES (?, 'github_query', 'failed', ?, 1, 1,
+    '2026-10-29 18:00:00', '2026-10-29 18:01:00', '2026-10-29 19:00:00',
+    '2026-10-29 18:01:00', 'unknown', 'Error: workers_ai_request_failed',
+    'attempt_budget_exhausted', 0)
+`).run("stale-inbox-improvement", JSON.stringify({
+  improvementRequest: true, prompt: "old request",
+  sourceSyncUuid: "same-note", improvementNotePath: "Notes/改善/old.md"
+}));
+const staleInboxTasks = await listReassessableImprovementAgentTasks(db, { policyVersion: 2, limit: 20 });
+assert.ok(staleInboxTasks.some((task) => task.task_id === "stale-inbox-improvement"));
+const superseded = await reassessImprovementAgentTask(db, "stale-inbox-improvement", {
+  nowMs: legacyFailureAt + 9 * 60 * 60 * 1000,
+  policyVersion: 2,
+  retryable: true,
+  supersededByTaskId: "newer-improvement-task",
+});
+assert.equal(superseded.status, "needs_attention");
+assert.equal(superseded.retryable, false);
+assert.equal(superseded.supersededByTaskId, "newer-improvement-task");
+row = sqlite.prepare("SELECT status, attempts, max_attempts, retry_policy_version, stop_reason FROM agent_tasks WHERE task_id = 'stale-inbox-improvement'").get();
+assert.deepEqual({ ...row }, {
+  status: "needs_attention",
+  attempts: 1,
+  max_attempts: 1,
+  retry_policy_version: 2,
+  stop_reason: "superseded_by_newer_task",
+});
+
+assert.equal(
+  classifyAgentTaskError(new Error("D1_ERROR: no such table: workers_ai_daily_usage: SQLITE_ERROR")),
+  "workers_ai_transient_failure",
+  "The best-effort Workers AI usage ledger must not strand a task after a transient schema/runtime mismatch"
+);
 
 sqlite.close();
 console.log("Agent task AI token reservation settlement tests passed.");

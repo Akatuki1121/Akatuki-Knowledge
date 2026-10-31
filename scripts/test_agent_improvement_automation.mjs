@@ -250,6 +250,7 @@ test("improvement result blocks are removed before retrying the original request
 
 test("failed improvement tasks remain unchanged until edited; transient retries use the task retry schedule", async () => {
   const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const storeSource = await readFile(new URL("../src/background-task-store.mjs", import.meta.url), "utf8");
   const appendStart = source.indexOf("async function appendImprovementResult");
   const inboxStart = source.indexOf("async function runImprovementInbox", appendStart);
   const recoveryStart = source.indexOf("async function recoverAgentTaskWorkflows", inboxStart);
@@ -259,6 +260,11 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(append.includes('if (result?.status === "failed") return false;'));
   assert.ok(inbox.includes('sameRequest && previous && ["failed", "needs_attention"].includes(previous.status)'));
   assert.ok(inbox.includes("reassessImprovementAgentTask"));
+  assert.ok(source.includes("async function reassessTerminalImprovementTasks"));
+  assert.ok(source.includes("listReassessableImprovementAgentTasks"));
+  assert.ok(storeSource.includes("superseded_by_newer_task"));
+  assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
+  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 2;"));
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
   assert.ok(inbox.includes("retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION"), "New improvement tasks must start at the current policy version");
   assert.ok(inbox.includes('"needs_attention"'));
