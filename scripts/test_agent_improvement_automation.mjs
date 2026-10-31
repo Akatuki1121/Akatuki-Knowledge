@@ -63,6 +63,38 @@ test("Workers AI client uses the model context window and returns text", async (
   assert.deepEqual(usageSeen, { prompt_tokens: 20, completion_tokens: 5 });
 });
 
+test("Workers AI client extracts the GLM-4.7-Flash chat completion fixture", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/glm-4.7-flash-responses.json", import.meta.url), "utf8"));
+  let usageSeen = null;
+  const env = { DB: createBudgetDb(), AI: { run: async () => fixture.completed } };
+  const result = await callWorkersAi(env, "prompt", 2048, {
+    responseMimeType: "application/json",
+    onUsage: async (usage) => { usageSeen = usage; }
+  });
+  assert.equal(result, fixture.completed.choices[0].message.content);
+  assert.equal(result, '{"ok":true}');
+  assert.equal(usageSeen.prompt_tokens, 36);
+  assert.equal(usageSeen.completion_tokens, 180);
+});
+
+test("Workers AI client records response shape and completion stage without exposing reasoning", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/glm-4.7-flash-responses.json", import.meta.url), "utf8"));
+  const env = { DB: createBudgetDb(), AI: { run: async () => fixture.truncated } };
+  await assert.rejects(
+    callWorkersAi(env, "prompt", 128, { responseMimeType: "application/json" }),
+    (error) => {
+      assert.equal(error.reason, "workers_ai_invalid_response");
+      assert.match(error.message, /stage=completion/);
+      assert.match(error.message, /shape=chat.completion/);
+      assert.match(error.message, /finish=length/);
+      assert.match(error.message, /content=null/);
+      assert.match(error.message, /reasoning=/);
+      assert.doesNotMatch(error.message, /redacted reasoning text/);
+      return true;
+    }
+  );
+});
+
 test("Workers AI client preserves sanitized upstream failure and keeps stable reason", async () => {
   const upstream = new Error("quota exceeded for model");
   upstream.name = "WorkersAiError";
@@ -264,7 +296,7 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(source.includes("listReassessableImprovementAgentTasks"));
   assert.ok(storeSource.includes("superseded_by_newer_task"));
   assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
-  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 2;"));
+  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 3;"));
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
   assert.ok(inbox.includes("retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION"), "New improvement tasks must start at the current policy version");
   assert.ok(inbox.includes('"needs_attention"'));

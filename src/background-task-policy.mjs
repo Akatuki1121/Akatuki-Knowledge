@@ -175,6 +175,7 @@ export function classifyAgentTaskError(error) {
   if (/429|rate.?limit|quota/i.test(message)) return "rate_limited";
   if (/\b5\d\d\b/i.test(message)
     || /Gemini API returned 5\d\d/i.test(message)) return "upstream_5xx";
+  if (/workers_ai_invalid_response\b/iu.test(message)) return "workers_ai_transient_failure";
   if (/workers_ai_(?:request|failure_settlement)_failed/i.test(message)) {
     return /\b4\d\d\b/i.test(message) ? "workers_ai_permanent_failure" : "workers_ai_transient_failure";
   }

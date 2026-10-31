@@ -28,6 +28,7 @@ Workers AIの利用を止める独自のアプリ上限は設けない。
 - D1のworkers_ai_daily_usageはモデル・推定Neurons・provider usage・成功/失敗回数を記録するbest-effort telemetry。テーブル未適用・記録失敗でもAI呼び出しを止めない。
 - Cloudflareが日次Neurons枠超過を返した場合はtaskをwaitingにし、次のUTC 00:00リセット後に自動再開する。リセット直後もCloudflare側の拒否が続く場合は、1時間ごとに再確認して利用可能になり次第再開する。その他のrate limitやupstream errorは通常の一時障害分類に従う。
 - provider usageが返る場合は実績を記録する。応答なしの失敗は入力token推定分だけを記録し、出力分は計上しない。usageなし成功は過少計上を避けるため予約を残す。
+- GLM-4.7-Flash の Workers AI 応答は Chat Completions 形式の `choices[0].message.content` を本文として抽出する。旧形式の `response` 文字列も互換性のため受け付ける。推論過程 (`reasoning` / `reasoning_content`) は最終回答として扱わない。本文がない・出力上限で終了した場合は、段階・応答形式・finish reason・本文型と文字数・推論文字数・tool call数を機微な本文を含めず `last_error` に記録する。
 - モデル自体の入力・出力コンテキスト上限、Cloudflare Freeの実際のNeurons枠、Workers AI以外のCloudflareサービスquotaは引き続き有効。
 
 Neurons台帳は観測と監査に使う。Cloudflareの実枠を超えて処理を継続できる保証はなく、無料枠の外で課金を有効にするものでもない。

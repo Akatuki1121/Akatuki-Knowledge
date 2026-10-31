@@ -155,6 +155,11 @@ assert.equal(classifyAgentTaskError(new Error("Gemini API returned 500")), "upst
 assert.equal(classifyAgentTaskError(new Error("Gemini API returned 503 Service Unavailable")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: WorkersAiError: upstream unavailable (code=503)")), "upstream_5xx");
 assert.equal(classifyAgentTaskError(new Error("Error: workers_ai_request_failed")), "workers_ai_transient_failure");
+assert.equal(
+  classifyAgentTaskError(new Error("Error: workers_ai_invalid_response:stage=completion;shape=chat.completion;finish=length;content=null;reasoning=128;tools=0")),
+  "workers_ai_transient_failure",
+  "A response-shape failure must be eligible for bounded retry after the parser is repaired"
+);
 assert.equal(classifyAgentTaskError(new Error("workers_ai_request_failed: HTTP 400 invalid request")), "workers_ai_permanent_failure");
 const nestedProviderFailure = new Error("workers_ai_failure_settlement_failed");
 nestedProviderFailure.workersAiError = { name: "WorkersAiError", message: "upstream unavailable", code: "model_error", status: 503 };
