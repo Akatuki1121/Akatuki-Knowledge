@@ -259,6 +259,11 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(append.includes('if (result?.status === "failed") return false;'));
   assert.ok(inbox.includes('sameRequest && previous && ["failed", "needs_attention"].includes(previous.status)'));
   assert.ok(inbox.includes("reassessImprovementAgentTask"));
+  assert.ok(source.includes("async function reassessTerminalImprovementTasks"));
+  assert.ok(source.includes("listReassessableImprovementAgentTasks"));
+  assert.ok(source.includes("superseded_by_newer_task"));
+  assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
+  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 2;"));
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
   assert.ok(inbox.includes("retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION"), "New improvement tasks must start at the current policy version");
   assert.ok(inbox.includes('"needs_attention"'));
