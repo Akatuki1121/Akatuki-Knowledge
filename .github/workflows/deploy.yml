@@ -69,19 +69,6 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "deployed=false" >> "$GITHUB_OUTPUT"
-            # 定期照合で初めて未反映を発見した場合、または前回実行が
-            # 「デプロイ中」のまま終了していた場合は、起動漏れ/中断を明示的に記録する。
-            if [ "$GITHUB_EVENT_NAME" = "schedule" ] && {
-              [ -z "$state" ] || [ "$description" = "本番デプロイ実行中" ];
-            }; then
-              target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
-                -f state=failure \
-                -f context=production-deploy \
-                -f description="定期照合で本番未反映を検出。自動復旧を試みます" \
-                -f target_url="$target_url"
-              echo "::warning::本番デプロイの成功記録がないため、未起動または前回実行の中断を検出しました。"
-            fi
             echo "前回の本番反映状態: ${state:-記録なし}。デプロイを試みます。"
           fi
 
