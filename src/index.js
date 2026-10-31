@@ -11614,8 +11614,8 @@ __name(reassessOutdatedImprovementTasks, "reassessOutdatedImprovementTasks");
 
 async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
-  // Reassess terminal improvement tasks independently of note updated_at. The
-  // note cursor is an intake optimization, not the recovery queue.
+  // Reassess tasks with stale policy/runtime settings independently of note updated_at.
+  // The note cursor is an intake optimization, not the recovery queue.
   const terminalSweep = await reassessOutdatedImprovementTasks(env);
   const cursorKey = "agent_improvement_inbox_cursor";
   const cursorRow = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(cursorKey).first();
