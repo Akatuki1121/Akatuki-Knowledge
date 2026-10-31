@@ -119,3 +119,23 @@ The separate existing-note migration is not included. When explicitly authorized
 - A staging validation branch and its evidence are available at [`evidence/yaos-staging-validation-20261020`](https://github.com/Akatuki1121/Akatuki-Knowledge/tree/evidence/yaos-staging-validation-20261020). Staging Workers were cleaned up after the tests.
 - The automatic organizer currently updates metadata rather than note bodies, so metadata-only changes do not create Vault writes.
 - Still outstanding: direct public HTTP smoke test, a production-safe request-level test of the deployed Worker, and continued observation of outbox outcomes after real user edits. Do not manufacture test notes or mutate production Vault content solely to claim these checks passed.
+
+
+## 同時改名とD1側編集の競合収束
+
+YAOS の安定した \`fileId\` が同じで、完全観測上のパスだけが変わった場合は、同じファイルの改名候補として扱う。ただし、Vault 本文が D1 本文と異なるだけでは、Vault 側の本文を取り込んだり D1 のパスを無条件に変えたりしない。
+
+自動収束を許可するのは、次の条件をすべて満たす場合だけとする。
+
+1. 対象 \`fileId\` のマッピングが一意で、\`note_id\` と \`sync_uuid\` が生存中の D1 ノートに一致する。
+2. マッピングの \`last_path\` が旧 D1 パスまたは今回の観測パスのどちらかであり、移動先パスを別のノート／マッピングが占有していない。
+3. \`vault_pull_live_content_conflict\` のレビュー行が今回の観測パス・観測本文 hash に一致する。
+4. 同じ D1 ノートに pending/processing の outbox が存在しない。
+5. \`vault_content_conflict\` で dead になった D1 upsert の payload が、現行 D1 の \`id\`・旧パス・\`sync_uuid\`・本文 hash と一致する。
+6. 直近の D1 revision 本文の hash が現在の Vault 観測本文 hash と一致する。つまり、Vault 本文が「D1 の最新編集直前の版」であることを確認できる。
+
+条件を満たした場合、本文は一切変更せず、D1 の \`path\` と同一性マップの \`last_path\` を同一 batch で新パスへ更新し、D1 の最新本文を持つ新しい upsert を同じ batch に追加する。古い dead job は診断証跡として保持し、解決したレビュー行は live work queue から削除する。レビューの初回観測時刻は今回の回帰 fixture で再現し、解決後の履歴としては保持しない。新しい upsert は YAOS の既存 \`fileId\` を指定して改名と本文更新を同時に行い、pull の完了後に bounded drain で配送する。
+
+直近 revision と Vault 本文が一致しない、outbox の失敗 payload が現行 D1 本文を証明しない、観測が不完全、または別のノート／マッピングが移動先を占有する場合は自動修復しない。レビューを残して fail-closed とする。D1 migration や YAOS 側の変更は不要。
+
+\`POST /api/notes/<旧パス>/move\` も、既存マッピングが要求された移動先パスをすでに指している場合に限り、そのパス不一致を解消できる。マッピングが要求先以外の第三のパスを指す場合は従来どおり \`sync_identity_mapping_path_mismatch\` で拒否する。
