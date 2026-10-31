@@ -208,7 +208,7 @@ assert.ok(deployVerification.includes('commits/$TARGET_SHA/statuses?per_page=100
 assert.ok(deployVerification.includes('select(.context == "production-deploy")'), "Verification must inspect the production-deploy status context");
 assert.ok(deployVerification.includes('if [ "$state" = "success" ]'), "A confirmed success must end verification without redispatch");
 assert.ok(deployVerification.includes("未起動"), "Missing or failed deployment must be recorded as a visible failure before recovery");
-assert.ok(deployVerification.includes("inputs[target_sha]"), "Recovery dispatch must carry the exact pushed commit SHA");
+assert.ok(deployVerification.includes("inputs:{target_sha:$sha}"), "Recovery dispatch must carry the exact pushed commit SHA");
 assert.ok(deployVerification.includes("statuses: write"), "Verification must be able to record a missing deployment");
 assert.ok(deployVerification.includes("actions: write"), "Verification must be able to dispatch the recovery deploy");
 
