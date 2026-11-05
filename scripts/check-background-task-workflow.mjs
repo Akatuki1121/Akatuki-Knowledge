@@ -115,10 +115,10 @@ assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledg
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
 assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
-const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall })");
+const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall, responseAttempt = 0 })");
 const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
 assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
-assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output");
+assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('const adaptiveResponseMimeType = responseAttempt >= 2 ? null : "application/json"'), "Agent tool-loop calls must request JSON output");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
 assert.ok(!toolLoop.includes("maxModelCalls") && !toolLoop.includes("maxToolCalls"), "Agent model/tool turns must not have application-specific count caps");
