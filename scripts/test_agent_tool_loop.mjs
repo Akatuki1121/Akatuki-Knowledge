@@ -648,8 +648,8 @@ assert.deepEqual(lengthRetryCalls, [
   { modelCall: 3, responseAttempt: 2 },
 ]);
 assert.match(lengthRetryPrompts[0], /大きな関連資料/u);
-assert.doesNotMatch(lengthRetryPrompts[1], /大きな関連資料/u, "Second attempt must omit the prior conversation history");
-assert.match(lengthRetryPrompts[2], /関連ノート:\\n（出力長を確保するため省略）/u, "Third attempt must also reduce note context");
+assert.match(lengthRetryPrompts[1], /過去のツール履歴を省略/u, "Second attempt must explicitly omit the prior conversation history");
+assert.match(lengthRetryPrompts[2], /関連ノート:\n（出力長を確保するため省略）/u, "Third attempt must also reduce note context");
 
 let exhaustedLengthCalls = 0;
 await assert.rejects(runAgentToolLoop({

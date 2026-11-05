@@ -77,22 +77,21 @@ function compactPromptForLengthRetry(prompt, retryIndex) {
   let compacted = prompt;
   if (retryIndex >= 1) {
     compacted = compacted.replace(
-      /\\n\\n会話履歴:\\n[\\s\\S]*$/u,
-      "\\n\\n会話履歴:\\n（出力長を確保するため、過去のツール履歴を省略）",
+      /\n\n会話履歴:\n[\s\S]*$/u,
+      "\n\n会話履歴:\n（出力長を確保するため、過去のツール履歴を省略）",
     );
   }
   if (retryIndex >= 2) {
     compacted = compacted.replace(
-      /関連ノート:\\n[\\s\\S]*?(?=\\n\\n使えるツール:)/u,
-      "関連ノート:\\n（出力長を確保するため省略）",
+      /関連ノート:\n[\s\S]*?(?=\n\n使えるツール:)/u,
+      "関連ノート:\n（出力長を確保するため省略）",
     );
   }
   if (retryIndex > 0) {
-    compacted += "\\n\\n再試行指示: 推論過程は出力せず、必要なツール呼び出しまたは最終回答のJSONだけを簡潔に返してください。";
+    compacted += "\n\n再試行指示: 推論過程は出力せず、必要なツール呼び出しまたは最終回答のJSONだけを簡潔に返してください。";
   }
   return compacted;
 }
-
 function summarizeLengthFailure(error, index) {
   const diagnostic = typeof error?.workersAiDiagnostic === "string"
     ? error.workersAiDiagnostic
