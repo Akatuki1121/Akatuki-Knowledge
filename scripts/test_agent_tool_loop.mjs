@@ -622,12 +622,12 @@ const lengthRetryDiagnostics = [
 const lengthRetryPrompts = [];
 const lengthRetryCalls = [];
 const lengthRecovery = await runAgentToolLoop({
-  initialPrompt: "依頼本文
+  initialPrompt: `依頼本文
 
 関連ノート:
 大きな関連資料
 
-使えるツール:",
+使えるツール:`,
   callModel: async ({ prompt, modelCall, responseAttempt }) => {
     lengthRetryPrompts.push(prompt);
     lengthRetryCalls.push({ modelCall, responseAttempt });
