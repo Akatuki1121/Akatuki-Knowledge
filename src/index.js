@@ -12138,7 +12138,8 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           allowGitHubWrite: prepared.allowGitHubWrite,
           callModel: async ({ prompt, modelCall, responseAttempt = 0 }) => step.do(
             "agent-model-" + attempt + "-" + modelCall,
-            { retries: { limit: 1, delay: "1 second" } },
+            // Invalid completions must reach the adaptive prompt/parameter fallback below, not repeat identically.
+            { retries: { limit: 0, delay: "1 second" } },
             async () => {
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
               const inspection = inspectAndRedact(prompt, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
