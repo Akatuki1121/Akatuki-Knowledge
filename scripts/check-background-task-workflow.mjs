@@ -196,11 +196,13 @@ for (const required of [
 }
 assert.ok(!improvementPrompt.includes("変更対象は src/、scripts/、docs/ のみ"), "Improvement agent prompt must not retain the old reduced scope");
 
-// Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
+// All other AgentTaskWorkflow steps use one retry. The model step alone has no
+// identical-condition retry so finish=length responses reach adaptive recovery.
 const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
-// Telegram 通知ステップ5件の廃止で 17 から 12 に減った。PR #169 で改善計画の実行と結果書き戻しの2ステップが加わり、14になった。
-assert.equal(retryConfigs.length, 14, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
-assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
+// The model call is the only zero-retry step; its bounded recovery uses distinct durable step names.
+assert.equal(retryConfigs.length, 13, "All non-model Workflow steps must retain one retry with a one-second delay");
+assert.equal((source.match(/retries:\s*\{\s*limit:\s*0\s*,\s*delay:\s*"1 second"\s*\}/g) || []).length, 1,
+  "Only the adaptive Workers AI model step may disable identical-condition retries");
 
 
 
