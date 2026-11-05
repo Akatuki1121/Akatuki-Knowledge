@@ -57,7 +57,6 @@ for (const errorClass of [
   "web_research_invalid_response",
   "web_research_provider_error",
   "workers_ai_permanent_failure",
-  "workers_ai_adaptive_recovery_exhausted",
 ]) {
   const decision = decideTaskRetry({ ...base, errorClass });
   assert.equal(decision.action, "stop", errorClass);

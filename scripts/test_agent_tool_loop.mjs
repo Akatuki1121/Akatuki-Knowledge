@@ -653,7 +653,8 @@ assert.match(lengthRetryPrompts[1], /過去のツール履歴を省略/u, "Secon
 assert.match(lengthRetryPrompts[2], /関連ノート:\n（出力長を確保するため省略）/u, "Third attempt must also reduce note context");
 
 let exhaustedLengthCalls = 0;
-const exhaustedFailure = await assert.rejects(runAgentToolLoop({
+let exhaustedFailure;
+await assert.rejects(runAgentToolLoop({
   initialPrompt: "Retry until recovery is exhausted",
   callModel: async () => {
     exhaustedLengthCalls++;
@@ -665,6 +666,7 @@ const exhaustedFailure = await assert.rejects(runAgentToolLoop({
   executeTool: async () => assert.fail("No tool should execute"),
   saveCheckpoint: async () => true,
 }), (error) => {
+  exhaustedFailure = error;
   assert.equal(error.reason, "workers_ai_invalid_response");
   assert.equal(error.adaptiveRecoveryExhausted, true);
   assert.match(error.message, /adaptive_attempts=3/u);
