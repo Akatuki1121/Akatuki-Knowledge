@@ -7,6 +7,7 @@ import {
   runAgentToolLoop,
   validateAgentToolAction,
 } from "../src/agent-tool-loop.mjs";
+import { classifyAgentTaskError, decideTaskRetry } from "../src/background-task-policy.mjs";
 
 const action = (tool, args) => JSON.stringify({ action: "tool", tool, arguments: args });
 const final = (reply, sourceIds = []) => JSON.stringify({ action: "final", reply, source_ids: sourceIds });
@@ -652,7 +653,7 @@ assert.match(lengthRetryPrompts[1], /過去のツール履歴を省略/u, "Secon
 assert.match(lengthRetryPrompts[2], /関連ノート:\n（出力長を確保するため省略）/u, "Third attempt must also reduce note context");
 
 let exhaustedLengthCalls = 0;
-await assert.rejects(runAgentToolLoop({
+const exhaustedFailure = await assert.rejects(runAgentToolLoop({
   initialPrompt: "Retry until recovery is exhausted",
   callModel: async () => {
     exhaustedLengthCalls++;
@@ -665,12 +666,18 @@ await assert.rejects(runAgentToolLoop({
   saveCheckpoint: async () => true,
 }), (error) => {
   assert.equal(error.reason, "workers_ai_invalid_response");
+  assert.equal(error.adaptiveRecoveryExhausted, true);
   assert.match(error.message, /adaptive_attempts=3/u);
-  assert.match(error.message, /attempt1\[/u);
-  assert.match(error.message, /attempt3\[/u);
+  assert.match(error.message, /a1\[/u);
+  assert.match(error.message, /a3\[/u);
   return true;
 });
 assert.equal(exhaustedLengthCalls, 3, "needs_attention-worthy failure is raised only after all adaptive variants fail");
+assert.equal(classifyAgentTaskError(exhaustedFailure), "workers_ai_adaptive_recovery_exhausted");
+assert.equal(decideTaskRetry({
+  nowMs: 10_000, createdAtMs: 0, deadlineAtMs: 3_600_000,
+  attempts: 1, maxAttempts: 4, errorClass: classifyAgentTaskError(exhaustedFailure), retryable: false,
+}).stopReason, "non_retryable_workers_ai_adaptive_recovery_exhausted");
 
 console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
 

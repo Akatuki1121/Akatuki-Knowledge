@@ -96,18 +96,16 @@ function summarizeLengthFailure(error, index) {
   const diagnostic = typeof error?.workersAiDiagnostic === "string"
     ? error.workersAiDiagnostic
     : String(error?.message || "workers_ai_invalid_response");
-  const fields = ["stage", "finish", "content", "reasoning", "tools"];
-  const summary = fields.map((field) => {
-    const match = diagnostic.match(new RegExp("(?:^|;)" + field + "=([^;]+)", "u"));
-    return match ? field + "=" + match[1] : null;
-  }).filter(Boolean).join(",");
-  return "attempt" + (index + 1) + "[" + summary + "]";
+  const read = (field) => diagnostic.match(new RegExp("(?:^|;)" + field + "=([^;]+)", "u"))?.[1] || "unknown";
+  return "a" + (index + 1) + "[" + read("stage") + "/" + read("finish") + "/" + read("content")
+    + "/r=" + read("reasoning") + "/t=" + read("tools") + "]";
 }
 
 function createLengthRecoveryExhaustedError(errors) {
   const detail = errors.map(summarizeLengthFailure).join("|");
   const failure = new Error("workers_ai_invalid_response;adaptive_attempts=" + errors.length + ";" + detail);
   failure.reason = "workers_ai_invalid_response";
+  failure.adaptiveRecoveryExhausted = true;
   failure.workersAiDiagnostic = failure.message;
   return failure;
 }

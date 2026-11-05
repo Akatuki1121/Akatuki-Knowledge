@@ -26,6 +26,7 @@ const NON_RETRYABLE = new Set([
   "web_research_invalid_response",
   "web_research_provider_error",
   "workers_ai_permanent_failure",
+  "workers_ai_adaptive_recovery_exhausted",
 ]);
 
 const TRANSIENT = new Set([
@@ -159,6 +160,7 @@ __name(describeAgentTaskStopReason, "describeAgentTaskStopReason");
 // エージェントタスクのエラー分類 (Issue #86)。src/index.js から移動した関数で、本文は移動前と同一。
 // 分類結果は decideTaskRetry への入力クラスになるため、固定クラスの先行一致の順序も含め本文を変えない。
 export function classifyAgentTaskError(error) {
+  if (error?.adaptiveRecoveryExhausted === true) return "workers_ai_adaptive_recovery_exhausted";
   const message = [
     typeof error?.message === "string" ? error.message : "",
     typeof error?.workersAiError?.message === "string" ? error.workersAiError.message : "",
