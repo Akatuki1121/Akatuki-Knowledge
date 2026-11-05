@@ -319,7 +319,12 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(storeSource.includes("normalizeImprovementTaskRuntimePayload"));
   assert.ok(storeSource.includes("status IN ('failed', 'needs_attention', 'queued', 'waiting')"));
   assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
-  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 5;"));
+  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 6;"));
+  assert.ok(source.includes("const adaptiveMaxOutputTokens = responseAttempt === 0"));
+  assert.ok(source.includes("const adaptiveReasoningEffort = responseAttempt === 0"));
+  assert.ok(source.includes("const adaptiveResponseMimeType = responseAttempt >= 2"));
+  assert.ok(source.includes("retries: { limit: 0, delay: \"1 second\" }"),
+    "Workers AI completion failures must reach adaptive recovery without identical step retries");
   assert.ok(inbox.includes("IMPROVEMENT_RETRY_POLICY_VERSION"));
   assert.ok(inbox.includes("retryPolicyVersion: IMPROVEMENT_RETRY_POLICY_VERSION"), "New improvement tasks must start at the current policy version");
   assert.ok(inbox.includes('"needs_attention"'));
