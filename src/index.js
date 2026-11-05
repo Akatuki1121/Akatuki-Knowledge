@@ -12136,7 +12136,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
           allowWebResearch: prepared.allowWebResearch,
           allowGitHubRead: prepared.allowGitHubRead,
           allowGitHubWrite: prepared.allowGitHubWrite,
-          callModel: async ({ prompt, modelCall }) => step.do(
+          callModel: async ({ prompt, modelCall, responseAttempt = 0 }) => step.do(
             "agent-model-" + attempt + "-" + modelCall,
             { retries: { limit: 1, delay: "1 second" } },
             async () => {
@@ -12148,15 +12148,20 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               if (hasSensitiveCategory(inspection.findings)) {
                 throw new Error("pii_masking_failed");
               }
-              const estimatedTokens = estimateWorkersAiPromptTokens(inspection.text) + prepared.maxOutputTokens;
+              const adaptiveMaxOutputTokens = responseAttempt === 0
+                ? prepared.maxOutputTokens
+                : WORKERS_AI_MAX_OUTPUT_TOKENS;
+              const adaptiveReasoningEffort = responseAttempt === 0 ? prepared.reasoningEffort : null;
+              const adaptiveResponseMimeType = responseAttempt >= 2 ? null : "application/json";
+              const estimatedTokens = estimateWorkersAiPromptTokens(inspection.text) + adaptiveMaxOutputTokens;
               const reserved = await reserveAgentAiBudget(this.env.DB, {
                 taskId, leaseToken, estimatedTokens
               });
               if (!reserved) throw new Error("ai_token_budget_exhausted");
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
-              const raw = await callWorkersAi(this.env, inspection.text, prepared.maxOutputTokens, {
-                responseMimeType: "application/json",
-                reasoningEffort: prepared.reasoningEffort,
+              const raw = await callWorkersAi(this.env, inspection.text, adaptiveMaxOutputTokens, {
+                ...(adaptiveResponseMimeType ? { responseMimeType: adaptiveResponseMimeType } : {}),
+                reasoningEffort: adaptiveReasoningEffort,
                 onUsage: async (usage) => {
                   const actualTokens = Number(usage?.prompt_tokens) + Number(usage?.completion_tokens);
                   if (!Number.isSafeInteger(actualTokens) || actualTokens < 0) return;
