@@ -77,38 +77,35 @@ function compactPromptForLengthRetry(prompt, retryIndex) {
   let compacted = prompt;
   if (retryIndex >= 1) {
     compacted = compacted.replace(
-      /\\n\\n会話履歴:\\n[\\s\\S]*$/u,
-      "\\n\\n会話履歴:\\n（出力長を確保するため、過去のツール履歴を省略）",
+      /\n\n会話履歴:\n[\s\S]*$/u,
+      "\n\n会話履歴:\n（出力長を確保するため、過去のツール履歴を省略）",
     );
   }
   if (retryIndex >= 2) {
     compacted = compacted.replace(
-      /関連ノート:\\n[\\s\\S]*?(?=\\n\\n使えるツール:)/u,
-      "関連ノート:\\n（出力長を確保するため省略）",
+      /関連ノート:\n[\s\S]*?(?=\n\n使えるツール:)/u,
+      "関連ノート:\n（出力長を確保するため省略）",
     );
   }
   if (retryIndex > 0) {
-    compacted += "\\n\\n再試行指示: 推論過程は出力せず、必要なツール呼び出しまたは最終回答のJSONだけを簡潔に返してください。";
+    compacted += "\n\n再試行指示: 推論過程は出力せず、必要なツール呼び出しまたは最終回答のJSONだけを簡潔に返してください。";
   }
   return compacted;
 }
-
 function summarizeLengthFailure(error, index) {
   const diagnostic = typeof error?.workersAiDiagnostic === "string"
     ? error.workersAiDiagnostic
     : String(error?.message || "workers_ai_invalid_response");
-  const fields = ["stage", "finish", "content", "reasoning", "tools"];
-  const summary = fields.map((field) => {
-    const match = diagnostic.match(new RegExp("(?:^|;)" + field + "=([^;]+)", "u"));
-    return match ? field + "=" + match[1] : null;
-  }).filter(Boolean).join(",");
-  return "attempt" + (index + 1) + "[" + summary + "]";
+  const read = (field) => diagnostic.match(new RegExp("(?:^|;)" + field + "=([^;]+)", "u"))?.[1] || "unknown";
+  return "a" + (index + 1) + "[" + read("stage") + "/" + read("finish") + "/" + read("content")
+    + "/r=" + read("reasoning") + "/t=" + read("tools") + "]";
 }
 
 function createLengthRecoveryExhaustedError(errors) {
   const detail = errors.map(summarizeLengthFailure).join("|");
   const failure = new Error("workers_ai_invalid_response;adaptive_attempts=" + errors.length + ";" + detail);
   failure.reason = "workers_ai_invalid_response";
+  failure.adaptiveRecoveryExhausted = true;
   failure.workersAiDiagnostic = failure.message;
   return failure;
 }
