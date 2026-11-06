@@ -120,6 +120,7 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
     ["todo unchecked", '<todo checked="false">確認する</todo>', "- [ ] 確認する"],
     ["todo checked", '<todo checked="true">確認済み</todo>', "- [x] 確認済み"],
     ["unordered list", "<ul>\n<li>一つ目</li>\n<li>二つ目</li>\n</ul>", "- 一つ目\n- 二つ目"],
+    ["nested list", "<ul><li>親<ul><li>子</li></ul></li></ul>", "- 親\n  - 子"],
     ["ordered list", "<ol>\n<li>一番目</li>\n<li>二番目</li>\n</ol>", "1. 一番目\n2. 二番目"],
     ["table", "<table><tr><th>項目</th><th>値</th></tr><tr><td>色</td><td>青</td></tr></table>", "| 項目 | 値 |\n| --- | --- |\n| 色 | 青 |"],
     ["callout", '<callout icon="💡">補足内容</callout>', "補足内容"],

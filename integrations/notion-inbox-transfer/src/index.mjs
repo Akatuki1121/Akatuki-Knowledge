@@ -93,7 +93,11 @@ function renderNotionNode(node, context) {
       if (item.tag !== "li") return renderNotionNode(item, { ...context, depth: depth + 1 });
       index++;
       const marker = tag === "ol" ? index + ". " : "- ";
-      return "  ".repeat(depth) + marker + item.children.map(part => renderNotionNode(part, { ...context, depth: depth + 1 })).join("").trim() + "\n";
+      const itemContent = item.children.map(part => {
+        const rendered = renderNotionNode(part, { ...context, depth: depth + 1 });
+        return ["ul", "ol"].includes(part.tag) ? "\n" + rendered : rendered;
+      }).join("").trimEnd();
+      return "  ".repeat(depth) + marker + itemContent + "\n";
     }).join("");
   }
   if (tag === "li") { mark("list"); return "  ".repeat(depth) + "- " + child(depth + 1).trim() + "\n"; }
