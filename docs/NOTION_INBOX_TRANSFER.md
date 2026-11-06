@@ -17,7 +17,7 @@
 4. 未処理行では Akatuki の同一パス取得 API を先に呼ぶ。既存なら `要確認` にして停止し、作成しない。未存在なら Notion の状態を `処理中` にしてから `POST /api/notes` を呼ぶ。
 5. 作成後、Akatuki の同一パス取得、`GET /api/search` の完全一致、`GET /sync/outbox` の notes/upsert 行を確認する。outbox は pending / processing / sent を受け入れ、dead は成功と見なさない。
 6. 3条件を満たした後だけ Notion ページを `PATCH /v1/pages/{id}` `{ "in_trash": true }` でゴミ箱へ移し、応答の `in_trash: true` も確認する。
-7. `処理中` のまま中断した場合、次回は既存ノートを再確認して検索・outbox検証から再開する。Notion 側の削除失敗時も原本は残り、再検証できる。
+7. `処理中` のまま中断した場合、ノートのタグに Notion page ID 由来の移送識別子があることも確認し、既存ノートを再確認して検索・outbox検証から再開する。Notion 側の削除失敗時も原本は残り、再検証できる。
 8. パス重複や本文不一致は `要確認` とし、原本を保持する。一時的な API 失敗は `処理中` のまま次回再試行する。
 
 ## Notion データベース仕様
@@ -28,7 +28,7 @@
 | Path | Rich text | Obsidian の保管先。例: `Notes/Inbox/example.md` |
 | 処理状態 | Select | `未処理` / `処理中` / `要確認` |
 
-`処理状態` の初期値は `未処理`。中断後の回復と重複の識別に使う。Notion integration には Data Source と各ページへの Read / Update content capabilities を付与する。
+`処理状態` の初期値は `未処理`。中断後の回復と重複の識別に使う。移送ノートには `notion-inbox` と `notion-page:{page_id}` タグを付け、処理中断後にこの Worker が作成したノートであることを検証する。Notion integration には Data Source と各ページへの Read / Update content capabilities を付与する。
 
 ## API と秘密情報
 
