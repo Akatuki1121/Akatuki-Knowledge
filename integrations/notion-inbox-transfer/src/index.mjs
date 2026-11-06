@@ -1,6 +1,6 @@
 const NOTION_VERSION = "2026-03-11";
 const MAX_MARKDOWN_CHARS = 500000;
-const UNSUPPORTED_NOTION_BLOCK = /<(?:callout|toggle|columns?|database|page|folder|synced-block(?:-reference)?|pdf|image|embed|file|audio|video|bookmark|meeting-notes|external_object_instance|custom-block|link-preview|mention|date|quote|todo|equation|table|h[1-4]|ul|ol|li|unknown)\b/i;
+const UNSUPPORTED_NOTION_BLOCK = /<(?:callout|toggle|columns?|database|page|folder|synced-block(?:-reference)?|pdf|image|embed|file|audio|video|bookmark|meeting-notes|external_object_instance|custom-block|link-preview|mention|date|quote|todo|equation|table|h[1-4]|ul|ol|li|unknown|tabs?|mail)\b|<span\s+color=/i;
 
 class TransferError extends Error {
   constructor(code, status = null) {
@@ -104,6 +104,10 @@ async function queryInbox(env, fetchImpl) {
     });
     if (!Array.isArray(result.results)) throw new TransferError("notion_query_invalid_response");
     pages.push(...result.results);
+    // The API filter should put eligible rows on the first page. Stop as soon
+    // as one exists; pagination is only a fallback for inconsistent filters.
+    const statusProperty = env.NOTION_STATUS_PROPERTY || "処理状態";
+    if (pages.some((item) => ["未処理", "処理中"].includes(pageStatus(item, statusProperty)))) return pages;
     if (result.has_more !== true) return pages;
     if (typeof result.next_cursor !== "string" || !result.next_cursor) {
       throw new TransferError("notion_query_cursor_missing");
