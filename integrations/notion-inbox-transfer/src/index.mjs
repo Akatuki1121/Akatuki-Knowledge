@@ -127,9 +127,10 @@ async function outboxHit(env, fetchImpl, path) {
   return false;
 }
 
-async function verifyLanding(env, fetchImpl, path, expectedHash) {
+async function verifyLanding(env, fetchImpl, path, expectedHash, sourceTag) {
   const note = await getNote(env, fetchImpl, path);
   return Boolean(note && note.path === path && note.contentHash === expectedHash
+    && Array.isArray(note.tags) && note.tags.includes(sourceTag)
     && await searchHit(env, fetchImpl, path)
     && await outboxHit(env, fetchImpl, path));
 }
@@ -178,12 +179,17 @@ async function processPage(env, fetchImpl, page, logger) {
     await updateStatus(env, fetchImpl, pageId, "処理中");
   }
 
+  const sourceTag = "notion-page:" + pageId;
   let note = await getNote(env, fetchImpl, path);
+  if (note && (!Array.isArray(note.tags) || !note.tags.includes(sourceTag))) {
+    await updateStatus(env, fetchImpl, pageId, "要確認");
+    return { outcome: "review", reason: "destination_not_created_by_this_inbox_item", pageId, path };
+  }
   if (!note) {
     const title = richText(page.properties?.[titleName]) || path.split("/").pop().replace(/\.md$/i, "");
     try {
       await akatuki(env, fetchImpl, "/api/notes", {
-        method: "POST", body: JSON.stringify({ path, title, content: markdown })
+        method: "POST", body: JSON.stringify({ path, title, content: markdown, tags: ["notion-inbox", sourceTag] })
       });
     } catch (error) {
       if (error instanceof TransferError && error.status === 409) {
@@ -198,11 +204,12 @@ async function processPage(env, fetchImpl, page, logger) {
     note = await getNote(env, fetchImpl, path);
   }
 
-  if (!note || note.path !== path || note.contentHash !== expectedHash) {
+  if (!note || note.path !== path || note.contentHash !== expectedHash
+    || !Array.isArray(note.tags) || !note.tags.includes(sourceTag)) {
     await updateStatus(env, fetchImpl, pageId, "要確認");
     return { outcome: "review", reason: "destination_content_mismatch", pageId, path };
   }
-  if (!await verifyLanding(env, fetchImpl, path, expectedHash)) {
+  if (!await verifyLanding(env, fetchImpl, path, expectedHash, sourceTag)) {
     return { outcome: "pending_verification", reason: "landing_not_confirmed", pageId, path };
   }
 
