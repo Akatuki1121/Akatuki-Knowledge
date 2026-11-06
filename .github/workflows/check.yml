@@ -61,6 +61,7 @@ jobs:
             worker_build:
               - 'src/**'
               - 'wrangler.toml'
+              - 'integrations/notion-inbox-transfer/**'
               - 'package.json'
               - 'package-lock.json'
             integration:
@@ -229,8 +230,11 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - name: Validate Wrangler config and build without deploying
+      - name: Validate existing Worker config and build without deploying
         run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --dry-run --outdir .wrangler-dry-run --config wrangler.toml
+      - name: Validate Notion transfer Worker config and build without deploying
+        if: needs.changed-files.outputs.worker_build == 'true'
+        run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --dry-run --outdir .wrangler-notion-transfer-dry-run --config integrations/notion-inbox-transfer/wrangler.toml
 
   yaos-worker-integration:
     # Run the end-to-end test for explicitly sync-related files or source diffs
