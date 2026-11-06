@@ -34,7 +34,7 @@
 
 - Notion: `POST /v1/data_sources/{data_source_id}/query`、`GET /v1/pages/{page_id}/markdown`、`PATCH /v1/pages/{page_id}`
 - Akatuki: Bearer 認証の `GET /api/notes/{path}`、`POST /api/notes`、`GET /api/search`、`GET /sync/outbox`
-- Worker secrets: `NOTION_TOKEN`、`AKATUKI_API_TOKEN`
+- Cloudflare Secrets Store: 既存の `default_secrets_store`（store ID `c7c404d57b1541349d9456c72a55af00`）に `NOTION_TOKEN` と `AKATUKI_API_TOKEN` を保存し、どちらも Workers scope で公開する。Worker は `wrangler.toml` の `secrets_store_secrets` binding を通じて参照し、実行開始時に `await env.NOTION_TOKEN.get()` / `await env.AKATUKI_API_TOKEN.get()` で解決する。値はコード・設定・ログへ出さない。
 - Worker vars: `NOTION_DATA_SOURCE_ID`、`AKATUKI_API_URL`。プロパティ名は任意設定可能。
 - トークン、本文、Notion API 応答本文はログに出さない。
 
@@ -59,7 +59,7 @@ Notion-flavored Markdown v2 の公式構文（[Notion-flavored Markdown format](
 1. 所有者が Notion Data Source を作成し、上記3プロパティを設定する。
 2. Notion integration に Read / Update content capabilities を付ける。
 3. Cloudflare で専用 Worker を作成し、Wrangler 設定を使ってデプロイする。
-4. `NOTION_TOKEN` と `AKATUKI_API_TOKEN` を Worker secrets に登録し、Data Source ID と Akatuki API URL を vars に登録する。
+4. 既存の Secrets Store に `NOTION_TOKEN` と `AKATUKI_API_TOKEN` を Workers scope で登録する（既存シークレットがある場合は値を再登録せず、その名前を binding で参照する）。Data Source ID と Akatuki API URL は vars に登録する。
 5. Cron を有効化し、テスト用ノート1件で動作を確認する。
 
 本 PR ではリソース作成・secret 登録・本番データ操作・デプロイを行わない。
