@@ -112,7 +112,10 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
 // Notion-flavored Markdown v2: tag fixtures are converted before destination hash verification.
 {
   const fixtures = [
-    ["heading", "<h2>章タイトル</h2>", "## 章タイトル"],
+    ["heading h1", "<h1>章タイトル</h1>", "# 章タイトル"],
+    ["heading h2", "<h2>章タイトル</h2>", "## 章タイトル"],
+    ["heading h3", "<h3>章タイトル</h3>", "### 章タイトル"],
+    ["heading h4", "<h4>章タイトル</h4>", "#### 章タイトル"],
     ["quote", "<quote>引用文</quote>", "> 引用文"],
     ["todo unchecked", '<todo checked="false">確認する</todo>', "- [ ] 確認する"],
     ["todo checked", '<todo checked="true">確認済み</todo>', "- [x] 確認済み"],
@@ -123,6 +126,8 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
     ["toggle", "<toggle>折りたたみ見出し\n\n詳細</toggle>", "折りたたみ見出し\n\n詳細"],
     ["columns", "<columns><column>左側</column><column>右側</column></columns>", "左側\n\n右側"],
     ["synced block", '<synced-block url="https://notion.so/block">共有内容</synced-block>', "共有内容"],
+    ["synced block reference", '<synced-block-reference url="https://notion.so/block">参照内容</synced-block-reference>', "参照内容"],
+    ["table text fallback", "<table>表の構造を復元できない内容</table>", "表の構造を復元できない内容"],
     ["mention", '<mention url="https://notion.so/page">参照ページ</mention>', "参照ページ"],
     ["date", '<date start="2026-11-06" start-time="09:30" />', "2026-11-06 09:30"],
     ["equation", "<equation>x + y = z</equation>", "x + y = z"],
@@ -187,7 +192,7 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
 }
 {
   const fence = String.fromCharCode(96).repeat(3);
-  const sourceMarkdown = fence + "markdown\\n![literal](https://example.com/image.png)\\n" + fence;
+  const sourceMarkdown = [fence + "markdown", "![literal](https://example.com/image.png)", fence].join("\n");
   const h = harness({ sourceMarkdown });
   const result = await runInboxTransfer(env, h);
   assert.equal(result.outcome, "transferred");

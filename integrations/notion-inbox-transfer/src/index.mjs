@@ -89,7 +89,7 @@ function renderNotionNode(node, context) {
     mark("list");
     let index = 0;
     return children.map(item => {
-      if (item.text !== undefined) return item.text;
+      if (item.text !== undefined) return item.text.trim() ? item.text : "";
       if (item.tag !== "li") return renderNotionNode(item, { ...context, depth: depth + 1 });
       index++;
       const marker = tag === "ol" ? index + ". " : "- ";
