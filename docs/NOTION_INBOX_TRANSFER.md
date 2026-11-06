@@ -48,7 +48,7 @@ Notion の `GET /v1/pages/{page_id}/markdown?markdown_version=v2` を使い、No
 
 Notion-flavored Markdown v2 の公式構文（[Notion-flavored Markdown format](https://developers.notion.com/guides/data-apis/notion-flavored-markdown)）に沿って、変換可能なタグは Obsidian 向け Markdown / プレーンテキストへ緩く変換する。見出し `h1-h4` は対応する `#` 見出し、`quote` は `>` 引用、`todo` は checked 属性を反映したタスクリスト、`ul/ol/li` は箇条書き・番号付きリスト、`table/tr/th/td` は pipe table にする。表の構造を安全に復元できない場合はセル内容をテキストとして残す。callout / toggle / columns / column / synced-block / synced-block-reference はラッパータグを剥がして内部テキストを残す。mention は表示ラベル、date は start / end 等の表示可能な日付情報、equation は式本体、色付き span はテキストだけを残す。変換した場合は理由コードだけをログに記録し、本文やトークンは出力しない。
 
-変換前に truncated / unknown block / 500,000文字超過 / メディア（画像・ファイル・PDF・埋め込み・動画・音声・ブックマーク・外部オブジェクト等）/ `notion-file-block://` / Markdown 画像を検出した場合は移送しない。変換後も未対応タグが残る場合は `要確認` として原本を保持する。コードフェンス内のタグ表記は文字列例として扱い、変換対象にしない。ハッシュ計算・同一パス本文確認・検索/outbox 着地確認はすべて変換後の本文に対して行う。ページのアイコン・カバー・コメント・データベースのプロパティ（Path 以外）・権限・ページ間の同期関係は本文へ移送しない。
+変換前に truncated / unknown block / 500,000文字超過 / メディア（画像・ファイル・PDF・埋め込み・動画・音声・ブックマーク・外部オブジェクト等）/ `notion-file-block://` / Markdown 画像を検出した場合は移送しない。変換後も未対応タグが残る場合は `要確認` として原本を保持する。コードフェンス内およびインラインコード内のタグ表記は文字列例として扱い、変換対象にしない。ハッシュ計算・同一パス本文確認・検索/outbox 着地確認はすべて変換後の本文に対して行う。ページのアイコン・カバー・コメント・データベースのプロパティ（Path 以外）・権限・ページ間の同期関係は本文へ移送しない。
 
 ## Cron 間隔と無料枠の負荷
 
