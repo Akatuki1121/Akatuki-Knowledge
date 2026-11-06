@@ -200,4 +200,15 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
   assert.equal(h.state.content, sourceMarkdown);
 }
 
+
+// Inline code also contains literal tag examples and must not be parsed as Notion structure.
+{
+  const tick = String.fromCharCode(96);
+  const sourceMarkdown = "Inline: " + tick + "<callout>literal</callout>" + tick;
+  const h = harness({ sourceMarkdown });
+  const result = await runInboxTransfer(env, h);
+  assert.equal(result.outcome, "transferred");
+  assert.equal(h.state.content, sourceMarkdown);
+}
+
 console.log("Notion inbox transfer tests passed.");

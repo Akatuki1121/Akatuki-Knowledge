@@ -145,13 +145,51 @@ function renderNotionNode(node, context) {
   return node.rawOpen + child() + node.rawClose;
 }
 
+function transformOutsideInlineCode(fragment, transform) {
+  const tick = String.fromCharCode(96);
+  let output = "";
+  let plain = "";
+  const flush = () => { if (plain) output += transform(plain); plain = ""; };
+  for (let index = 0; index < fragment.length;) {
+    if (fragment[index] !== tick || (index > 0 && fragment[index - 1] === "\\")) {
+      plain += fragment[index++];
+      continue;
+    }
+    let runLength = 1;
+    while (fragment[index + runLength] === tick) runLength++;
+    let close = index + runLength;
+    let closingIndex = -1;
+    while (close < fragment.length) {
+      const candidate = fragment.indexOf(tick, close);
+      if (candidate < 0) break;
+      let candidateLength = 1;
+      while (fragment[candidate + candidateLength] === tick) candidateLength++;
+      if (candidateLength === runLength && !(candidate > 0 && fragment[candidate - 1] === "\\")) {
+        closingIndex = candidate + candidateLength;
+        break;
+      }
+      close = candidate + candidateLength;
+    }
+    if (closingIndex < 0) {
+      plain += tick.repeat(runLength);
+      index += runLength;
+      continue;
+    }
+    flush();
+    output += fragment.slice(index, closingIndex);
+    index = closingIndex;
+  }
+  flush();
+  return output;
+}
+
 function transformOutsideCode(markdown, transform) {
   const lines = markdown.match(/.*(?:\n|$)/g) ?? [markdown];
   const output = [];
   let fence = null;
   let plain = "";
   const tick = String.fromCharCode(96);
-  const flush = () => { if (plain) output.push(transform(plain)); plain = ""; };
+  const flush = () => { if (plain) output.push(transformOutsideInlineCode(plain, transform)); plain = ""; };
   for (const line of lines) {
     if (!line) continue;
     const trimmed = line.replace(/^ {0,3}/, "");
