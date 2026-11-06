@@ -83,11 +83,25 @@ async function sha256Hex(value) {
 }
 
 async function queryInbox(env, fetchImpl) {
-  const result = await notion(env, fetchImpl, "/data_sources/" + encodeURIComponent(env.NOTION_DATA_SOURCE_ID) + "/query", {
-    method: "POST", body: JSON.stringify({ page_size: 100 })
-  });
-  if (!Array.isArray(result.results)) throw new TransferError("notion_query_invalid_response");
-  return result.results;
+  const pages = [];
+  let startCursor = null;
+  // Scan up to 1,000 rows per Cron invocation so review-only rows cannot
+  // permanently hide pending rows farther down a large database.
+  for (let page = 0; page < 10; page++) {
+    const body = { page_size: 100 };
+    if (startCursor) body.start_cursor = startCursor;
+    const result = await notion(env, fetchImpl, "/data_sources/" + encodeURIComponent(env.NOTION_DATA_SOURCE_ID) + "/query", {
+      method: "POST", body: JSON.stringify(body)
+    });
+    if (!Array.isArray(result.results)) throw new TransferError("notion_query_invalid_response");
+    pages.push(...result.results);
+    if (result.has_more !== true) return pages;
+    if (typeof result.next_cursor !== "string" || !result.next_cursor) {
+      throw new TransferError("notion_query_cursor_missing");
+    }
+    startCursor = result.next_cursor;
+  }
+  return pages;
 }
 
 async function readMarkdown(env, fetchImpl, pageId) {
