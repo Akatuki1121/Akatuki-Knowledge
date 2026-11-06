@@ -51,6 +51,7 @@ export const checks = [
   ["agent-task-recovery", "python3", ["scripts/test_agent_task_recovery.py"]],
   ["agent-memory-migration", "python3", ["scripts/test_agent_memory_migration.py"]],
   ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
+  ["notion-inbox-transfer", process.execPath, ["scripts/test-notion-inbox-transfer.mjs"]],
   ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
 ];
 
@@ -60,6 +61,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config"].includes(name))
       : checks;
 }
