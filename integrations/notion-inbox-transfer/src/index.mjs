@@ -459,24 +459,37 @@ async function processPage(env, fetchImpl, page, logger) {
   return { outcome: "transferred", pageId, path };
 }
 
+async function resolveSecretBinding(binding) {
+  if (!binding || typeof binding.get !== "function") return null;
+  try {
+    const value = await binding.get();
+    return typeof value === "string" && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runInboxTransfer(env, options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const logger = options.logger ?? console;
-  if (!env?.NOTION_TOKEN || !env?.NOTION_DATA_SOURCE_ID || !env?.AKATUKI_API_TOKEN || !env?.AKATUKI_API_URL) {
+  const notionToken = await resolveSecretBinding(env?.NOTION_TOKEN);
+  const akatukiApiToken = await resolveSecretBinding(env?.AKATUKI_API_TOKEN);
+  if (!notionToken || !akatukiApiToken || !env?.NOTION_DATA_SOURCE_ID || !env?.AKATUKI_API_URL) {
     logger.error("notion_transfer_configuration_missing");
     return { ok: false, processed: 0, error: "configuration_missing" };
   }
+  const resolvedEnv = { ...env, NOTION_TOKEN: notionToken, AKATUKI_API_TOKEN: akatukiApiToken };
   let pages;
-  try { pages = await queryInbox(env, fetchImpl); }
+  try { pages = await queryInbox(resolvedEnv, fetchImpl); }
   catch (error) {
     logger.error("notion_transfer_query_failed", { code: error.code ?? "unknown", status: error.status ?? null });
     return { ok: false, processed: 0, error: error.code ?? "query_failed" };
   }
-  const statusName = env.NOTION_STATUS_PROPERTY || "処理状態";
+  const statusName = resolvedEnv.NOTION_STATUS_PROPERTY || "処理状態";
   const page = pages.find((item) => ["未処理", "処理中"].includes(pageStatus(item, statusName)));
   if (!page) return { ok: true, processed: 0, outcome: "inbox_empty" };
   try {
-    const result = await processPage(env, fetchImpl, page, logger);
+    const result = await processPage(resolvedEnv, fetchImpl, page, logger);
     logger.info("notion_transfer_result", { outcome: result.outcome, reason: result.reason ?? null, pageId: result.pageId ?? null, path: result.path ?? null });
     return { ok: result.outcome !== "review", processed: 1, ...result };
   } catch (error) {
