@@ -1,6 +1,7 @@
 const NOTION_VERSION = "2026-03-11";
 const MAX_MARKDOWN_CHARS = 500000;
-const UNSUPPORTED_NOTION_BLOCK = /<(?:callout|toggle|columns?|database|page|folder|synced-block(?:-reference)?|pdf|image|embed|file|audio|video|bookmark|meeting-notes|external_object_instance|custom-block|link-preview|mention|date|quote|todo|equation|table|h[1-4]|ul|ol|li|unknown|tabs?|mail)\b|<span\s+color=/i;
+const UNSUPPORTED_NOTION_BLOCK = /<(?:callout|toggle|columns?|synced-block(?:-reference)?|mention|date|quote|todo|equation|table|h[1-4]|ul|ol|li|unknown|tabs?|mail)\b|<span\s+color=/i;
+const UNSUPPORTED_NOTION_MEDIA = /<(?:pdf|image|embed|file|audio|video|bookmark|link-preview|external_object_instance|custom-block|database|page|folder|meeting-notes)\b|!\[[^\]]*\]\([^)]+\)|notion-file-block:\/\//i;
 
 class TransferError extends Error {
   constructor(code, status = null) {
@@ -34,14 +35,165 @@ function pageStatus(page, propertyName) {
   return "invalid";
 }
 
+function parseTagAttributes(raw) {
+  const attributes = {};
+  for (const match of raw.matchAll(/([a-z][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    attributes[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4] ?? "";
+  }
+  return attributes;
+}
+
+function parseNotionMarkup(markdown) {
+  const root = { tag: null, children: [] };
+  const stack = [root];
+  for (const token of markdown.matchAll(/<\/?[a-z][\w:-]*\b[^>]*>|[^<]+|</gi)) {
+    const raw = token[0];
+    const match = raw.match(/^<(\/)?([a-z][\w:-]*)\b([^>]*)>$/i);
+    if (!match) { stack.at(-1).children.push({ text: raw }); continue; }
+    const closing = Boolean(match[1]);
+    const tag = match[2].toLowerCase();
+    if (closing) {
+      let index = stack.length - 1;
+      while (index > 0 && stack[index].tag !== tag) index--;
+      if (index > 0) stack.length = index;
+      else stack.at(-1).children.push({ text: raw });
+      continue;
+    }
+    const selfClosing = /\/\s*>$/.test(raw);
+    const node = { tag, attrs: parseTagAttributes(match[3]), rawOpen: raw, rawClose: "</" + tag + ">", selfClosing, children: [] };
+    stack.at(-1).children.push(node);
+    if (!selfClosing) stack.push(node);
+  }
+  return root;
+}
+
+function plainNodeText(node) {
+  if (node.text !== undefined) return node.text;
+  return (node.children ?? []).map(plainNodeText).join("");
+}
+
+function renderNotionNode(node, context) {
+  if (node.text !== undefined) return node.text;
+  const tag = node.tag;
+  const attrs = node.attrs ?? {};
+  const children = node.children ?? [];
+  const depth = context.depth ?? 0;
+  const child = (nextDepth = depth) => children.map(item => renderNotionNode(item, { ...context, depth: nextDepth })).join("");
+  const block = value => value.trim() ? "\n\n" + value.trim() + "\n\n" : "\n\n";
+  const mark = reason => context.reasons.add(reason);
+
+  if (/^h[1-4]$/.test(tag)) { mark("heading"); return block("#".repeat(Number(tag.slice(1))) + " " + child().trim()); }
+  if (tag === "quote") { mark("quote"); return block(child().trim().split("\n").map(line => "> " + line).join("\n")); }
+  if (tag === "todo") { mark("todo"); return "  ".repeat(depth) + "- [" + (attrs.checked === "true" ? "x" : " ") + "] " + child().trim() + "\n"; }
+  if (tag === "ul" || tag === "ol") {
+    mark("list");
+    let index = 0;
+    return children.map(item => {
+      if (item.text !== undefined) return item.text;
+      if (item.tag !== "li") return renderNotionNode(item, { ...context, depth: depth + 1 });
+      index++;
+      const marker = tag === "ol" ? index + ". " : "- ";
+      return "  ".repeat(depth) + marker + item.children.map(part => renderNotionNode(part, { ...context, depth: depth + 1 })).join("").trim() + "\n";
+    }).join("");
+  }
+  if (tag === "li") { mark("list"); return "  ".repeat(depth) + "- " + child(depth + 1).trim() + "\n"; }
+  if (tag === "table") {
+    mark("table");
+    const rows = [];
+    let valid = true;
+    const collect = current => {
+      for (const item of current.children ?? []) {
+        if (item.text !== undefined) continue;
+        if (item.tag === "tr") {
+          const cells = (item.children ?? []).filter(cell => cell.tag === "th" || cell.tag === "td");
+          if (!cells.length) { valid = false; return; }
+          rows.push({ header: cells.some(cell => cell.tag === "th"), cells: cells.map(cell => cell.children.map(part => renderNotionNode(part, context)).join("").replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim()) });
+        } else if (["thead","tbody","tfoot"].includes(item.tag)) collect(item);
+        else if (!["colgroup","col"].includes(item.tag)) { valid = false; return; }
+        if (!valid) return;
+      }
+    };
+    collect(node);
+    if (valid && rows.length) {
+      const width = Math.max(...rows.map(row => row.cells.length));
+      const lines = rows.map(row => "| " + Array.from({length:width},(_,i)=>row.cells[i] ?? "").join(" | ") + " |");
+      const separator = "| " + Array.from({length:width},()=>"---").join(" | ") + " |";
+      const headerIndex = rows.findIndex(row => row.header);
+      lines.splice(headerIndex >= 0 ? headerIndex + 1 : 1, 0, separator);
+      return block(lines.join("\n"));
+    }
+    return block(plainNodeText(node));
+  }
+  if (tag === "mention") { mark("mention"); return child().trim() || attrs.url || ""; }
+  if (tag === "date") {
+    mark("date");
+    const start = attrs.start ?? "";
+    const end = attrs.end ?? "";
+    const st = attrs["start-time"] ?? "";
+    const et = attrs["end-time"] ?? "";
+    return start ? start + (st ? " " + st : "") + (end ? " – " + end + (et ? " " + et : "") : "") : end;
+  }
+  if (tag === "equation") { mark("equation"); return child().trim(); }
+  if (tag === "span" && Object.hasOwn(attrs,"color")) { mark("color_span"); return child(); }
+  if (["callout","toggle","columns","column","synced-block","synced-block-reference"].includes(tag)) {
+    mark(["columns","column"].includes(tag) ? "columns" : tag.startsWith("synced-block") ? "synced_block" : tag);
+    return block(child().trim());
+  }
+  if (tag === "p") return node.selfClosing ? "\n\n" : block(child().trim());
+  if (["tr","th","td","thead","tbody","tfoot","colgroup","col"].includes(tag)) return child();
+  if (node.selfClosing) return node.rawOpen;
+  return node.rawOpen + child() + node.rawClose;
+}
+
+function transformOutsideCode(markdown, transform) {
+  const lines = markdown.match(/.*(?:\n|$)/g) ?? [markdown];
+  const output = [];
+  let fence = null;
+  let plain = "";
+  const tick = String.fromCharCode(96);
+  const flush = () => { if (plain) output.push(transform(plain)); plain = ""; };
+  for (const line of lines) {
+    if (!line) continue;
+    const trimmed = line.replace(/^ {0,3}/, "");
+    const fenceChar = trimmed.startsWith(tick.repeat(3)) ? tick : trimmed.startsWith("~~~") ? "~" : null;
+    if (!fence && fenceChar) {
+      const count = trimmed.split("").filter(char => char === fenceChar).length;
+      if (count >= 3 && trimmed.slice(0,count) === fenceChar.repeat(count)) {
+        flush(); fence = { char: fenceChar, length: count }; output.push(line); continue;
+      }
+    }
+    if (fence) {
+      output.push(line);
+      const close = line.replace(/^ {0,3}/, "").trim();
+      if (close && close.split("").every(char => char === fence.char) && close.length >= fence.length) fence = null;
+      continue;
+    }
+    plain += line;
+  }
+  flush();
+  return output.join("");
+}
+
+function convertNotionMarkdown(markdown) {
+  const reasons = new Set();
+  const converted = transformOutsideCode(markdown, fragment => {
+    const tree = parseNotionMarkup(fragment);
+    return tree.children.map(node => renderNotionNode(node,{depth:0,reasons})).join("");
+  }).replace(/\n{3,}/g,"\n\n");
+  if (UNSUPPORTED_NOTION_BLOCK.test(converted)) throw new TransferError("notion_markdown_conversion_incomplete");
+  return { markdown: converted, conversionReasons: [...reasons].sort() };
+}
+
 function validateMarkdown(result) {
   if (typeof result?.markdown !== "string" || !result.markdown.trim()) throw new TransferError("notion_markdown_empty");
   if (result.truncated === true) throw new TransferError("notion_markdown_truncated");
   if (Array.isArray(result.unknown_block_ids) && result.unknown_block_ids.length) throw new TransferError("notion_markdown_unknown_blocks");
   if (result.markdown.length > MAX_MARKDOWN_CHARS) throw new TransferError("note_too_large");
-  if (/notion-file-block:\/\//i.test(result.markdown)) throw new TransferError("notion_uploaded_media_not_portable");
-  if (UNSUPPORTED_NOTION_BLOCK.test(result.markdown)) throw new TransferError("notion_rich_block_requires_conversion");
-  return result.markdown;
+  if (UNSUPPORTED_NOTION_MEDIA.test(result.markdown)) throw new TransferError("notion_uploaded_media_not_portable");
+  const converted = convertNotionMarkdown(result.markdown);
+  if (!converted.markdown.trim()) throw new TransferError("notion_markdown_empty");
+  if (converted.markdown.length > MAX_MARKDOWN_CHARS) throw new TransferError("note_too_large");
+  return converted;
 }
 
 async function requestJson(fetchImpl, url, options = {}) {
@@ -194,17 +346,19 @@ async function processPage(env, fetchImpl, page, logger) {
     return { outcome: "review", reason: "invalid_status_property", pageId, path };
   }
 
-  let markdown;
+  let markdownResult;
   try {
-    markdown = await readMarkdown(env, fetchImpl, pageId);
+    markdownResult = await readMarkdown(env, fetchImpl, pageId);
   } catch (error) {
     if (["notion_markdown_empty", "notion_markdown_truncated", "notion_markdown_unknown_blocks",
-      "note_too_large", "notion_uploaded_media_not_portable", "notion_rich_block_requires_conversion"].includes(error.code)) {
+      "note_too_large", "notion_uploaded_media_not_portable", "notion_markdown_conversion_incomplete"].includes(error.code)) {
       await updateStatus(env, fetchImpl, pageId, "要確認");
       return { outcome: "review", reason: error.code, pageId, path };
     }
     throw error;
   }
+  const markdown = markdownResult.markdown;
+  if (markdownResult.conversionReasons.length) logger.info("notion_markdown_converted", { pageId, reasons: markdownResult.conversionReasons });
   const expectedHash = await sha256Hex(markdown);
   if (status !== "処理中") {
     const existing = await getNote(env, fetchImpl, path);
