@@ -31,7 +31,7 @@ async function digest(value) {
 }
 
 function harness({ duplicate = false, failCreate = false } = {}) {
-  const state = { status: "未処理", trashed: false, created: false, calls: [], logs: [] };
+  const state = { status: "未処理", trashed: false, created: false, tags: [], calls: [], logs: [] };
   const logger = {
     info: (...args) => state.logs.push(["info", ...args]),
     error: (...args) => state.logs.push(["error", ...args])
@@ -54,12 +54,13 @@ function harness({ duplicate = false, failCreate = false } = {}) {
       return Response.json({ id: pageId, in_trash: state.trashed });
     }
     if (url.hostname === "akatuki.example" && url.pathname === "/api/notes/" + path.split("/").map(encodeURIComponent).join("/")) {
-      if (duplicate || state.created) return Response.json({ note: { path, contentHash: await digest(markdown) } });
+      if (duplicate || state.created) return Response.json({ note: { path, contentHash: await digest(markdown), tags: duplicate ? [] : state.tags } });
       return Response.json({ error: "not_found" }, { status: 404 });
     }
     if (url.hostname === "akatuki.example" && url.pathname === "/api/notes" && method === "POST") {
       if (failCreate) return Response.json({ error: "test_failure" }, { status: 503 });
       state.created = true;
+      state.tags = body.tags;
       return Response.json({ ok: true, path, queued: true }, { status: 201 });
     }
     if (url.hostname === "akatuki.example" && url.pathname === "/api/search") {
