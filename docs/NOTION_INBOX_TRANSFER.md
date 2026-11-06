@@ -13,7 +13,7 @@
 
 1. Notion Data Source を照会し、`未処理` または `処理中` の行を1件選ぶ。
 2. `Path` を検証する。絶対パス、空要素、`..`、隠しパス、Markdown 以外の拡張子は拒否する。
-3. `GET /v1/pages/{page_id}/markdown` で本文を取得。切り詰め、未解決ブロック、Notion 専用構造、Notion 添付ファイル参照があれば fail-closed とし原本を残す。
+3. `GET /v1/pages/{page_id}/markdown?markdown_version=v2` で本文を取得。切り詰め、未解決ブロック、上限超過、メディア参照は fail-closed とし原本を残す。Markdown 化できる Notion 専用タグは変換してからハッシュ計算・着地確認を行う。
 4. 未処理行では Akatuki の同一パス取得 API を先に呼ぶ。既存なら `要確認` にして停止し、作成しない。未存在なら Notion の状態を `処理中` にしてから `POST /api/notes` を呼ぶ。
 5. 作成後、Akatuki の同一パス取得、`GET /api/search` の完全一致、`GET /sync/outbox` の notes/upsert 行を確認する。outbox は pending / processing / sent を受け入れ、dead は成功と見なさない。
 6. 3条件を満たした後だけ Notion ページを `PATCH /v1/pages/{id}` `{ "in_trash": true }` でゴミ箱へ移し、応答の `in_trash: true` も確認する。
@@ -46,7 +46,9 @@ Notion API 2026-03-11 ではページを完全削除する API はない。ペ�
 
 Notion の `GET /v1/pages/{page_id}/markdown?markdown_version=v2` を使い、Notion-flavored Markdown を取得する。ブロック JSON の独自再構築はしない。標準的な見出し、段落、リスト、チェックリスト、引用、コード、テーブル、リンク等は Markdown として受け取れる。一方、Notion-flavored Markdown には callout、toggle、columns、database/page mention、synced block、meeting notes、埋め込み、ファイル等の独自タグがあり、Obsidian が同じ意味・レイアウトで表示できる保証はない。アップロード添付の参照も永続的な Obsidian 添付ファイル移送とは異なる。
 
-初版は意味を黙って落とすより原本保持を優先する。Markdown API が truncated / unknown block を返す場合、Notion 専用構造ブロック（callout / toggle / columns / quote / todo / equation / mention / embed 等）や `notion-file-block://` 添付参照が含まれる場合は移送を中止する。外部 URL の Markdown リンクは保持する。ページのアイコン・カバー・コメント・データベースのプロパティ（Path 以外）・権限・ページ間の同期関係は本文へ移送しない。
+Notion-flavored Markdown v2 の公式構文（[Notion-flavored Markdown format](https://developers.notion.com/guides/data-apis/notion-flavored-markdown)）に沿って、変換可能なタグは Obsidian 向け Markdown / プレーンテキストへ緩く変換する。見出し `h1-h4` は対応する `#` 見出し、`quote` は `>` 引用、`todo` は checked 属性を反映したタスクリスト、`ul/ol/li` は箇条書き・番号付きリスト、`table/tr/th/td` は pipe table にする。表の構造を安全に復元できない場合はセル内容をテキストとして残す。callout / toggle / columns / column / synced-block / synced-block-reference はラッパータグを剥がして内部テキストを残す。mention は表示ラベル、date は start / end 等の表示可能な日付情報、equation は式本体、色付き span はテキストだけを残す。変換した場合は理由コードだけをログに記録し、本文やトークンは出力しない。
+
+変換前に truncated / unknown block / 500,000文字超過 / メディア（画像・ファイル・PDF・埋め込み・動画・音声・ブックマーク・外部オブジェクト等）/ `notion-file-block://` / Markdown 画像を検出した場合は移送しない。変換後も未対応タグが残る場合は `要確認` として原本を保持する。コードフェンス内およびインラインコード内のタグ表記は文字列例として扱い、変換対象にしない。ハッシュ計算・同一パス本文確認・検索/outbox 着地確認はすべて変換後の本文に対して行う。ページのアイコン・カバー・コメント・データベースのプロパティ（Path 以外）・権限・ページ間の同期関係は本文へ移送しない。
 
 ## Cron 間隔と無料枠の負荷
 
