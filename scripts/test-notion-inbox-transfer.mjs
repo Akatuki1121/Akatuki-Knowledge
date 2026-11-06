@@ -148,6 +148,7 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
   for (const options of [
     { sourceMarkdown: '<pdf source="https://files.notion.so/example.pdf">資料</pdf>' },
     { sourceMarkdown: "![画像](https://files.notion.so/example.png)" },
+    { sourceMarkdown: "添付参照: notion-file-block://file-id" },
     { sourceMarkdown: '<unknown url="https://notion.so/block" />' },
     { sourceMarkdown: "<tabs><tab>未対応</tab></tabs>" },
     { sourceMarkdown: "通常本文", truncated: true },
