@@ -1,6 +1,6 @@
 const NOTION_VERSION = "2026-03-11";
 const MAX_MARKDOWN_CHARS = 500000;
-const UNSUPPORTED_NOTION_BLOCK = /<(?:callout|toggle|columns?|database|page|folder|synced-block(?:-reference)?|pdf|image|embed|file|audio|video|bookmark|meeting-notes|external_object_instance|custom-block|link-preview|mention|date)\b/i;
+const UNSUPPORTED_NOTION_BLOCK = /<(?:callout|toggle|columns?|database|page|folder|synced-block(?:-reference)?|pdf|image|embed|file|audio|video|bookmark|meeting-notes|external_object_instance|custom-block|link-preview|mention|date|quote|todo|equation|table|h[1-4]|ul|ol|li|unknown)\b/i;
 
 class TransferError extends Error {
   constructor(code, status = null) {
@@ -91,7 +91,7 @@ async function queryInbox(env, fetchImpl) {
 }
 
 async function readMarkdown(env, fetchImpl, pageId) {
-  return validateMarkdown(await notion(env, fetchImpl, "/pages/" + encodeURIComponent(pageId) + "/markdown"));
+  return validateMarkdown(await notion(env, fetchImpl, "/pages/" + encodeURIComponent(pageId) + "/markdown?markdown_version=v2"));
 }
 
 async function getNote(env, fetchImpl, path) {
