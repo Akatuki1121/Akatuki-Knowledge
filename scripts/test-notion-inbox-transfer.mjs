@@ -169,12 +169,29 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
 
 // A tag not supported by the converter must stop the transfer.
 {
-  const h = harness({ sourceMarkdown: "<custom-unknown>残るタグ</custom-unknown>" });
+  const h = harness({ sourceMarkdown: '<mail to="team@example.com">未変換</mail>' });
   const result = await runInboxTransfer(env, h);
   assert.equal(result.outcome, "review");
   assert.equal(h.state.created, false);
   assert.equal(h.state.trashed, false);
   assert.equal(h.state.status, "要確認");
+}
+
+
+{
+  const sourceMarkdown = "Literal escaped tag: \\<callout>text</callout>";
+  const h = harness({ sourceMarkdown });
+  const result = await runInboxTransfer(env, h);
+  assert.equal(result.outcome, "transferred");
+  assert.equal(h.state.content, sourceMarkdown);
+}
+{
+  const fence = String.fromCharCode(96).repeat(3);
+  const sourceMarkdown = fence + "markdown\\n![literal](https://example.com/image.png)\\n" + fence;
+  const h = harness({ sourceMarkdown });
+  const result = await runInboxTransfer(env, h);
+  assert.equal(result.outcome, "transferred");
+  assert.equal(h.state.content, sourceMarkdown);
 }
 
 console.log("Notion inbox transfer tests passed.");

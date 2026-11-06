@@ -46,7 +46,7 @@ function parseTagAttributes(raw) {
 function parseNotionMarkup(markdown) {
   const root = { tag: null, children: [] };
   const stack = [root];
-  for (const token of markdown.matchAll(/<\/?[a-z][\w:-]*\b[^>]*>|[^<]+|</gi)) {
+  for (const token of markdown.matchAll(/(?<!\\)<\/?[a-z][\w:-]*\b[^>]*>|[^<]+|</gi)) {
     const raw = token[0];
     const match = raw.match(/^<(\/)?([a-z][\w:-]*)\b([^>]*)>$/i);
     if (!match) { stack.at(-1).children.push({ text: raw }); continue; }
@@ -133,7 +133,7 @@ function renderNotionNode(node, context) {
     const et = attrs["end-time"] ?? "";
     return start ? start + (st ? " " + st : "") + (end ? " – " + end + (et ? " " + et : "") : "") : end;
   }
-  if (tag === "equation") { mark("equation"); return child().trim(); }
+  if (tag === "equation") { mark("equation"); return child(); }
   if (tag === "span" && Object.hasOwn(attrs,"color")) { mark("color_span"); return child(); }
   if (["callout","toggle","columns","column","synced-block","synced-block-reference"].includes(tag)) {
     mark(["columns","column"].includes(tag) ? "columns" : tag.startsWith("synced-block") ? "synced_block" : tag);
@@ -177,7 +177,7 @@ function transformOutsideCode(markdown, transform) {
 function containsOutsideCode(markdown, pattern) {
   let found = false;
   transformOutsideCode(markdown, fragment => {
-    if (pattern.test(fragment)) found = true;
+    if (pattern.test(fragment.replace(/\\</g, ""))) found = true;
     return fragment;
   });
   return found;
