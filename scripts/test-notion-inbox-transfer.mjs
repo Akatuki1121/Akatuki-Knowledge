@@ -5,9 +5,9 @@ const pageId = "11111111-1111-4111-8111-111111111111";
 const path = "Notes/Inbox/transfer-test.md";
 const markdown = "# Transfer test\n\nBody text.\n";
 const env = {
-  NOTION_TOKEN: "test-notion-token",
+  NOTION_TOKEN: { get: async () => "test-notion-token" },
   NOTION_DATA_SOURCE_ID: "22222222-2222-4222-8222-222222222222",
-  AKATUKI_API_TOKEN: "test-akatuki-token",
+  AKATUKI_API_TOKEN: { get: async () => "test-akatuki-token" },
   AKATUKI_API_URL: "https://akatuki.example",
   NOTION_PATH_PROPERTY: "Path",
   NOTION_TITLE_PROPERTY: "Name",
@@ -73,6 +73,24 @@ function harness({ duplicate = false, failCreate = false, sourceMarkdown = markd
     throw new Error("Unexpected test request: " + method + " " + url);
   };
   return { state, logger, fetchImpl };
+}
+
+// Secrets Store の binding 欠如・空値は既存の設定不足として fail-closed にする。
+{
+  const invalidEnvironments = [
+    ["Notion binding 欠如", { ...env, NOTION_TOKEN: undefined }],
+    ["Akatuki binding 欠如", { ...env, AKATUKI_API_TOKEN: undefined }],
+    ["Notion secret 空値", { ...env, NOTION_TOKEN: { get: async () => "" } }],
+    ["Akatuki secret 空値", { ...env, AKATUKI_API_TOKEN: { get: async () => "" } }]
+  ];
+  for (const [name, invalidEnv] of invalidEnvironments) {
+    const h = harness();
+    const result = await runInboxTransfer(invalidEnv, h);
+    assert.equal(result.ok, false, name);
+    assert.equal(result.error, "configuration_missing", name);
+    assert.equal(h.state.calls.length, 0, name);
+    assert.ok(h.state.logs.some(([level, event]) => level === "error" && event === "notion_transfer_configuration_missing"), name);
+  }
 }
 
 // 正常系: 検索と outbox の着地確認が終わるまで Notion をゴミ箱へ移さない。
