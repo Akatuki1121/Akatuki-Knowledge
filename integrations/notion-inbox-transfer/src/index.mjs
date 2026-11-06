@@ -106,7 +106,6 @@ async function queryInbox(env, fetchImpl) {
     pages.push(...result.results);
     // The API filter should put eligible rows on the first page. Stop as soon
     // as one exists; pagination is only a fallback for inconsistent filters.
-    const statusProperty = env.NOTION_STATUS_PROPERTY || "処理状態";
     if (pages.some((item) => ["未処理", "処理中"].includes(pageStatus(item, statusProperty)))) return pages;
     if (result.has_more !== true) return pages;
     if (typeof result.next_cursor !== "string" || !result.next_cursor) {
