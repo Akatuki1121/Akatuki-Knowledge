@@ -44,9 +44,9 @@ Notion API 2026-03-11 ではページを完全削除する API はない。ペ�
 
 ## Markdown 変換の範囲と制約
 
-Notion の `GET /v1/pages/{page_id}/markdown` を使い、ブロック JSON の独自再構築はしない。標準的な見出し、段落、リスト、チェックリスト、引用、コード、テーブル、リンク等は Markdown として受け取れる。一方、Notion-flavored Markdown には callout、toggle、columns、database/page mention、synced block、meeting notes、埋め込み、ファイル等の独自タグがあり、Obsidian が同じ意味・レイアウトで表示できる保証はない。アップロード添付の参照も永続的な Obsidian 添付ファイル移送とは異なる。
+Notion の `GET /v1/pages/{page_id}/markdown?markdown_version=v2` を使い、Notion-flavored Markdown を取得する。ブロック JSON の独自再構築はしない。標準的な見出し、段落、リスト、チェックリスト、引用、コード、テーブル、リンク等は Markdown として受け取れる。一方、Notion-flavored Markdown には callout、toggle、columns、database/page mention、synced block、meeting notes、埋め込み、ファイル等の独自タグがあり、Obsidian が同じ意味・レイアウトで表示できる保証はない。アップロード添付の参照も永続的な Obsidian 添付ファイル移送とは異なる。
 
-初版は意味を黙って落とすより原本保持を優先する。Markdown API が truncated / unknown block を返す場合、Notion 専用構造ブロックや `notion-file-block://` 添付参照が含まれる場合は移送を中止する。外部 URL の Markdown リンクは保持する。ページのアイコン・カバー・コメント・データベースのプロパティ（Path 以外）・権限・ページ間の同期関係は本文へ移送しない。
+初版は意味を黙って落とすより原本保持を優先する。Markdown API が truncated / unknown block を返す場合、Notion 専用構造ブロック（callout / toggle / columns / quote / todo / equation / mention / embed 等）や `notion-file-block://` 添付参照が含まれる場合は移送を中止する。外部 URL の Markdown リンクは保持する。ページのアイコン・カバー・コメント・データベースのプロパティ（Path 以外）・権限・ページ間の同期関係は本文へ移送しない。
 
 ## Cron 間隔と無料枠の負荷
 
