@@ -168,7 +168,17 @@ async function processPage(env, fetchImpl, page, logger) {
     return { outcome: "review", reason: "invalid_status_property", pageId, path };
   }
 
-  const markdown = await readMarkdown(env, fetchImpl, pageId);
+  let markdown;
+  try {
+    markdown = await readMarkdown(env, fetchImpl, pageId);
+  } catch (error) {
+    if (["notion_markdown_empty", "notion_markdown_truncated", "notion_markdown_unknown_blocks",
+      "note_too_large", "notion_uploaded_media_not_portable", "notion_rich_block_requires_conversion"].includes(error.code)) {
+      await updateStatus(env, fetchImpl, pageId, "要確認");
+      return { outcome: "review", reason: error.code, pageId, path };
+    }
+    throw error;
+  }
   const expectedHash = await sha256Hex(markdown);
   if (status !== "処理中") {
     const existing = await getNote(env, fetchImpl, path);
@@ -196,8 +206,8 @@ async function processPage(env, fetchImpl, page, logger) {
         await updateStatus(env, fetchImpl, pageId, "要確認");
         return { outcome: "review", reason: "destination_path_already_exists", pageId, path };
       }
-      if (error instanceof TransferError && error.status >= 400 && error.status < 500) {
-        await updateStatus(env, fetchImpl, pageId, "未処理");
+      if (error instanceof TransferError && [400, 413, 422].includes(error.status)) {
+        await updateStatus(env, fetchImpl, pageId, "要確認");
       }
       throw error;
     }
