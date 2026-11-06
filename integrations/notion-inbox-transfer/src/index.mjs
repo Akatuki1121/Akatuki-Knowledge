@@ -88,7 +88,16 @@ async function queryInbox(env, fetchImpl) {
   // Scan up to 1,000 rows per Cron invocation so review-only rows cannot
   // permanently hide pending rows farther down a large database.
   for (let page = 0; page < 10; page++) {
-    const body = { page_size: 100 };
+    const statusProperty = env.NOTION_STATUS_PROPERTY || "処理状態";
+    const body = {
+      page_size: 100,
+      filter: {
+        or: [
+          { property: statusProperty, select: { equals: "未処理" } },
+          { property: statusProperty, select: { equals: "処理中" } }
+        ]
+      }
+    };
     if (startCursor) body.start_cursor = startCursor;
     const result = await notion(env, fetchImpl, "/data_sources/" + encodeURIComponent(env.NOTION_DATA_SOURCE_ID) + "/query", {
       method: "POST", body: JSON.stringify(body)
