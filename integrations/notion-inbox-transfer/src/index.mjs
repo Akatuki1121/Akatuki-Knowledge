@@ -174,13 +174,22 @@ function transformOutsideCode(markdown, transform) {
   return output.join("");
 }
 
+function containsOutsideCode(markdown, pattern) {
+  let found = false;
+  transformOutsideCode(markdown, fragment => {
+    if (pattern.test(fragment)) found = true;
+    return fragment;
+  });
+  return found;
+}
+
 function convertNotionMarkdown(markdown) {
   const reasons = new Set();
   const converted = transformOutsideCode(markdown, fragment => {
     const tree = parseNotionMarkup(fragment);
     return tree.children.map(node => renderNotionNode(node,{depth:0,reasons})).join("");
   }).replace(/\n{3,}/g,"\n\n");
-  if (UNSUPPORTED_NOTION_BLOCK.test(converted)) throw new TransferError("notion_markdown_conversion_incomplete");
+  if (containsOutsideCode(converted, UNSUPPORTED_NOTION_BLOCK)) throw new TransferError("notion_markdown_conversion_incomplete");
   return { markdown: converted, conversionReasons: [...reasons].sort() };
 }
 
@@ -189,7 +198,7 @@ function validateMarkdown(result) {
   if (result.truncated === true) throw new TransferError("notion_markdown_truncated");
   if (Array.isArray(result.unknown_block_ids) && result.unknown_block_ids.length) throw new TransferError("notion_markdown_unknown_blocks");
   if (result.markdown.length > MAX_MARKDOWN_CHARS) throw new TransferError("note_too_large");
-  if (UNSUPPORTED_NOTION_MEDIA.test(result.markdown)) throw new TransferError("notion_uploaded_media_not_portable");
+  if (containsOutsideCode(result.markdown, UNSUPPORTED_NOTION_MEDIA)) throw new TransferError("notion_uploaded_media_not_portable");
   const converted = convertNotionMarkdown(result.markdown);
   if (!converted.markdown.trim()) throw new TransferError("notion_markdown_empty");
   if (converted.markdown.length > MAX_MARKDOWN_CHARS) throw new TransferError("note_too_large");
