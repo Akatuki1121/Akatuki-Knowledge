@@ -51,7 +51,8 @@ export const checks = [
   ["agent-task-recovery", "python3", ["scripts/test_agent_task_recovery.py"]],
   ["agent-memory-migration", "python3", ["scripts/test_agent_memory_migration.py"]],
   ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
-  ["notion-inbox-transfer", process.execPath, ["scripts/test-notion-inbox-transfer.mjs"]],\n  ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
+  ["notion-inbox-transfer", process.execPath, ["scripts/test-notion-inbox-transfer.mjs"]],
+  ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
 ];
 
 export function selectChecks(args = []) {
