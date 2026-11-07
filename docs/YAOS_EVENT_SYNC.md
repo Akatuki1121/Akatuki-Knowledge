@@ -132,10 +132,8 @@ YAOS の安定した `fileId` が同じで、完全観測上のパスだけが�
 3. 完全な Vault 観測と候補本文が同じ `contentHash` を示し、`vault_pull_live_content_conflict` のレビュー行も同じ fileId・パス・hash を示す。
 4. 同じ D1 ノートに pending/processing の outbox が存在しない。
 5. `vault_content_conflict` で dead になった upsert の payload が、現在の D1 の `id`・旧パス・`sync_uuid`・本文 hash と一致する。
-6. dead upsert の payload が `expectedPreviousContent` を持つ場合は、その履歴でも検証できる。Vault の現在本文が、いずれかの dead upsert の `expectedPreviousContent` と改行正規化後に一致し、その baseline の hash が改行正規化なしで `note_revisions` に存在し、そこから各 upsert の `expectedPreviousContent` → `content` が連続して最後の payload が現行 D1 に到達すれば、複数回の API 編集が連続して dead になった履歴として説明できたことになる。dead job の走査は古い順に40件までとし、上限を超える場合は fail-closed のままにする。
 
 直近の D1 revision だけを Vault の基準本文とみなしてはならない。複数の D1 更新が Vault 配信より先に進むと、Vault は複数世代前の本文のままでも、最新 revision はその本文と一致しないためである。
-
 
 条件を満たした場合は、今回観測した Vault 本文を `note_revisions` に保存してから、D1 のパスと同一性マップを同じ batch で観測パスへ揃える。D1 の最新本文は変更せず、最新本文を持つ upsert を新規作成し、その `expectedPreviousContent` には今回観測した Vault 本文そのものを設定する。これにより YAOS 側でも、pull と outbox 配信の間に Vault 本文が変わっていない場合だけ更新できる。元の dead job は診断証跡として残し、解決したレビュー行だけを live work queue から削除する。
 
