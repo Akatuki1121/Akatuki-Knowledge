@@ -547,6 +547,7 @@ async function syncNotes(request, env) {
         }
         if (!chainStarted || !chainReachesCurrentD1) continue;
 
+        const wasRenamed = path !== row.path;
         const prepared = await prepareSyncJob(env, "notes", row.id, "upsert", {
           jobGuard: { checks: [["path", path], ["deleted_at", null]] }
         }, {
@@ -576,7 +577,7 @@ async function syncNotes(request, env) {
           continue;
         }
         reconciledRenameFileIds.add(observation.fileId);
-        if (path !== row.path) reconciledRenames++;
+        if (wasRenamed) reconciledRenames++;
         reconciledConflicts++;
         resolvedReviews++;
         continue;
