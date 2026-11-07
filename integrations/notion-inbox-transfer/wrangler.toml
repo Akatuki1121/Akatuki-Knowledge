@@ -1,0 +1,17 @@
+name = "akatuki-notion-inbox-transfer"
+main = "src/index.mjs"
+compatibility_date = "2026-11-06"
+workers_dev = true
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[secrets_store_secrets]]
+binding = "NOTION_TOKEN"
+store_id = "c7c404d57b1541349d9456c72a55af00"
+secret_name = "NOTION_TOKEN"
+
+[[secrets_store_secrets]]
+binding = "AKATUKI_API_TOKEN"
+store_id = "c7c404d57b1541349d9456c72a55af00"
+secret_name = "AKATUKI_API_TOKEN"

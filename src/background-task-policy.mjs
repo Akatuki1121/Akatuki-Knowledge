@@ -26,6 +26,7 @@ const NON_RETRYABLE = new Set([
   "web_research_invalid_response",
   "web_research_provider_error",
   "workers_ai_permanent_failure",
+  "workers_ai_adaptive_recovery_exhausted",
 ]);
 
 const TRANSIENT = new Set([
@@ -142,6 +143,7 @@ export function describeAgentTaskStopReason(reason) {
     credentials_detected: ["認証情報を検出", "認証情報を依頼文から削除してから再依頼してください。"],
     pii_masking_failed: ["個人情報を安全にマスキングできない", "個人を特定できる情報を除いてから再依頼してください。"],
     workers_ai_daily_quota_exhausted: ["Workers AI の日次無料枠に到達", "Cloudflare の日次リセット（UTC 00:00）後に自動再開します。"],
+    workers_ai_adaptive_recovery_exhausted: ["Workers AI の出力長回復を試し切った", "依頼対象や関連資料を絞り、新しい /task として依頼してください。"],
     web_research_not_enabled: ["Web 調査は現在無効", "Web 調査の有効化を待つ間は、ナレッジ検索を /task で依頼してください。"],
     web_research_sources_missing: ["調査結果の出典を確認できない", "出典を確認できる依頼内容に絞って、新しい /research として依頼してください。"],
     web_research_unverified: ["調査結果を検証できない", "検証対象を絞って、新しい /research として依頼してください。"],
@@ -159,6 +161,7 @@ __name(describeAgentTaskStopReason, "describeAgentTaskStopReason");
 // エージェントタスクのエラー分類 (Issue #86)。src/index.js から移動した関数で、本文は移動前と同一。
 // 分類結果は decideTaskRetry への入力クラスになるため、固定クラスの先行一致の順序も含め本文を変えない。
 export function classifyAgentTaskError(error) {
+  if (error?.adaptiveRecoveryExhausted === true) return "workers_ai_adaptive_recovery_exhausted";
   const message = [
     typeof error?.message === "string" ? error.message : "",
     typeof error?.workersAiError?.message === "string" ? error.workersAiError.message : "",

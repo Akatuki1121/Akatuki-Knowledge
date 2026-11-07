@@ -25,6 +25,7 @@ for (const [name] of checks) {
 }
 assert.ok(core.has("check-group-coverage"), "group coverage check runs in core");
 assert.ok(core.has("node-tests"), "shared Node tests run in core");
+assert.ok(core.has("notion-inbox-transfer"), "Notion inbox transfer tests run in core");
 assert.ok(sync.has("sync-outbox"), "outbox unit tests run in sync group");
 assert.ok(agent.has("agent-tool-loop"), "agent tests run in agent group");
 console.log(`Check group coverage passed (${names.length} checks).`);

@@ -7,6 +7,7 @@ import {
   runAgentToolLoop,
   validateAgentToolAction,
 } from "../src/agent-tool-loop.mjs";
+import { classifyAgentTaskError, decideTaskRetry } from "../src/background-task-policy.mjs";
 
 const action = (tool, args) => JSON.stringify({ action: "tool", tool, arguments: args });
 const final = (reply, sourceIds = []) => JSON.stringify({ action: "final", reply, source_ids: sourceIds });
@@ -583,5 +584,102 @@ await assert.rejects(runAgentToolLoop({
   saveCheckpoint: async () => true,
 }), (error) => error.message === "github_path_blocked");
 assert.equal(blockedModelCalls, 1, "A safety-blocked plan must fail on the first response, without feedback retries");
+
+const malformedReadFile = action("github_read_file", {
+  repository: "Akatuki1121/Akatuki-Knowledge", path: "README.md", truncated: true,
+});
+const correctedReadFile = action("github_read_file", {
+  repository: "Akatuki1121/Akatuki-Knowledge", path: "README.md",
+});
+const toolKeyPrompts = [];
+const toolKeyExecutions = [];
+const toolKeyRecovery = await runAgentToolLoop({
+  initialPrompt: "Read README.md",
+  allowGitHubRead: true,
+  callModel: async ({ prompt, modelCall }) => {
+    toolKeyPrompts.push(prompt);
+    if (modelCall === 1) return malformedReadFile;
+    if (modelCall === 2) return correctedReadFile;
+    return final("README was read.");
+  },
+  executeTool: async (tool, args) => {
+    toolKeyExecutions.push({ tool, args });
+    return { path: args.path, content: "# README", sha: "a".repeat(40), totalLines: 1, startLine: 1, endLine: 1, truncated: false };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(toolKeyRecovery.reply, "README was read.");
+assert.equal(toolKeyExecutions.length, 1, "The corrected call alone may execute");
+assert.equal(toolKeyExecutions[0].tool, "github_read_file");
+assert.equal(toolKeyPrompts.length, 3);
+assert.match(toolKeyPrompts[1], /tool_argument_keys:tool=github_read_file;missing=none;unexpected=truncated/);
+assert.match(toolKeyPrompts[1], /余分なキーを除いて同じ操作/u);
+
+const lengthRetryDiagnostics = [
+  "workers_ai_invalid_response;stage=completion;finish=length;content=null;reasoning=30943;tools=0",
+  "workers_ai_invalid_response;stage=completion;finish=length;content=null;reasoning=18200;tools=0",
+];
+const lengthRetryPrompts = [];
+const lengthRetryCalls = [];
+const lengthRecovery = await runAgentToolLoop({
+  initialPrompt: `依頼本文
+
+関連ノート:
+大きな関連資料
+
+使えるツール:`,
+  callModel: async ({ prompt, modelCall, responseAttempt }) => {
+    lengthRetryPrompts.push(prompt);
+    lengthRetryCalls.push({ modelCall, responseAttempt });
+    if (responseAttempt < 2) {
+      const error = new Error(lengthRetryDiagnostics[responseAttempt]);
+      error.reason = "workers_ai_invalid_response";
+      error.workersAiDiagnostic = lengthRetryDiagnostics[responseAttempt];
+      throw error;
+    }
+    return final("Recovered after adaptive retries.");
+  },
+  executeTool: async () => assert.fail("No tool should execute"),
+  saveCheckpoint: async () => true,
+});
+assert.equal(lengthRecovery.reply, "Recovered after adaptive retries.");
+assert.deepEqual(lengthRetryCalls, [
+  { modelCall: 1, responseAttempt: 0 },
+  { modelCall: 2, responseAttempt: 1 },
+  { modelCall: 3, responseAttempt: 2 },
+]);
+assert.match(lengthRetryPrompts[0], /大きな関連資料/u);
+assert.match(lengthRetryPrompts[1], /過去のツール履歴を省略/u, "Second attempt must omit the prior conversation history");
+assert.match(lengthRetryPrompts[2], /関連ノート:\n（出力長を確保するため省略）/u, "Third attempt must also reduce note context");
+
+let exhaustedLengthCalls = 0;
+let exhaustedFailure;
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Retry until recovery is exhausted",
+  callModel: async () => {
+    exhaustedLengthCalls++;
+    const error = new Error("workers_ai_invalid_response;stage=completion;finish=length;content=null;reasoning=30943;tools=0");
+    error.reason = "workers_ai_invalid_response";
+    error.workersAiDiagnostic = error.message;
+    throw error;
+  },
+  executeTool: async () => assert.fail("No tool should execute"),
+  saveCheckpoint: async () => true,
+}), (error) => {
+  exhaustedFailure = error;
+  assert.equal(error.reason, "workers_ai_invalid_response");
+  assert.equal(error.adaptiveRecoveryExhausted, true);
+  assert.match(error.message, /adaptive_attempts=3/u);
+  assert.match(error.message, /a1\[/u);
+  assert.match(error.message, /a3\[/u);
+  return true;
+});
+assert.equal(exhaustedLengthCalls, 3, "needs_attention-worthy failure is raised only after all adaptive variants fail");
+assert.equal(classifyAgentTaskError(exhaustedFailure), "workers_ai_adaptive_recovery_exhausted");
+assert.equal(decideTaskRetry({
+  nowMs: 10_000, createdAtMs: 0, deadlineAtMs: 3_600_000,
+  attempts: 1, maxAttempts: 4, errorClass: classifyAgentTaskError(exhaustedFailure), retryable: false,
+}).stopReason, "non_retryable_workers_ai_adaptive_recovery_exhausted");
+
 console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
 

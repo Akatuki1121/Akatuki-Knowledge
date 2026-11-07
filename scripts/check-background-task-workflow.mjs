@@ -42,7 +42,11 @@ for (const required of [
   "callWorkersAi",
   "IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS",
   "IMPROVEMENT_TASK_REASONING_EFFORT",
-  "reasoningEffort: prepared.reasoningEffort",
+  "reasoningEffort: adaptiveReasoningEffort",
+  "const adaptiveMaxOutputTokens = responseAttempt === 0",
+  "const adaptiveReasoningEffort = responseAttempt === 0",
+  "const adaptiveResponseMimeType = responseAttempt >= 2",
+  "retries: { limit: 0, delay: \"1 second\" }",
   "task.last_error?.includes(\"invalid_input:tool_argument_keys\")",
   "parseGroundedWebResearch",
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
@@ -55,7 +59,7 @@ for (const required of [
   "hasSensitiveCategory(",
   "reserveAgentAiBudget",
   "step.sleepUntil",
-  "callWorkersAi(this.env, inspection.text, prepared.maxOutputTokens",
+  "callWorkersAi(this.env, inspection.text, adaptiveMaxOutputTokens",
   "recordAgentTaskFailure",
   "reason: errorClass",
   "const errorDetail = describeAgentTaskError(error, this.env);",
@@ -111,10 +115,10 @@ assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledg
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
 assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
-const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall })");
+const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall, responseAttempt = 0 })");
 const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
 assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
-assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('responseMimeType: "application/json"'), "Agent tool-loop calls must request JSON output");
+assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('const adaptiveResponseMimeType = responseAttempt >= 2 ? null : "application/json"'), "Agent tool-loop calls must request JSON output");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
 assert.ok(!toolLoop.includes("maxModelCalls") && !toolLoop.includes("maxToolCalls"), "Agent model/tool turns must not have application-specific count caps");
@@ -192,11 +196,13 @@ for (const required of [
 }
 assert.ok(!improvementPrompt.includes("変更対象は src/、scripts/、docs/ のみ"), "Improvement agent prompt must not retain the old reduced scope");
 
-// Every AgentTaskWorkflow step uses the explicitly approved one-retry policy.
+// All other AgentTaskWorkflow steps use one retry. The model step alone has no
+// identical-condition retry so finish=length responses reach adaptive recovery.
 const retryConfigs = [...source.matchAll(/retries:\s*\{\s*limit:\s*1\s*,\s*delay:\s*"1 second"\s*\}/g)].map((match) => match[0]);
-// Telegram 通知ステップ5件の廃止で 17 から 12 に減った。PR #169 で改善計画の実行と結果書き戻しの2ステップが加わり、14になった。
-assert.equal(retryConfigs.length, 14, "Every AgentTaskWorkflow step must use one retry with a one-second delay");
-assert.ok(!/retries:\s*\{\s*limit:\s*0\b/.test(source), "AgentTaskWorkflow must not retain the rejected zero-retry config");
+// The model call is the only zero-retry step; its bounded recovery uses distinct durable step names.
+assert.equal(retryConfigs.length, 13, "All non-model Workflow steps must retain one retry with a one-second delay");
+assert.equal((source.match(/retries:\s*\{\s*limit:\s*0\s*,\s*delay:\s*"1 second"\s*\}/g) || []).length, 1,
+  "Only the adaptive Workers AI model step may disable identical-condition retries");
 
 
 
