@@ -889,14 +889,6 @@ async function syncNotes(request, env) {
       if (!review.last_seen_at || review.last_seen_at >= now) continue;
       if (reconciledConflictFileIds.has(review.file_id)) continue;
       const observation = observedByFileId.get(review.file_id);
-      if (review.reason === "vault_pull_live_content_conflict" && observation
-        && (observation.deleted === true || stableId(observation.path || "") !== stableId(review.path || ""))) {
-        await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
-          .bind(review.file_id, review.reason).run();
-        resolvedReviews++;
-        continue;
-      }
-
       const mapped = await mappingsFor(review.file_id, "", "");
       let archived = null;
       if (mapped.length === 1) {
@@ -909,15 +901,23 @@ async function syncNotes(request, env) {
         ).bind(review.path, review.path).all()).results || [];
         if (candidates.length === 1 && candidates[0].deleted_at) archived = candidates[0];
       }
-      if (!archived) continue;
+      if (archived) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
+            .bind(review.file_id, review.reason),
+          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")
+            .bind(archived.id, archived.sync_uuid || "")
+        ]);
+        resolvedReviews++;
+        continue;
+      }
 
-      await env.DB.batch([
-        env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
-          .bind(review.file_id, review.reason),
-        env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")
-          .bind(archived.id, archived.sync_uuid || "")
-      ]);
-      resolvedReviews++;
+      if (review.reason === "vault_pull_live_content_conflict" && observation
+        && (observation.deleted === true || stableId(observation.path || "") !== stableId(review.path || ""))) {
+        await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
+          .bind(review.file_id, review.reason).run();
+        resolvedReviews++;
+      }
     }
   }
 

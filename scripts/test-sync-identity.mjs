@@ -809,6 +809,15 @@ for (const path of [
     db.reviews.push({ file_id: "file-moved-review", path: oldPath, content_hash: "old-vault-hash", classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: "2026-11-08T19:00:22.000Z" });
     return db;
   };
+  const movedWithNewConflict = seed();
+  const changedVaultBody = "# changed Vault body";
+  const reobserved = await syncNotes(request(
+    [{ fileId: "file-moved-review", path: newPath, content: changedVaultBody }],
+    [observation("file-moved-review", newPath, changedVaultBody)], true, true
+  ), { DB: movedWithNewConflict });
+  assert.equal((await reobserved.json()).resolvedReviews, 0, "a moved file whose new-path conflict is re-recorded is not swept");
+  assert.equal(movedWithNewConflict.reviews.length, 1);
+  assert.equal(movedWithNewConflict.reviews[0].path, newPath, "the surviving review follows the current Vault path");
   const moved = seed();
   const movedRes = await syncNotes(request([], [observation("file-moved-review", newPath, content)], true, true), { DB: moved });
   assert.equal((await movedRes.json()).resolvedReviews, 1, "a moved Vault entry retires its stale old-path review");
