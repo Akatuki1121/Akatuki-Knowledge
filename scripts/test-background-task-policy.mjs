@@ -81,6 +81,17 @@ assert.equal(
   "retry_would_exceed_task_deadline",
 );
 
+// A lost execution lease is transient: the model call outlived the lease,
+// not the task input. It retries on the same backoff as other transient
+// failures, and still obeys the cumulative attempt budget.
+assert.equal(decideTaskRetry({ ...base, errorClass: "lease_lost" }).action, "retry");
+assert.equal(decideTaskRetry({ ...base, errorClass: "lease_lost" }).delayMs, 30_000);
+assert.equal(decideTaskRetry({ ...base, errorClass: "lease_lost", attempts: 3 }).delayMs, 120_000);
+assert.equal(
+  decideTaskRetry({ ...base, errorClass: "lease_lost", attempts: 4, maxAttempts: 4 }).stopReason,
+  "attempt_budget_exhausted",
+);
+
 // AI call/token counters are telemetry only and cannot stop a task.
 assert.equal(decideTaskRetry({ ...base, aiCallsUsed: 1_000_000, aiTokensUsed: 9_000_000_000 }).action, "retry");
 // Persisted row values cannot raise the retry-attempt ceiling.
@@ -135,9 +146,20 @@ for (const fixed of [
   "web_research_provider_error",
   "tool_output_too_large",
   "workers_ai_daily_quota_exhausted",
+  "lease_lost",
 ]) {
   assert.equal(classifyAgentTaskError(new Error("failed: " + fixed)), fixed, fixed);
 }
+// Production-observed lease loss (2026-11-09): the improvement task
+// 1009518a was written back as "Error: lease_lost" and classified unknown
+// because no branch matched. It must classify as the new transient class.
+assert.equal(classifyAgentTaskError(new Error("Error: lease_lost")), "lease_lost");
+// Lease diagnostics appended to the failure record must not change the class.
+assert.equal(
+  classifyAgentTaskError(new Error("Error: lease_lost; lease_expires_at=2026-11-08T18:06:04; updated_at=2026-11-08T18:04:04; started_at=2026-11-08T18:02:00")),
+  "lease_lost",
+);
+assert.equal(classifyAgentTaskError(new Error("Error: lease_lost; lease_token_mismatch")), "lease_lost");
 // Fixed classes win over the regex classes, and the fixed list order (not the
 // position inside the message) decides between multiple fixed classes.
 assert.equal(classifyAgentTaskError(new Error("credentials_detected (HTTP 429)")), "credentials_detected");

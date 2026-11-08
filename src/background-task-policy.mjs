@@ -35,6 +35,7 @@ const TRANSIENT = new Set([
   "rate_limited",
   "upstream_5xx",
   "executor_interrupted",
+  "lease_lost",
   "workers_ai_transient_failure",
 ]);
 
@@ -194,7 +195,7 @@ export function classifyAgentTaskError(error) {
     error?.workersAiError?.code !== undefined ? String(error.workersAiError.code) : "",
     error?.workersAiError?.status !== undefined ? String(error.workersAiError.status) : "",
   ].filter(Boolean).join(" ");
-  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "tool_output_too_large", "workers_ai_daily_quota_exhausted"]) {
+  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "tool_output_too_large", "workers_ai_daily_quota_exhausted", "lease_lost"]) {
     if (message.includes(fixed)) return fixed;
   }
   if (/workers_ai_(?:request|failure_settlement)_failed/i.test(message) && (/(daily|neuron|quota|allocation)/i.test(message) || /code=3036\b/iu.test(message))) return "workers_ai_daily_quota_exhausted";
