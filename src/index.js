@@ -33,7 +33,7 @@ import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
   buildAgentMemorySuppressionStatements
 } from "./agent-memory.mjs";
-import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent } from "./ai-send-guard.mjs";
+import { hasSensitiveCategory, inspectAndRedact } from "./ai-send-guard.mjs";
 import { createReplyText } from "./reply-text.mjs";
 import { createNoteSearchText } from "./note-search-text.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
@@ -791,9 +791,8 @@ async function syncNotes(request, env) {
         const archiveEvent = await env.DB.prepare(
           "SELECT archive_event_id, previous_ai_allowed FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1"
         ).bind(previous.id).first();
-        const credential = inspectWholeContent(content, env).credentials;
-        const aiAllowed = credential ? 0 : Number(archiveEvent?.previous_ai_allowed || 0);
-        const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+        const aiAllowed = Number(archiveEvent?.previous_ai_allowed || 0);
+        const reviewState = aiAllowed ? "ready" : "blocked";
         const restoreStatements = [];
         if (previous.content !== content) {
           restoreStatements.push(env.DB.prepare(
@@ -909,11 +908,12 @@ async function createNote(request, env) {
   if (existingUuid) return json({ error: "sync_uuid_exists" }, 409);
   const title = titleFrom(path, body.title);
   const contentHash = await sha256(content);
-  const inspected = inspectWholeContent(content, env);
-  const credential = inspected.credentials;
-  const aiAllowed = credential ? 0 : 1;
-  const sensitivity = credential ? "credentials" : "unknown";
-  const reviewState = credential ? "blocked_credentials" : "ready";
+  // 2026-11-09 の所有者決定で、書き込み時の認証情報スキャンによる
+  // ai_allowed / review_state の遮断 (Gemini 時代の残骸) は撤去した。
+  // 新規ノートは常に AI 可読・ready で保存する。
+  const aiAllowed = 1;
+  const sensitivity = "unknown";
+  const reviewState = "ready";
   const tags = JSON.stringify(extractTags(content, body.tags));
   const now = new Date().toISOString();
   const payload = {
@@ -1055,10 +1055,6 @@ async function setAiPermission(request, url, env) {
   const body = await readJson(request);
   if (typeof body.allowed !== "boolean") return json({ error: "allowed must be boolean" }, 400);
   const table = id2.startsWith("tg:") ? "telegram_notes" : "notes";
-  if (table === "telegram_notes" && body.allowed) {
-    const note = await env.DB.prepare("SELECT review_state FROM telegram_notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first();
-    if (note?.review_state === "blocked_credentials") return json({ error: "\u8A8D\u8A3C\u60C5\u5831\u3092\u542B\u3080Telegram\u30CE\u30FC\u30C8\u306F\u8A31\u53EF\u3067\u304D\u307E\u305B\u3093\u3002", code: "credentials_blocked" }, 409);
-  }
   const state = body.allowed ? "ready" : "blocked";
   const result = await env.DB.prepare(`UPDATE ${table} SET ai_allowed = ?, sensitivity = ?, review_state = ?, next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL`).bind(body.allowed ? 1 : 0, body.allowed ? "user-approved" : "blocked", state, id2).run();
   if (!result.meta?.changes) return json({ error: "Note not found" }, 404);
@@ -1224,9 +1220,8 @@ async function restoreNote(url, env) {
   if (!archived) return json({ error: "Archived note not found" }, 404);
   const event = await env.DB.prepare("SELECT archive_event_id, previous_ai_allowed, previous_review_state FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1").bind(id2).first();
   if (!event) return json({ error: "Archive metadata not found" }, 409);
-  const credential = inspectWholeContent(archived.content, env).credentials;
-  const aiAllowed = credential ? 0 : Number(event.previous_ai_allowed || 0);
-  const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+  const aiAllowed = Number(event.previous_ai_allowed || 0);
+  const reviewState = aiAllowed ? "ready" : "blocked";
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const source = table === "notes" ? "obsidian" : "telegram";
   const previousRevision = table === "notes"
@@ -1295,12 +1290,9 @@ async function correctNote(request, url, env) {
   if (old.content_hash === contentHash) return json({ ok: true, unchanged: true, id: id2 });
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 300) : old.title;
-  const inspected = inspectWholeContent(body.content, env);
-  const credential = inspected.credentials;
-  let aiAllowed = old.ai_allowed;
-  if (credential) aiAllowed = 0;
-  else if (table === "telegram_notes" && old.review_state === "blocked_credentials") aiAllowed = 1;
-  const reviewState = credential ? "blocked_credentials" : "ready";
+  // 書き込み時の認証情報スキャンによる遮断は 2026-11-09 の所有者決定で
+  // 撤去した。訂正では ai_allowed を変更せず、review_state は ready に戻す。
+  const reviewState = "ready";
   const tags = JSON.stringify(extractTags(body.content, table === "notes" ? void 0 : []));
   // Prepare the outbox event against the post-correction snapshot before
   // committing anything: an identity conflict throws here and leaves D1
@@ -1317,17 +1309,13 @@ async function correctNote(request, url, env) {
   } else {
     statements.push(env.DB.prepare("INSERT INTO telegram_note_revisions (note_id, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?)").bind(id2, old.title, old.content, old.content_hash, now));
   }
-  if (aiAllowed === 0) {
-    statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = 0, sensitivity = COALESCE(?, sensitivity), review_state = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, credential ? "credentials" : null, reviewState, id2));
-  } else {
-    statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = ?, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, aiAllowed, id2));
-  }
+  statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, id2));
   statements.push(env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = ? AND note_id = ? AND content_hash <> ? AND status IN ('active', 'unverified', 'conflicted')")
     .bind(now, table === "notes" ? "obsidian" : "telegram", id2, contentHash));
   statements.push(env.DB.prepare("DELETE FROM note_relations WHERE source_note_id = ? OR target_note_id = ?").bind(id2, id2));
   if (prepared) statements.push(...prepared.statements);
   await env.DB.batch(statements);
-  return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(aiAllowed) });
+  return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(old.ai_allowed) });
 }
 __name(correctNote, "correctNote");
 async function askQuestion(request, env) {
@@ -11121,12 +11109,10 @@ var YjsClientDO = class extends DurableObject {
           return 0;
         }
         const now = new Date().toISOString();
-        const inspected = inspectWholeContent(vaultContent, this.env);
-        const credential = inspected.credentials;
         const tags = JSON.stringify(extractTags(vaultContent));
         const update = this.env.DB.prepare(
-          "UPDATE notes SET content = ?, content_hash = ?, tags_json = ?, updated_at = ?, ai_allowed = CASE WHEN ? = 1 THEN 0 ELSE ai_allowed END, sensitivity = CASE WHEN ? = 1 THEN 'credentials' ELSE sensitivity END, review_state = CASE WHEN ? = 1 THEN 'blocked_credentials' ELSE 'ready' END WHERE id = ? AND path = ? AND content_hash = ? AND content = ? AND deleted_at IS NULL"
-        ).bind(vaultContent, vaultHash, tags, now, credential ? 1 : 0, credential ? 1 : 0, credential ? 1 : 0, path, path, expectedD1Hash, note.content);
+          "UPDATE notes SET content = ?, content_hash = ?, tags_json = ?, updated_at = ?, review_state = 'ready' WHERE id = ? AND path = ? AND content_hash = ? AND content = ? AND deleted_at IS NULL"
+        ).bind(vaultContent, vaultHash, tags, now, path, path, expectedD1Hash, note.content);
         const revision = this.env.DB.prepare(
           "INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1"
         ).bind(path, path, note.title, note.content, note.content_hash, now);
@@ -11938,28 +11924,25 @@ __name(describeAgentTaskError, "describeAgentTaskError");
 async function searchAgentTaskNotes(query, env) {
   const matches = await findRelevantNotes(query, env, 8);
   const notes = [];
+  // 2026-11-09 の所有者決定で、ai_allowed と本文の認証情報スキャンによる
+  // 除外 (Gemini 時代の残骸) は撤去した。タイトルと抜粋は、送る直前の
+  // 伏字 (inspectAndRedact) だけを従来どおり適用する。
   for (const note of matches) {
-    if (note.ai_allowed !== 1) continue;
-    const wholeInspection = inspectWholeContent(note.content, env);
-    if (wholeInspection.credentials || hasSensitiveCategory(wholeInspection.findings)) continue;
     const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
     const safeExcerpt = inspectAndRedact(excerpt(note.content, query, 800), { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    const sensitive = hasSensitiveCategory([...safeTitle.findings, ...safeExcerpt.findings]);
-    if (safeTitle.ok && safeExcerpt.ok && !sensitive) {
-      notes.push({
-        id: note.id,
-        title: safeTitle.text,
-        text: safeExcerpt.text,
-        kind: note.knowledge_type || "unknown",
-        scope: note.knowledge_scope || "project",
-        memoryKinds: note.memory_kinds || "",
-        memoryTrustLevels: note.memory_trust_levels || "",
-        memoryStatus: note.memory_status || "legacy_unverified",
-        memoryConfidence: note.memory_confidence,
-        memoryRecordedAt: note.memory_recorded_at || null,
-        memoryExpiresAt: note.memory_expires_at || null
-      });
-    }
+    notes.push({
+      id: note.id,
+      title: safeTitle.text,
+      text: safeExcerpt.text,
+      kind: note.knowledge_type || "unknown",
+      scope: note.knowledge_scope || "project",
+      memoryKinds: note.memory_kinds || "",
+      memoryTrustLevels: note.memory_trust_levels || "",
+      memoryStatus: note.memory_status || "legacy_unverified",
+      memoryConfidence: note.memory_confidence,
+      memoryRecordedAt: note.memory_recorded_at || null,
+      memoryExpiresAt: note.memory_expires_at || null
+    });
     if (notes.length >= 6) break;
   }
   return notes;
@@ -12811,9 +12794,8 @@ var wrapper_default = {
         });
         if (!validation.ok) return Response.json({ ok: false, applied: false, error: validation.error }, { status: 409, headers: JSON_HEADERS2 });
         const archiveEvent = await env.DB.prepare("SELECT archive_event_id, previous_ai_allowed FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1").bind(note.id).first();
-        const credential = inspectWholeContent(vault.content, env).credentials;
-        const aiAllowed = credential ? 0 : Number(archiveEvent?.previous_ai_allowed || 0);
-        const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+        const aiAllowed = Number(archiveEvent?.previous_ai_allowed || 0);
+        const reviewState = aiAllowed ? "ready" : "blocked";
         const now = new Date().toISOString();
         const title = titleFrom(path);
         const tags = JSON.stringify(extractTags(vault.content));

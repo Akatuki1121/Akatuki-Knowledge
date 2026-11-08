@@ -6,7 +6,7 @@ export const checks = [
   ["sync-identity-repair-contract", process.execPath, ["scripts/check-identity-map-repair-contract.mjs"]],
   ["sync-note-reconcile-contract", process.execPath, ["scripts/check-vault-note-reconcile-contract.mjs"]],
   ["ai-send-guard-syntax", process.execPath, ["--check", "src/ai-send-guard.mjs"]],
-  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/log-sanitize.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/bot-alerts.test.js"]],
+  ["node-tests", process.execPath, ["--test", "tests/credential-guard.test.js", "tests/ai-send-guard.test.js", "tests/note-create-no-gate.test.js", "tests/log-sanitize.test.js", "tests/reply-text.test.js", "tests/note-search-text.test.js", "tests/bot-alerts.test.js"]],
   ["log-sanitize-syntax", process.execPath, ["--check", "src/log-sanitize.mjs"]],
   ["reply-text-syntax", process.execPath, ["--check", "src/reply-text.mjs"]],
   ["note-search-text-syntax", process.execPath, ["--check", "src/note-search-text.mjs"]],
