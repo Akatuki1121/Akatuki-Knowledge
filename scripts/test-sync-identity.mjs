@@ -551,8 +551,8 @@ for (const path of [
   assert.equal(plainSync.reviews.length, 1);
   const tombstoned = seed();
   const tombstoneRes = await syncNotes(request([], [observation("file-guards", path, content, true)], true, true), { DB: tombstoned });
-  assert.equal((await tombstoneRes.json()).resolvedReviews, 0, "a tombstoned vault entry never resolves review rows");
-  assert.equal(tombstoned.reviews.length, 1);
+  assert.equal((await tombstoneRes.json()).resolvedReviews, 1, "a tombstoned Vault entry retires its stale live-content review");
+  assert.equal(tombstoned.reviews.length, 0);
 }
 
 {
