@@ -8,6 +8,7 @@ import {
   getAgentTask,
   listAgentTasks,
   claimNextAgentTask,
+  renewAgentTaskLease,
   reserveAgentAiBudget,
   settleAgentAiBudget,
   reserveQueuedAgentTaskBudget,
@@ -11585,7 +11586,14 @@ var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
-var IMPROVEMENT_RETRY_POLICY_VERSION = 7;
+var IMPROVEMENT_RETRY_POLICY_VERSION = 8;
+// Execution-lease lifetime for an agent task claim. A single Workers AI call
+// was observed at 235,677 ms (task e4d16479, 2026-11-09), far beyond one
+// lease, so the lease must be renewed while the call is still in flight.
+// The renewal interval stays below the lease lifetime so the lease always
+// keeps at least one full interval of margin.
+var AGENT_TASK_LEASE_SECONDS = 120;
+var AGENT_TASK_LEASE_RENEWAL_INTERVAL_MS = 60_000;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11735,7 +11743,7 @@ async function reassessOutdatedImprovementTasks(env, limit = 20) {
         || isModelResponseShapeInvalidInput(task.last_error)))
       || [
         "network_error", "timeout", "rate_limited", "upstream_5xx",
-        "executor_interrupted", "workers_ai_daily_quota_exhausted",
+        "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
         "workers_ai_transient_failure"
       ].includes(errorClass);
     const result = await reassessImprovementAgentTask(env.DB, task.task_id, {
@@ -11830,7 +11838,7 @@ async function runImprovementInbox(env) {
           || isModelResponseShapeInvalidInput(previous.last_error)))
         || [
           "network_error", "timeout", "rate_limited", "upstream_5xx",
-          "executor_interrupted", "workers_ai_daily_quota_exhausted",
+          "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
           "workers_ai_transient_failure"
         ].includes(reassessedClass);
       const reassessed = await reassessImprovementAgentTask(env.DB, previous.task_id, {
@@ -12006,6 +12014,71 @@ async function assertAgentTaskRunning(db, taskId, leaseToken) {
 }
 __name(assertAgentTaskRunning, "assertAgentTaskRunning");
 
+// Renew the execution lease once. Never throws: a renewal that fails only
+// means the lease is already gone, and the next checkpoint save reports
+// lease_lost on its own. Callers must not treat a failed renewal as fatal.
+async function tryRenewAgentTaskLease(db, taskId, leaseToken) {
+  try {
+    return await renewAgentTaskLease(db, {
+      taskId, leaseToken, leaseSeconds: AGENT_TASK_LEASE_SECONDS, nowMs: Date.now()
+    });
+  } catch {
+    return false;
+  }
+}
+__name(tryRenewAgentTaskLease, "tryRenewAgentTaskLease");
+
+// Keep the execution lease alive while a long model call runs. Renewal only
+// succeeds while the lease is still alive, so it must happen on a timer
+// during the call, not after the call returns. Returns a stop function the
+// caller runs in a finally block. If a renewal reports the lease is gone,
+// the timer stops itself; the in-flight call keeps running and the next
+// checkpoint save reports lease_lost.
+function startAgentTaskLeaseRenewal(db, taskId, leaseToken) {
+  let stopped = false;
+  let inFlight = false;
+  const timer = setInterval(async () => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      const renewed = await tryRenewAgentTaskLease(db, taskId, leaseToken);
+      if (!renewed) {
+        stopped = true;
+        clearInterval(timer);
+      }
+    } finally {
+      inFlight = false;
+    }
+  }, AGENT_TASK_LEASE_RENEWAL_INTERVAL_MS);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+__name(startAgentTaskLeaseRenewal, "startAgentTaskLeaseRenewal");
+
+// Lease-loss diagnostics for the failure record. The stored expiry implies
+// the last renewal (expiry minus the lease lifetime); started_at is the
+// first claim of the task row and updated_at is its last write. A token
+// mismatch means another executor reclaimed the task, which is a different
+// cause from an expired lease. Never throws; diagnostics must not break
+// failure recording.
+async function describeAgentTaskLeaseLoss(db, taskId, leaseToken, errorDetail) {
+  try {
+    const task = await getAgentTask(db, taskId);
+    if (!task) return errorDetail;
+    if (task.lease_token !== leaseToken) return (errorDetail + "; lease_token_mismatch").slice(0, 200);
+    const parts = [errorDetail];
+    if (task.lease_expires_at) parts.push("lease_expires_at=" + task.lease_expires_at);
+    if (task.updated_at) parts.push("updated_at=" + task.updated_at);
+    if (task.started_at) parts.push("started_at=" + task.started_at);
+    return parts.join("; ").slice(0, 200);
+  } catch {
+    return errorDetail;
+  }
+}
+__name(describeAgentTaskLeaseLoss, "describeAgentTaskLeaseLoss");
+
 class AgentTaskWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const taskId = typeof event?.payload?.taskId === "string" ? event.payload.taskId : "";
@@ -12014,7 +12087,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
 
     for (let attempt = 1; ; attempt++) {
       const claim = await step.do("claim-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
-        const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: 120 });
+        const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: AGENT_TASK_LEASE_SECONDS });
         return task ? { claimed: true, attempts: task.attempts } : { claimed: false };
       });
       if (!claim.claimed) {
@@ -12192,7 +12265,13 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               });
               if (!reserved) throw new Error("ai_token_budget_exhausted");
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
-              const raw = await callWorkersAi(this.env, inspection.text, adaptiveMaxOutputTokens, {
+              // One model call was observed at 235,677 ms while the lease
+              // lasts 120 s, so the lease must be renewed while the call is
+              // in flight. The timer stops when the call returns or throws.
+              const stopLeaseRenewal = startAgentTaskLeaseRenewal(this.env.DB, taskId, leaseToken);
+              let raw;
+              try {
+                raw = await callWorkersAi(this.env, inspection.text, adaptiveMaxOutputTokens, {
                 ...(adaptiveResponseMimeType ? { responseMimeType: adaptiveResponseMimeType } : {}),
                 reasoningEffort: adaptiveReasoningEffort,
                 onUsage: async (usage) => {
@@ -12210,6 +12289,12 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                   if (!settled) throw new Error("ai_token_budget_settlement_failed");
                 }
               });
+              } finally {
+                stopLeaseRenewal();
+              }
+              // Renew once more after the call so the checkpoint that
+              // follows does not fail on a lease that expired mid-call.
+              await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
               const safeResponse = inspectAndRedact(raw, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
               if (!safeResponse.ok) {
                 throw new Error(safeResponse.findings.includes("credentials") ? "credentials_detected" : "invalid_input:model_output_" + (safeResponse.findings.includes("input_too_long") ? "too_long" : "not_string"));
@@ -12335,12 +12420,17 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               const execution = await step.do(
                 "execute-improvement-plan-" + attempt,
                 { retries: { limit: 1, delay: "1 second" } },
-                async () => executeApprovedImprovementPlan({
-                  plan: pending.plan,
-                  expectedPlanHash: pending.planHash,
-                  token: this.env.GITHUB_TOKEN || "",
-                  fetchImpl: fetch
-                })
+                async () => {
+                  // Plan execution (branch, patch, PR creation) can outlast
+                  // the lease left over from the agent loop.
+                  await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
+                  return executeApprovedImprovementPlan({
+                    plan: pending.plan,
+                    expectedPlanHash: pending.planHash,
+                    token: this.env.GITHUB_TOKEN || "",
+                    fetchImpl: fetch
+                  });
+                }
               );
               executionResult = execution.ok
                 ? { status: "completed", pullRequestUrl: execution.pullRequestUrl, autoMergeEnabled: execution.autoMergeEnabled, reason: execution.reason || null }
@@ -12389,6 +12479,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             + "\n承認期限: " + pendingGitHubWrite.expiresAt
           : (reply || "関連ノートから回答を作成できませんでした。");
         const finalSaved = await step.do("save-formatted-output-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
+          await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
           return saveAgentTaskCheckpoint(this.env.DB, {
             taskId, leaseToken, nowMs: Date.now(),
             checkpoint: {
@@ -12408,6 +12499,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         }
 
         const completed = await step.do("complete-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
+          await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
           return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
         });
         if (completed) {
@@ -12417,10 +12509,12 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
       } catch (error) {
         const errorClass = classifyAgentTaskError(error);
-        const errorDetail = describeAgentTaskError(error, this.env);
+        const errorDetail = errorClass === "lease_lost"
+          ? await describeAgentTaskLeaseLoss(this.env.DB, taskId, leaseToken, describeAgentTaskError(error, this.env))
+          : describeAgentTaskError(error, this.env);
         const retryable = [
           "network_error", "timeout", "rate_limited", "upstream_5xx",
-          "executor_interrupted", "workers_ai_daily_quota_exhausted",
+          "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
           "workers_ai_transient_failure"
         ].includes(errorClass);
         const failure = await step.do("record-failure-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {

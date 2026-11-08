@@ -319,7 +319,7 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(storeSource.includes("normalizeImprovementTaskRuntimePayload"));
   assert.ok(storeSource.includes("status IN ('failed', 'needs_attention', 'queued', 'waiting')"));
   assert.ok(source.includes("previousPayload.prompt.trimEnd() === requestContent.trimEnd()"));
-  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 7;"));
+  assert.ok(source.includes("var IMPROVEMENT_RETRY_POLICY_VERSION = 8;"));
   assert.ok(append.includes("isModelResponseShapeInvalidInput"),
     "The terminal sweep must revive model response-shape failures at reassessment");
   assert.ok(inbox.includes("isModelResponseShapeInvalidInput"),
