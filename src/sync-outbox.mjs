@@ -127,12 +127,19 @@ async function drainSyncOutbox(env, limit = 5) {
       const payload = JSON.parse(job.payload_json);
       if (job.entity_type === "notes") {
         if (!isValidSyncUuid(payload.syncUuid)) throw new Error("invalid_sync_uuid");
-        // Deleting a note that was never present in YAOS is idempotent. There is
-        // no stable fileId to map in that case; all successful upserts/restores
-        // and deletes of known files still require a verified mapping.
-        if (typeof result.fileId !== "string" || !result.fileId) {
-          if (job.operation !== "delete") throw new Error("sync_identity_mapping_missing");
+        if (job.operation === "delete") {
+          // The delete API retires the mapping in the same batch as the D1
+          // tombstone. Repeat the cleanup after successful delivery for
+          // legacy tombstones, but never recreate an identity for a deleted
+          // note from the YAOS response's fileId.
+          await env.DB.batch([
+            env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (SELECT file_id FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?)")
+              .bind(job.entity_id, payload.syncUuid),
+            env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")
+              .bind(job.entity_id, payload.syncUuid)
+          ]);
         } else {
+          if (typeof result.fileId !== "string" || !result.fileId) throw new Error("sync_identity_mapping_missing");
           const existing = (await env.DB.prepare("SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ? OR note_id = ? OR sync_uuid = ?")
             .bind(result.fileId, job.entity_id, payload.syncUuid).all()).results || [];
           if (existing.some((mapping) => mapping.file_id !== result.fileId || mapping.note_id !== job.entity_id || mapping.sync_uuid !== payload.syncUuid)) {

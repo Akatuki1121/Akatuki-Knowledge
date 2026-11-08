@@ -63,10 +63,14 @@ function makeDb(initialNotes = [], initialMappings = []) {
           if (sql.includes("FROM yaos_sync_identity_review")) {
             const classification = sql.match(/classification = '([^']+)'/)?.[1];
             const reason = sql.match(/reason = '([^']+)'/)?.[1];
+            const reasons = sql.includes("reason IN")
+              ? [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1])
+              : null;
             const fileId = sql.includes("file_id = ?") ? values[0] : undefined;
             return { results: reviews.filter((r) =>
               (classification === undefined || r.classification === classification) &&
               (reason === undefined || r.reason === reason) &&
+              (!reasons || reasons.includes(r.reason)) &&
               (fileId === undefined || r.file_id === fileId)
             ).map((r) => ({ ...r })) };
           }
@@ -76,6 +80,9 @@ function makeDb(initialNotes = [], initialMappings = []) {
             return { results: mappings.filter((m) =>
               (fileId && m.file_id === fileId) || (noteId && m.note_id === noteId) || (syncUuid && m.sync_uuid === syncUuid)
             ).map((m) => ({ ...m })) };
+          }
+          if (sql.includes("FROM notes WHERE id = ? OR path = ?")) {
+            return { results: notes.filter((n) => n.id === values[0] || n.path === values[1]).map((n) => ({ ...n })) };
           }
           if (sql.includes("FROM notes WHERE sync_uuid = ?")) return { results: notes.filter((n) => n.sync_uuid === values[0]).map((n) => ({ ...n })) };
           if (sql.includes("FROM notes")) return { results: notes.map((n) => ({ ...n })) };
@@ -124,6 +131,13 @@ function makeDb(initialNotes = [], initialMappings = []) {
             const row = mappings.find((m) => m.file_id === v[2] && m.note_id === v[3] && m.sync_uuid === v[4] && m.last_path === v[5]);
             if (row) { row.last_path = v[0]; row.updated_at = v[1]; }
             return { meta: { changes: row ? 1 : 0 } };
+          }
+          if (sql.startsWith("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")) {
+            const before = mappings.length;
+            for (let i = mappings.length - 1; i >= 0; i--) {
+              if (mappings[i].note_id === v[0] || (v[1] && mappings[i].sync_uuid === v[1])) mappings.splice(i, 1);
+            }
+            return { meta: { changes: before - mappings.length } };
           }
           if (sql.startsWith("UPDATE notes SET sync_uuid = ?")) {
             const row = notes.find((n) => n.id === v[1]);
@@ -751,6 +765,65 @@ for (const path of [
 }
 
 {
+  // Production-observed UnityTodo tombstones (2026-10-29): old Inbox mapping
+  // rows can survive after D1 soft deletion. A complete pull retires both
+  // rows and their mapping-conflict reviews, including tombstoned Vault IDs.
+  const path1 = "Notes/Inbox/UnityTodo1.md";
+  const path2 = "Notes/Inbox/UnityTodo2.md";
+  const uuid1 = "08393bf5-de1f-4b2d-8d28-a9bfc182015d";
+  const uuid2 = "c3cd0530-5bb5-4619-a0b5-efe9a2a69";
+  const db = makeDb([
+    note(path1, path1, "# UnityTodo1", uuid1, "2026-10-29T14:20:52.381Z"),
+    note(path2, path2, "# UnityTodo2", uuid2, "2026-10-29T14:20:55.039Z")
+  ], [
+    { file_id: "zc2KzGojn9XJEwTn", sync_uuid: uuid1, note_id: path1, last_path: path1, created_at: now, updated_at: now },
+    { file_id: "ubfGrlbqkLveDoFW", sync_uuid: uuid2, note_id: path2, last_path: path2, created_at: now, updated_at: now }
+  ]);
+  db.reviews.push(
+    { file_id: "zc2KzGojn9XJEwTn", path: path1, content_hash: "historical-hash-1", classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: "2026-11-07T00:00:00.000Z", last_seen_at: "2026-11-08T19:00:22.000Z" },
+    { file_id: "ubfGrlbqkLveDoFW", path: path2, content_hash: "historical-hash-2", classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: "2026-11-07T00:00:00.000Z", last_seen_at: "2026-11-08T19:00:22.000Z" }
+  );
+  const observations = [
+    observation("zc2KzGojn9XJEwTn", path1, "", true),
+    observation("ubfGrlbqkLveDoFW", path2, "", true)
+  ];
+  const res = await syncNotes(request([], observations, true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.resolvedReviews, 2, "both production-shaped UnityTodo mapping reviews are retired");
+  assert.equal(db.reviews.length, 0);
+  assert.equal(db.mappings.length, 0, "mappings belonging to archived UnityTodo notes are retired");
+  assert.ok(db.notes.every((row) => row.deleted_at), "the sweep never restores either note");
+}
+
+{
+  // Vault-side live-content reviews are stale when the same stable fileId is
+  // observed at a different path or is explicitly tombstoned. Partial pulls
+  // must not infer either transition.
+  const oldPath = "Notes/Tasks/old-name.md";
+  const newPath = "Notes/Tasks/new-name.md";
+  const content = "# D1 note";
+  const seed = () => {
+    const db = makeDb([note(oldPath, newPath, content, uuidA)], [{
+      file_id: "file-moved-review", sync_uuid: uuidA, note_id: oldPath, last_path: oldPath, created_at: now, updated_at: now
+    }]);
+    db.reviews.push({ file_id: "file-moved-review", path: oldPath, content_hash: "old-vault-hash", classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: "2026-11-08T19:00:22.000Z" });
+    return db;
+  };
+  const moved = seed();
+  const movedRes = await syncNotes(request([], [observation("file-moved-review", newPath, content)], true, true), { DB: moved });
+  assert.equal((await movedRes.json()).resolvedReviews, 1, "a moved Vault entry retires its stale old-path review");
+  assert.equal(moved.reviews.length, 0);
+  const deleted = seed();
+  const deletedRes = await syncNotes(request([], [observation("file-moved-review", oldPath, "", true)], true, true), { DB: deleted });
+  assert.equal((await deletedRes.json()).resolvedReviews, 1, "a tombstoned Vault entry retires its live-content review");
+  assert.equal(deleted.reviews.length, 0);
+  const partial = seed();
+  const partialRes = await syncNotes(request([], [observation("file-moved-review", oldPath, "", true)], false, true), { DB: partial });
+  assert.equal((await partialRes.json()).resolvedReviews, 0, "an incomplete Vault observation retains the review");
+  assert.equal(partial.reviews.length, 1);
+}
+
+{
   // A stale live-content review on a LIVE note whose body genuinely differs
   // is not an orphan: it survives both the stale sweep and the orphan sweep.
   const path = "Notes/Tasks/still-divergent-live.md";
@@ -784,4 +857,4 @@ for (const path of [
   assert.ok(db.notes[0].deleted_at, "the archived note is untouched");
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content and identity-mapping review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, frontmatter conflict, line-ending equivalence (candidate, stale sweep, mapping sweep, mixtures), and archived-row orphan review sweep with mapping-conflict protection.");
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content and identity-mapping review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, frontmatter conflict, line-ending equivalence, UnityTodo archived-mapping retirement, moved/deleted Vault review retirement, and archived-row orphan review sweep.");

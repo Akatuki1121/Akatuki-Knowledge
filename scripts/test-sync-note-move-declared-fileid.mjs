@@ -66,7 +66,7 @@ const createNote = buildHandler("createNote", globals);
 const moveNote = buildHandler("moveNote", globals);
 
 function createMockDb() {
-  const state = { notes: [], mappings: [], jobs: [] };
+  const state = { notes: [], mappings: [], jobs: [], reviews: [] };
   const findNote = (predicate) => state.notes.find(predicate) || null;
   const findMapping = (predicate) => state.mappings.find(predicate) || null;
   function makeStatement(sql, params) {
@@ -162,6 +162,11 @@ function createMockDb() {
           return { meta: { changes: 1 } };
         }
         return { meta: { changes: 0 } };
+      }
+      if (sql.startsWith("DELETE FROM yaos_sync_identity_review WHERE file_id = ?")) {
+        const before = state.reviews.length;
+        state.reviews = state.reviews.filter((row) => row.file_id !== params[0]);
+        return { meta: { changes: before - state.reviews.length } };
       }
       if (sql.startsWith("UPDATE yaos_file_identity_map SET last_path")) {
         const mapping = findMapping(
@@ -259,8 +264,10 @@ await test("宣言 fileId による作成直後の移動が成功し、マッピ
   equal(state.mappings[0].note_id, created.id, "マッピングの note_id");
   equal(state.mappings[0].sync_uuid, created.syncUuid, "マッピングの sync_uuid");
   equal(state.mappings[0].last_path, "Notes/Test/移動後.md", "マッピングの last_path は移動先");
+  state.reviews.push({ file_id: "vault-file-a", path: "Notes/Test/移動後.md", reason: "sync_identity_mapping_conflict" });
   const second = await move(db, "Notes/Test/移動後.md", { newPath: "Notes/Test/再移動後.md" });
   equal(second.status, 200, "fileId なしの後続移動が成功する");
+  equal(state.reviews.length, 0, "移動と同じ batch で旧パスの同一性レビューも退役する");
   equal(state.mappings[0].last_path, "Notes/Test/再移動後.md", "後続移動で last_path が更新される");
   equal(state.mappings[0].file_id, "vault-file-a", "後続移動で file_id は変わらない");
   const conflict = await move(db, "Notes/Test/再移動後.md", {

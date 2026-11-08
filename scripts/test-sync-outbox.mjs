@@ -234,6 +234,65 @@ function statementDb({ row = null, owners = [] } = {}) {
   );
 }
 
+{
+  // A confirmed YAOS tombstone must retire identity state, not recreate it
+  // from the delete response's fileId. The delete payload's sync_uuid is the
+  // lookup key; no live mapping is required after the D1 archive batch.
+  const deletedJob = {
+    job_id: 41,
+    entity_type: "notes",
+    entity_id: "Notes/deleted-by-api.md",
+    operation: "delete",
+    payload_json: JSON.stringify({
+      id: "Notes/deleted-by-api.md",
+      path: "Notes/deleted-by-api.md",
+      syncUuid: uuid,
+      deletedAt: "2026-11-09T00:00:00.000Z"
+    }),
+    attempts: 0
+  };
+  const executed = [];
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async all() {
+          if (sql.includes("SELECT j.job_id")) return { results: [deletedJob] };
+          return { results: [] };
+        },
+        async run() {
+          executed.push({ sql, values });
+          return { meta: { changes: 1 } };
+        }
+      };
+    },
+    async batch(statements) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    }
+  };
+  const client = {
+    getByName() {
+      return {
+        async fetch() {
+          return new Response(JSON.stringify({ ok: true, verified: true, fileId: "vault-file-deleted" }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+      };
+    }
+  };
+  const result = await outbox.drainSyncOutbox({ DB: db, YJS_CLIENT: client }, 1);
+  assert.equal(result.sent, 1, "a verified YAOS delete is delivered");
+  assert.ok(executed.some((entry) => entry.sql.startsWith("DELETE FROM yaos_file_identity_map")),
+    "successful delete delivery repeats identity-map retirement for legacy tombstones");
+  assert.ok(!executed.some((entry) => entry.sql.startsWith("INSERT INTO yaos_file_identity_map")),
+    "a delete response fileId must never recreate a mapping");
+}
+
 console.log("Sync outbox module tests passed.");
 
 {
