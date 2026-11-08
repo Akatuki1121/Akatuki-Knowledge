@@ -37,7 +37,7 @@ import { hasSensitiveCategory, inspectAndRedact } from "./ai-send-guard.mjs";
 import { createReplyText } from "./reply-text.mjs";
 import { createNoteSearchText } from "./note-search-text.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
-import { classifyAgentTaskError } from "./background-task-policy.mjs";
+import { classifyAgentTaskError, isModelResponseShapeInvalidInput } from "./background-task-policy.mjs";
 import { classifyOperationalFailure, describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
 const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
@@ -11540,7 +11540,7 @@ var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
-var IMPROVEMENT_RETRY_POLICY_VERSION = 6;
+var IMPROVEMENT_RETRY_POLICY_VERSION = 7;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11686,7 +11686,8 @@ async function reassessOutdatedImprovementTasks(env, limit = 20) {
         ? task.last_error_class
         : (task.last_error ? classifyAgentTaskError(new Error(task.last_error)) : "unknown"));
     const retryable = (errorClass === "invalid_input"
-      && task.last_error?.includes("invalid_input:tool_argument_keys"))
+      && (task.last_error?.includes("invalid_input:tool_argument_keys")
+        || isModelResponseShapeInvalidInput(task.last_error)))
       || [
         "network_error", "timeout", "rate_limited", "upstream_5xx",
         "executor_interrupted", "workers_ai_daily_quota_exhausted",
@@ -11779,11 +11780,14 @@ async function runImprovementInbox(env) {
         : (previous.last_error_class && previous.last_error_class !== "unknown"
           ? previous.last_error_class
           : (previous.last_error ? classifyAgentTaskError(new Error(previous.last_error)) : "unknown"));
-      const retryable = [
-        "network_error", "timeout", "rate_limited", "upstream_5xx",
-        "executor_interrupted", "workers_ai_daily_quota_exhausted",
-        "workers_ai_transient_failure"
-      ].includes(reassessedClass);
+      const retryable = (reassessedClass === "invalid_input"
+        && (previous.last_error?.includes("invalid_input:tool_argument_keys")
+          || isModelResponseShapeInvalidInput(previous.last_error)))
+        || [
+          "network_error", "timeout", "rate_limited", "upstream_5xx",
+          "executor_interrupted", "workers_ai_daily_quota_exhausted",
+          "workers_ai_transient_failure"
+        ].includes(reassessedClass);
       const reassessed = await reassessImprovementAgentTask(env.DB, previous.task_id, {
         nowMs: Date.now(),
         policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,

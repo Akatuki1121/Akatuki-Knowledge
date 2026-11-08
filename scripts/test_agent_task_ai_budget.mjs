@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { classifyAgentTaskError } from "../src/background-task-policy.mjs";
+import { classifyAgentTaskError, isModelResponseShapeInvalidInput } from "../src/background-task-policy.mjs";
 import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, listReassessableImprovementAgentTasks, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -409,6 +409,53 @@ assert.equal(row.retry_policy_version, 5);
 const normalizedToolKeyPayload = JSON.parse(row.payload_json);
 assert.equal(normalizedToolKeyPayload.maxOutputTokens, 8_192);
 assert.equal(normalizedToolKeyPayload.reasoningEffort, "high");
+
+// Production-observed response-shape failures from self-audit improvement
+// tasks (2026-11-07/08): the model's reply shape failed, not the task input.
+// The reassessment decision src/index.js computes must revive them under a
+// new policy while cumulative attempts are preserved.
+const observedShapePayload = {
+  ...observedV3Payload,
+  maxOutputTokens: 8_192,
+  inputHash: "observed-response-shape-input-hash",
+};
+for (const [taskId, notePath, lastError, createdAt, updatedAt] of [
+  ["observed-action-shape-v6", "Notes/改善/自己監査-2026-11-06.md", "Error: invalid_input:action_shape", "2026-11-07 01:00:00", "2026-11-07 01:15:50"],
+  ["observed-response-not-json-v6", "Notes/改善/自己監査-2026-11-07.md", "Error: invalid_input:model_response_not_json", "2026-11-08 01:00:00", "2026-11-08 01:09:29"],
+]) {
+  sqlite.prepare(`
+    INSERT INTO agent_tasks (
+      task_id, task_type, status, budget_reserved, payload_json, attempts, max_attempts,
+      created_at, updated_at, deadline_at, next_attempt_at,
+      last_error_class, last_error, stop_reason, retry_policy_version
+    ) VALUES (?, 'github_query', 'needs_attention', 0, ?, 2, 4,
+      ?, ?, ?, ?, 'invalid_input', ?, 'non_retryable_invalid_input', 6)
+  `).run(taskId, JSON.stringify({ ...observedShapePayload, improvementNotePath: notePath }),
+    createdAt, updatedAt, updatedAt, updatedAt, lastError);
+}
+const discoverableShapeFailures = await listReassessableImprovementAgentTasks(db, { policyVersion: 7, limit: 20 });
+assert.ok(discoverableShapeFailures.some((task) => task.task_id === "observed-action-shape-v6"),
+  "An attempt-2 action_shape task on policy v6 must be included in the v7 sweep");
+assert.ok(discoverableShapeFailures.some((task) => task.task_id === "observed-response-not-json-v6"),
+  "An attempt-2 model_response_not_json task on policy v6 must be included in the v7 sweep");
+for (const [taskId, lastError] of [
+  ["observed-action-shape-v6", "Error: invalid_input:action_shape"],
+  ["observed-response-not-json-v6", "Error: invalid_input:model_response_not_json"],
+]) {
+  const decisionErrorClass = classifyAgentTaskError(new Error(lastError));
+  assert.equal(decisionErrorClass, "invalid_input");
+  const reassessedShapeFailure = await reassessImprovementAgentTask(db, taskId, {
+    nowMs: legacyFailureAt + 50 * 60 * 1000,
+    policyVersion: 7,
+    retryable: decisionErrorClass === "invalid_input" && isModelResponseShapeInvalidInput(lastError),
+    errorClass: decisionErrorClass,
+  });
+  assert.equal(reassessedShapeFailure.reassessed, true, taskId);
+  assert.equal(reassessedShapeFailure.status, "waiting", taskId);
+  assert.equal(reassessedShapeFailure.attempts, 2, "Reassessment must not reset cumulative attempts");
+  assert.equal(reassessedShapeFailure.max_attempts, 4, taskId);
+  assert.equal(reassessedShapeFailure.retry_policy_version, 7, taskId);
+}
 
 sqlite.prepare("UPDATE agent_tasks SET status = 'running', attempts = 2, lease_token = 'legacy-retry-2', lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
   .run(toSqliteDateTime(legacyFailureAt + 120_000), toSqliteDateTime(legacyFailureAt + 60_000), "observed-attempt-budget-exhausted");
