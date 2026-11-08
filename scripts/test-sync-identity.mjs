@@ -645,4 +645,143 @@ for (const path of [
   }
 }
 
-console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content and identity-mapping review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, and frontmatter conflict.");
+{
+  // Production shape (Notes/アル丸スマッシュ/参考/setup-guide.md): the D1 body
+  // carries CRLF on most lines with LF mixed in, while the Vault copy is LF
+  // throughout. Only the line endings differ, so a vault pull must not record
+  // a live-content conflict and must not rewrite the stored D1 body.
+  const path = "Notes/アル丸スマッシュ/参考/setup-guide.md";
+  const d1Content = "# setup-guide\r\n\r\n## 手順\n1. one\r\n2. two\r\n3. three\n";
+  const vaultContent = "# setup-guide\n\n## 手順\n1. one\n2. two\n3. three\n";
+  assert.notEqual(hash(d1Content), hash(vaultContent), "the fixture bodies must differ as raw bytes");
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-line-endings", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  const res = await syncNotes(request([{ fileId: "file-line-endings", path, content: vaultContent }], [observation("file-line-endings", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.needsReview, 0, "a line-ending-only difference is not a live-content conflict");
+  assert.equal(db.reviews.length, 0);
+  assert.equal(db.notes[0].content, d1Content, "the stored D1 body keeps its original line endings");
+  assert.equal(db.notes[0].content_hash, hash(d1Content));
+  assert.equal(db.revisions.length, 0, "no revision is written for a comparison-only normalization");
+}
+
+{
+  // Mixtures on both sides, in different patterns: neither uniform CRLF nor
+  // uniform LF conversion of one body equals the other body, yet line by line
+  // they are the same text.
+  const path = "Notes/混在/mixed.md";
+  const d1Content = "# Guide\n\nfirst\r\nsecond\r\nthird\n";
+  const vaultContent = "# Guide\r\n\r\nfirst\nsecond\nthird\r\n";
+  assert.notEqual(hash(d1Content), hash(vaultContent));
+  assert.notEqual(hash(d1Content.replace(/\r\n|\r|\n/g, "\n")), hash(vaultContent), "uniform normalization of D1 does not reproduce the Vault mixture");
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-mixed-endings", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  const res = await syncNotes(request([{ fileId: "file-mixed-endings", path, content: vaultContent }], [observation("file-mixed-endings", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.needsReview, 0, "mixed line endings on both sides still compare equal line by line");
+  assert.equal(db.reviews.length, 0);
+  assert.equal(db.notes[0].content, d1Content, "the stored D1 body is not rewritten");
+}
+
+{
+  // The stale-review sweep reaches the same equivalence through hashes alone
+  // when the file is not a candidate in this pull: the D1 body normalized to
+  // uniform LF hashes to the observed Vault hash.
+  const path = "Notes/原ゼミマイコンカー/経緯/2026-07-17_設計アシスタントはAUTODESK_ASSISTANTから別アカウントClaudeへ変更.md";
+  const d1Content = "# 変更のお知らせ\r\n\r\n本文は CRLF 混じり。\r\n次の行。\n";
+  const vaultContent = "# 変更のお知らせ\n\n本文は CRLF 混じり。\n次の行。\n";
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-stale-endings", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-stale-endings", path, content_hash: hash(vaultContent), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: now, last_seen_at: now });
+  const res = await syncNotes(request([], [observation("file-stale-endings", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.resolvedReviews, 1, "a stale live-content review resolves when only line endings differ");
+  assert.equal(db.reviews.length, 0);
+  assert.equal(db.notes[0].content, d1Content, "self-resolution never rewrites the note body");
+}
+
+{
+  // The mapping-conflict sweep applies the same line-ending equivalence.
+  const path = "Notes/Tasks/mapping-endings.md";
+  const d1Content = "# Mapping\r\n\r\nCRLF body\r\n";
+  const vaultContent = "# Mapping\n\nCRLF body\n";
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-mapping-endings", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-mapping-endings", path: "Notes/Inbox/old-location.md", content_hash: "historical-hash", classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: now, last_seen_at: now });
+  const res = await syncNotes(request([], [observation("file-mapping-endings", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.resolvedReviews, 1, "a mapping review resolves when the live note matches modulo line endings");
+  assert.equal(db.reviews.length, 0);
+  assert.equal(db.notes[0].content, d1Content);
+}
+
+{
+  // Production shape (classification C): a live-content review row hangs on
+  // an archived D1 row. Its last_seen stopped on 2026-11-06 because nothing
+  // re-records it, and every other resolution path requires a live row, so a
+  // complete pull drops it as an orphan. The note itself stays archived.
+  const path = "Notes/原ゼミマイコンカー/経緯/原ゼミマイコンカー 設計メモ (YAOS conflict - disk from device-mv9dhgcw 2026-10-15T17-21-55Z).md";
+  const d1Content = "# 設計メモ\n\nアーカイブ済みの D1 本文。\n";
+  const seed = () => {
+    const db = makeDb([note(path, path, d1Content, uuidA, "2026-11-06T00:00:00.000Z")], [{
+      file_id: "file-orphan", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+    }]);
+    db.reviews.push({ file_id: "file-orphan", path, content_hash: hash(d1Content), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: "2026-11-04T15:00:24.836Z", last_seen_at: "2026-11-06T17:00:24.141Z" });
+    return db;
+  };
+  const db = seed();
+  const res = await syncNotes(request([], [observation("file-orphan", path, d1Content)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.resolvedReviews, 1, "an orphaned review on an archived row is dropped on a complete pull");
+  assert.equal(db.reviews.length, 0);
+  assert.ok(db.notes[0].deleted_at, "the archived note is not restored by the orphan sweep");
+
+  const partial = seed();
+  const partialRes = await syncNotes(request([], [observation("file-orphan", path, d1Content)], false, true), { DB: partial });
+  assert.equal((await partialRes.json()).resolvedReviews, 0, "an incomplete observation never sweeps orphan reviews");
+  assert.equal(partial.reviews.length, 1);
+  const nonPull = seed();
+  const nonPullRes = await syncNotes(request([], [observation("file-orphan", path, d1Content)], true, false), { DB: nonPull });
+  assert.equal((await nonPullRes.json()).resolvedReviews, 0, "a non-pull sync never sweeps orphan reviews");
+  assert.equal(nonPull.reviews.length, 1);
+}
+
+{
+  // A stale live-content review on a LIVE note whose body genuinely differs
+  // is not an orphan: it survives both the stale sweep and the orphan sweep.
+  const path = "Notes/Tasks/still-divergent-live.md";
+  const d1Content = "# D1 body\n";
+  const vaultContent = "# Vault body, genuinely different\n";
+  const db = makeDb([note(path, path, d1Content, uuidA)], [{
+    file_id: "file-live-divergent", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  db.reviews.push({ file_id: "file-live-divergent", path, content_hash: hash(vaultContent), classification: "needs_review", reason: "vault_pull_live_content_conflict", first_seen_at: "2026-11-04T15:00:24.836Z", last_seen_at: "2026-11-06T17:00:24.141Z" });
+  const res = await syncNotes(request([], [observation("file-live-divergent", path, vaultContent)], true, true), { DB: db });
+  assert.equal((await res.json()).resolvedReviews, 0, "a genuinely divergent live note keeps its review row");
+  assert.equal(db.reviews.length, 1);
+}
+
+{
+  // Classification D protection: a mapping-conflict row for an archived note
+  // whose identity map is contradictory is re-recorded by candidate
+  // processing on every pull, so it must never be swept as an orphan.
+  const path = "Notes/Inbox/UnityTodo1.md";
+  const vaultContent = "# Unity TODO\n\nVault 側にだけ残る実ファイル。\n";
+  const db = makeDb([note(path, path, "# Archived D1 body", uuidA, "2026-10-29T00:00:00.000Z")], [
+    { file_id: "file-todo", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now },
+    { file_id: "file-todo", sync_uuid: uuidB, note_id: "Notes/Inbox/UnityTodo2.md", last_path: "Notes/Inbox/UnityTodo2.md", created_at: now, updated_at: now }
+  ]);
+  db.reviews.push({ file_id: "file-todo", path, content_hash: hash(vaultContent), classification: "needs_review", reason: "sync_identity_mapping_conflict", first_seen_at: "2026-11-02T00:00:23.739Z", last_seen_at: "2026-11-02T00:00:23.739Z" });
+  const res = await syncNotes(request([{ fileId: "file-todo", path, content: vaultContent }], [observation("file-todo", path, vaultContent)], true, true), { DB: db });
+  const result = await res.json();
+  assert.equal(result.resolvedReviews, 0, "a re-recorded mapping conflict is never swept as an orphan");
+  assert.equal(db.reviews.length, 1);
+  assert.equal(db.reviews[0].reason, "sync_identity_mapping_conflict");
+  assert.ok(db.notes[0].deleted_at, "the archived note is untouched");
+}
+
+console.log("Sync identity separation tests passed: create, edit/revision, rename, copy/similar-content, delete tombstone, guarded archived restore, exact five-path Obsidian allowlist, live-D1 conflict refusal, live-content and identity-mapping review self-resolution, bounded candidate reconciliation, partial observation, pending operation, tombstone conflict, duplicate UUID, frontmatter conflict, line-ending equivalence (candidate, stale sweep, mapping sweep, mixtures), and archived-row orphan review sweep with mapping-conflict protection.");

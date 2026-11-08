@@ -447,6 +447,27 @@ async function syncNotes(request, env) {
       .bind(fileId || "", noteId || "", syncUuid || "").all();
     return result.results || [];
   };
+  // Line endings are compared line by line: CRLF, LF, and CR, including a
+  // mixture of them inside one body, are not content differences. Stored
+  // bodies are never rewritten for this; normalization happens only while
+  // comparing.
+  const normalizeLineEndings = (text) => String(text ?? "").replace(/\r\n|\r|\n/g, "\n");
+  // True when the D1 row's body matches the observed Vault content hash,
+  // allowing line-ending-only differences. When the exact candidate body is
+  // available and hashes to the observation, compare the bodies line by line
+  // (this also covers mixtures on both sides). Otherwise fall back to hashing
+  // the row body normalized to a uniform LF or CRLF form.
+  const contentsMatchObservation = async (row, candidateContent, observationHash) => {
+    if (!row || !observationHash) return false;
+    if (row.content_hash === observationHash) return true;
+    if (typeof row.content !== "string") return false;
+    if (typeof candidateContent === "string" && await sha256(candidateContent) === observationHash) {
+      return normalizeLineEndings(row.content) === normalizeLineEndings(candidateContent);
+    }
+    const lfForm = normalizeLineEndings(row.content);
+    if (await sha256(lfForm) === observationHash) return true;
+    return await sha256(lfForm.replace(/\n/g, "\r\n")) === observationHash;
+  };
   const insertMapping = async (fileId, row, path) => {
     if (!fileId || !row || !isValidSyncUuid(row.sync_uuid)) throw new Error("invalid_identity_mapping");
     const existing = await mappingsFor(fileId, row.id, row.sync_uuid);
@@ -498,7 +519,7 @@ async function syncNotes(request, env) {
       // the Vault. If the Vault changes again before delivery, YAOS rejects the
       // stale baseline and no concurrent edit is overwritten.
       const candidateInput = noteInputByFileId.get(observation.fileId);
-      const hasContentConflict = row.content_hash !== observation.contentHash;
+      const hasContentConflict = !(await contentsMatchObservation(row, candidateInput?.content, observation.contentHash));
       if (hasContentConflict) {
         if (row.deleted_at || !observation.contentHash || !candidateInput
           || typeof candidateInput.content !== "string"
@@ -651,8 +672,9 @@ async function syncNotes(request, env) {
       if (path !== review.path) continue;
       const mapped = await mappingsFor(review.file_id, "", "");
       if (mapped.length !== 1 || mapped[0].last_path !== path) continue;
-      const row = await env.DB.prepare("SELECT id, path, content_hash, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
-      if (!row || row.deleted_at || row.path !== path || row.content_hash !== observation.contentHash) continue;
+      const row = await env.DB.prepare("SELECT id, path, content_hash, content, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
+      if (!row || row.deleted_at || row.path !== path) continue;
+      if (!(await contentsMatchObservation(row, noteInputByFileId.get(review.file_id)?.content, observation.contentHash))) continue;
       const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(row.id).first();
       if (pending) continue;
       await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'").bind(review.file_id).run();
@@ -672,9 +694,10 @@ async function syncNotes(request, env) {
       if (mappings.length !== 1) continue;
       const mapping = mappings[0];
       if (mapping.file_id !== review.file_id || mapping.last_path !== path) continue;
-      const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, deleted_at FROM notes WHERE id = ?").bind(mapping.note_id).first();
+      const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, content, deleted_at FROM notes WHERE id = ?").bind(mapping.note_id).first();
       if (!row || row.deleted_at || row.id !== mapping.note_id || row.sync_uuid !== mapping.sync_uuid
-        || row.path !== path || row.content_hash !== observation.contentHash) continue;
+        || row.path !== path) continue;
+      if (!(await contentsMatchObservation(row, noteInputByFileId.get(review.file_id)?.content, observation.contentHash))) continue;
       const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(row.id).first();
       if (pending) continue;
       await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'sync_identity_mapping_conflict'").bind(review.file_id).run();
@@ -745,8 +768,9 @@ async function syncNotes(request, env) {
       archivedSkipped++;
       continue;
     }
+    const contentDiffers = Boolean(previous) && !(await contentsMatchObservation(previous, content, contentHash));
     if (body.vaultPull === true && previous && !previous.deleted_at
-      && previous.content_hash !== contentHash && !isVaultAuthoritativePath(path)) {
+      && contentDiffers && !isVaultAuthoritativePath(path)) {
       await recordReview(fileId, path, contentHash, "needs_review", "vault_pull_live_content_conflict");
       continue;
     }
@@ -816,7 +840,7 @@ async function syncNotes(request, env) {
           continue;
         }
         updated++;
-      } else if (previous && previous.content_hash === contentHash && previous.title === title) {
+      } else if (previous && !contentDiffers && previous.title === title) {
         await env.DB.batch([
           env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
           env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid").bind(fileId, syncUuid, previous.id, path, now, now),
@@ -848,6 +872,27 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
+  // Orphaned live-content reviews for archived D1 rows: every resolution path
+  // above requires a live D1 row, so a review whose uniquely mapped note has
+  // been archived can never resolve and would linger with a stale reason
+  // forever. On a complete pull, drop such a row only when this pull did not
+  // record it again (its last_seen_at predates this pull). A row that keeps
+  // being re-recorded describes a current problem and is left untouched, as
+  // are rows recorded for any other reason (mapping conflicts in particular).
+  if (body.vaultPull === true && observationComplete) {
+    const orphanedReviews = await env.DB.prepare("SELECT file_id, last_seen_at FROM yaos_sync_identity_review WHERE reason = 'vault_pull_live_content_conflict'").all();
+    for (const review of orphanedReviews.results || []) {
+      if (!review.last_seen_at || review.last_seen_at >= now) continue;
+      if (reconciledConflictFileIds.has(review.file_id)) continue;
+      const mapped = await mappingsFor(review.file_id, "", "");
+      if (mapped.length !== 1) continue;
+      const row = await env.DB.prepare("SELECT id, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
+      if (!row || !row.deleted_at) continue;
+      await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(review.file_id).run();
+      resolvedReviews++;
+    }
+  }
+
   return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
