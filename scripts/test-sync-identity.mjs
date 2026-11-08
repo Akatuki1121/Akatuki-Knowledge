@@ -497,8 +497,15 @@ for (const path of [
   for (const [label, options] of cases) {
     const test = seed(options);
     const response = await syncNotes(request([], test.observations, true, true), { DB: test.db });
-    assert.equal((await response.json()).resolvedReviews, 0, label + " must retain the mapping-conflict review");
-    assert.equal(test.db.reviews.length, 1, label + " must not delete the review row");
+    const result = await response.json();
+    if (label === "deleted note") {
+      assert.equal(result.resolvedReviews, 1, "a mapping-conflict review for an archived D1 note is retired");
+      assert.equal(test.db.reviews.length, 0, "the archived note's stale review is removed");
+      assert.equal(test.db.mappings.length, 0, "the archived note's stale identity mapping is removed");
+    } else {
+      assert.equal(result.resolvedReviews, 0, label + " must retain the mapping-conflict review");
+      assert.equal(test.db.reviews.length, 1, label + " must not delete the review row");
+    }
   }
 
   const partial = seed();
