@@ -102,7 +102,9 @@ for (const [response, reason] of [
   [{ action: "tool", tool: "search_notes", arguments: { query: "x" } }, "search_notes_query"],
   [{ action: "tool", tool: "search_notes", arguments: { query: "deployment", extra: true } }, "tool_argument_keys:tool=search_notes;missing=none;unexpected=extra"],
   [{ action: "final", reply: "Answer", source_ids: ["note-1"], extra: true }, "final_action_shape"],
-  [{ action: "answer", reply: "Answer" }, "action_shape"],
+  [{ action: "answer", reply: "Answer" }, "action_shape:action=answer;missing=tool,arguments;unexpected=reply"],
+  [{ action: "tool", tool: "search_notes" }, "action_shape:action=tool;missing=arguments;unexpected=none"],
+  [{ action: 42, tool: "search_notes", arguments: {} }, "action_shape:action=number;missing=none;unexpected=none"],
   [{ action: "tool", tool: "get_note", arguments: { id: "" } }, "get_note_id"],
 ]) {
   assert.throws(
@@ -138,6 +140,106 @@ for (const [raw, reason] of [
     `expected invalid_input:${reason}`,
   );
 }
+
+// A reply wrapped in a single code fence is unwrapped before parsing; the
+// fenced content still has to be one complete, valid action.
+const fencedRun = await runAgentToolLoop({
+  initialPrompt: "How many notes are saved?",
+  contextNotes: [],
+  callModel: async ({ modelCall }) => modelCall === 1
+    ? "```json\n" + action("search_notes", { query: "deployment decision" }) + "\n```"
+    : "```\n" + final("There are twelve notes.") + "\n```",
+  executeTool: async () => ({ notes: [] }),
+  saveCheckpoint: async () => true,
+});
+assert.equal(fencedRun.reply, "There are twelve notes.");
+
+// Prose around the JSON is not a wrapping fence and is never extracted: the
+// identical non-JSON reply is fed back once and then stops the attempt.
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "How many notes are saved?",
+  callModel: async () => "Here is the answer: " + final("Twelve."),
+  executeTool: async () => assert.fail("no tool should run"),
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "invalid_input:model_response_not_json");
+
+// Response-shape mistakes are returned to the model as fixed feedback within
+// the same attempt, so the model can correct its reply instead of the task
+// dying on the first malformed response. Production fixtures: the recorded
+// errors invalid_input:model_response_not_json and
+// invalid_input:action_shape from self-audit improvement tasks (2026-11-07/08).
+const shapePrompts = [];
+let shapeExecutions = 0;
+const shapeRecovery = await runAgentToolLoop({
+  initialPrompt: "Read the deployment note",
+  callModel: async ({ prompt, modelCall }) => {
+    shapePrompts.push(prompt);
+    if (modelCall === 1) return "The deployment note says to stage the rollout.";
+    if (modelCall === 2) return JSON.stringify({ action: "answer", reply: "Staged rollout." });
+    if (modelCall === 3) return action("search_notes", { query: "deployment decision" });
+    return final("The decision was to stage the rollout.", ["note-1"]);
+  },
+  executeTool: async () => {
+    shapeExecutions++;
+    return { notes: [{ id: "note-1", title: "Rollout", text: "Use a staged rollout." }] };
+  },
+  saveCheckpoint: async () => true,
+});
+assert.equal(shapeRecovery.reply, "The decision was to stage the rollout.");
+assert.equal(shapeExecutions, 1, "Only the corrected tool call may execute");
+assert.ok(shapePrompts[1].includes("理由コード: model_response_not_json"),
+  "The next prompt must carry the not-JSON feedback");
+assert.ok(!shapePrompts[1].includes("The deployment note says to stage the rollout."),
+  "Shape feedback must not echo the rejected response");
+assert.ok(shapePrompts[2].includes("理由コード: action_shape:action=answer;missing=tool,arguments;unexpected=reply"),
+  "The next prompt must carry the action-shape feedback with its safe key diagnostic");
+assert.ok(!shapePrompts[3].includes("形式検証で拒否されました"),
+  "Shape feedback clears once a response validates");
+
+const finalShapePrompts = [];
+const finalShapeRecovery = await runAgentToolLoop({
+  initialPrompt: "Answer directly",
+  callModel: async ({ prompt, modelCall }) => {
+    finalShapePrompts.push(prompt);
+    if (modelCall === 1) return JSON.stringify({ action: "final", reply: "Answer", source_ids: [], extra: true });
+    return final("Answer");
+  },
+  executeTool: async () => assert.fail("no tool should run"),
+  saveCheckpoint: async () => true,
+});
+assert.equal(finalShapeRecovery.reply, "Answer");
+assert.ok(finalShapePrompts[1].includes("理由コード: final_action_shape"),
+  "A malformed final action must also be corrected in-loop");
+
+// An identical malformed response stops on its repeat, like the other
+// feedback loops.
+let repeatShapeCalls = 0;
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "Answer directly",
+  callModel: async () => {
+    repeatShapeCalls++;
+    return JSON.stringify({ action: "answer", reply: "Answer" });
+  },
+  executeTool: async () => assert.fail("no tool should run"),
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "invalid_input:action_shape:action=answer;missing=tool,arguments;unexpected=reply");
+assert.equal(repeatShapeCalls, 2, "An identical malformed response must stop on its repeat");
+
+// Distinct shape mistakes are capped at two consecutive corrections; the
+// third consecutive shape failure stops the attempt with its own reason.
+const distinctShapeResponses = [
+  "The count is 12.",
+  JSON.stringify({ action: "answer", reply: "Answer" }),
+  "[1, 2]",
+];
+let distinctShapeCalls = 0;
+await assert.rejects(runAgentToolLoop({
+  initialPrompt: "How many notes are saved?",
+  callModel: async () => distinctShapeResponses[distinctShapeCalls++],
+  executeTool: async () => assert.fail("no tool should run"),
+  saveCheckpoint: async () => true,
+}), (error) => error.message === "invalid_input:model_response_not_object");
+assert.equal(distinctShapeCalls, 3, "Two shape corrections are allowed; the third consecutive shape failure stops the attempt");
 
 const webResult = {
   report: "The official pages agree on the release date.",
@@ -681,5 +783,5 @@ assert.equal(decideTaskRetry({
   attempts: 1, maxAttempts: 4, errorClass: classifyAgentTaskError(exhaustedFailure), retryable: false,
 }).stopReason, "non_retryable_workers_ai_adaptive_recovery_exhausted");
 
-console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
+console.log("Agent tool loop tests passed: read-only tools, approval-gated GitHub write plans, write-plan shape feedback and recovery, response-shape feedback and recovery, strict schemas, citations, loop/step bounds, and checkpoint resume.");
 

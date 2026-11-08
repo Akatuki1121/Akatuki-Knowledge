@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyAgentTaskError, decideTaskRetry, describeAgentTaskStopReason, TASK_BUDGET_CEILINGS } from "../src/background-task-policy.mjs";
+import { classifyAgentTaskError, decideTaskRetry, describeAgentTaskStopReason, isModelResponseShapeInvalidInput, MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES, TASK_BUDGET_CEILINGS } from "../src/background-task-policy.mjs";
 
 const base = {
   nowMs: 10_000,
@@ -186,6 +186,53 @@ assert.equal(classifyAgentTaskError(new Error()), "unknown");
 assert.equal(classifyAgentTaskError({}), "unknown");
 assert.equal(classifyAgentTaskError(null), "unknown");
 assert.equal(classifyAgentTaskError(undefined), "unknown");
+
+// --- isModelResponseShapeInvalidInput ---
+// Production-observed errors from self-audit improvement tasks (2026-11-05..08):
+// the model's reply shape failed, not the task input, so reassessment may
+// revive these when a new retry policy ships a parser/feedback fix.
+for (const observed of [
+  "Error: invalid_input:model_response_not_json",
+  "Error: invalid_input:model_response_not_object",
+  "Error: invalid_input:model_response_size",
+  "Error: invalid_input:action_shape",
+  "Error: invalid_input:action_shape:action=answer;missing=tool,arguments;unexpected=reply",
+  "Error: invalid_input:final_action_shape",
+]) {
+  assert.equal(isModelResponseShapeInvalidInput(observed), true, observed);
+}
+// Task-input problems stay outside the exception: prompt and checkpoint
+// validation, tool-argument problems (they carry their own exception), other
+// suffixed validation failures, a bare invalid_input, and unrelated errors.
+for (const other of [
+  "Error: invalid_input",
+  "Error: invalid_input:prompt_too_long",
+  "Error: invalid_input:prompt_not_string",
+  "Error: invalid_input:checkpoint_shape",
+  "Error: invalid_input:tool_argument_keys:tool=search_notes;missing=none;unexpected=extra",
+  "Error: invalid_input:search_notes_query",
+  "Error: workers_ai_request_failed",
+  "",
+]) {
+  assert.equal(isModelResponseShapeInvalidInput(other), false, other);
+}
+for (const nonString of [null, undefined, 0, {}]) {
+  assert.equal(isModelResponseShapeInvalidInput(nonString), false, String(nonString));
+}
+assert.deepEqual([...MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES], [
+  "model_response_not_json",
+  "model_response_not_object",
+  "model_response_size",
+  "action_shape",
+  "final_action_shape",
+]);
+// The class stays invalid_input and the attempt-level decision still stops;
+// revival happens only through improvement-task reassessment.
+assert.equal(classifyAgentTaskError(new Error("Error: invalid_input:action_shape")), "invalid_input");
+assert.equal(
+  decideTaskRetry({ ...base, errorClass: "invalid_input" }).stopReason,
+  "non_retryable_invalid_input",
+);
 
 // --- describeAgentTaskStopReason (moved from src/index.js in #86) ---
 const GUIDANCE = {
