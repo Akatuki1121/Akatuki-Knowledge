@@ -511,7 +511,7 @@ SYNC_TOKEN = "${TOKEN}"
       + [TEST_PATH, TEST_PATH, randomUUID(), "Integration roundtrip", initialNoteContent, initialNoteHash, initialNoteNow, initialNoteNow, "[]", 0, "unknown", "ready", "unknown", "project"].map(literal).join(", ")
       + ");";
     const seedPath = join(stateDir, "schema-local.sql");
-    await writeFile(seedPath, [seedSql, ...migrations, initialNoteSql].join("\\n\\n"));
+    await writeFile(seedPath, [seedSql, ...migrations, initialNoteSql].join("\n\n"));
     // --local and --persist-to are mandatory. Apply the captured schema,
     // required migrations and scenario fixture in one Wrangler invocation.
     await run("npx", [
