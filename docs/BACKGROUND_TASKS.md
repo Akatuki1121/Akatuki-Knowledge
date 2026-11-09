@@ -16,7 +16,9 @@ queued → running → waiting → running → succeeded
 
 terminal stateは failed / cancelled / needs_attention。needs_attentionは改善タスクの恒久エラーまたは試行上限到達を示し、理由はlast_error_class / last_error / stop_reasonに保持する。lease期限切れ時は、D1の期限・状態・budget reservationを再確認してからWorkflowを回復する。完了checkpointがある場合はAIを再実行せず、結果書き戻し・完了処理から再開する。pending tool actionはcheckpointに保存され、実行済みtool結果を二重実行しない。
 
-通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは通常4試行・最大経過時間8時間。改善タスクは一時障害を1時間→3時間→3時間のbackoffで再試行し、試行回数・次回時刻・期限を同じD1 task rowに保持する。再試行上限や恒久エラーに達したタスクはfailedに埋没させずneeds_attentionへ移し、last_error_class / last_error / stop_reasonを残す。改善retry policy versionを上げた場合に限り、needs_attentionを再評価できる。累積試行は最大6回で、再評価ごとに最大1回だけ追加できる。毎時のPull後はノートの更新カーソルとは独立して、現在のpolicy versionを適用していないfailed/needs_attentionの改善タスクを最大20件ずつ再評価する。後発タスクが同じノート識別子に存在する場合、古い行はsuperseded_by_newer_taskとしてneeds_attentionに残し、重複実行しない。再評価時も累積attemptsはリセットせず、旧max_attempts=1は4へ補正する。再試行はretryable分類かつattempts<max_attemptsの場合だけ行い、累積6回を超えない。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは要対応に残して自動再試行しない。
+通常タスクは最大4回のclaim・最大経過時間1時間、改善タスクは通常4試行・最大経過時間8時間。改善タスクは一時障害を1時間→3時間→3時間のbackoffで再試行し、試行回数・次回時刻・期限を同じD1 task rowに保持する。再試行上限や恒久エラーに達したタスクはfailedに埋没させずneeds_attentionへ移し、last_error_class / last_error / stop_reasonを残す。改善retry policy versionを上げた場合に限り、needs_attentionを再評価できる。再評価で再試行扱いになるのは一時障害のほか、モデルの応答外形に由来するinvalid_input（model_response_*、action_shape、final_action_shape）とツール引数キーの不一致で、依頼文（prompt_*）やチェックポイント（checkpoint_*）など入力自体の問題は対象外のまま要対応に残る。実行リースの期限切れ（lease_lost）は一時障害として扱い、再試行と再評価の対象になる。累積試行は最大6回で、再評価ごとに最大1回だけ追加できる。毎時のPull後はノートの更新カーソルとは独立して、現在のpolicy versionを適用していないfailed/needs_attentionの改善タスクを最大20件ずつ再評価する。後発タスクが同じノート識別子に存在する場合、古い行はsuperseded_by_newer_taskとしてneeds_attentionに残し、重複実行しない。再評価時も累積attemptsはリセットせず、旧max_attempts=1は4へ補正する。再試行はretryable分類かつattempts<max_attemptsの場合だけ行い、累積6回を超えない。これらはWorkflowの回復可能性と暴走防止のためのタスクライフサイクル制約であり、Workers AIの呼び出し回数・token・Neuronsを制限するものではない。一時障害は分類に応じてbackoffし、認証・権限・入力不正・認証情報検出・PII masking・policy違反などは再試行しない。未知のエラーは要対応に残して自動再試行しない。
+
+実行リースは確保時に120秒で、モデル呼び出しの予約時にも120秒まで延びる。1回のモデル呼び出しが235,677ミリ秒に達した実測（2026-11-09、タスクe4d16479）があるため、確保時の秒数を延ばすだけでは足りず、Workflowはモデル呼び出しの最中に60秒ごとにリースを更新する。呼び出しの直後と、改善計画の実行・最終チェックポイント保存・完了処理の前にも更新する。更新は期限内のリースにだけ効くため、期限切れ後の更新では復活しない。リースを失った失敗の記録には、期限（lease_expires_at）・最終更新（updated_at）・最初の確保（started_at）の時刻を残す。トークンが合わず他の実行者が確保し直した場合はlease_token_mismatchと残し、期限切れと区別できるようにする。
 
 ## Workers AIの利用方針
 
@@ -29,6 +31,7 @@ Workers AIの利用を止める独自のアプリ上限は設けない。
 - Cloudflareが日次Neurons枠超過を返した場合はtaskをwaitingにし、次のUTC 00:00リセット後に自動再開する。リセット直後もCloudflare側の拒否が続く場合は、1時間ごとに再確認して利用可能になり次第再開する。その他のrate limitやupstream errorは通常の一時障害分類に従う。
 - provider usageが返る場合は実績を記録する。応答なしの失敗は入力token推定分だけを記録し、出力分は計上しない。usageなし成功は過少計上を避けるため予約を残す。
 - 改善タスクは再評価ポリシーの更新時に、凍結された実行時設定を現在の正規値へ同期する。現在は出力上限とWeb調査無効化を同期し、依頼本文・ノート識別情報・チェックポイント・GitHub権限は変更しない。待機中タスクは既存の次回試行時刻と期限を維持したまま設定だけ更新する。
+- エージェントループでは、モデルの応答がJSONでない・JSONオブジェクトでない・actionのキー構成が違う場合、理由コードだけを含む固定文のフィードバックを返し、同じ試行の中で出し直させる（同一応答の繰り返し、または連続2回の修正で停止）。応答全体を囲むコードフェンスは解釈前に取り除くが、前後の散文は切り離さない。action_shapeの理由には、actionの値の種別と不足・余分なキー名だけを含め、応答本文は残さない。
 - GLM-4.7-Flash の Workers AI 応答は Chat Completions 形式の `choices[0].message.content` を本文として抽出する。旧形式の `response` 文字列も互換性のため受け付ける。推論過程 (`reasoning` / `reasoning_content`) は最終回答として扱わない。本文がない・出力上限で終了した場合は、段階・応答形式・finish reason・本文型と文字数・推論文字数・tool call数を機微な本文を含めず `last_error` に記録する。
 - モデル自体の入力・出力コンテキスト上限、Cloudflare Freeの実際のNeurons枠、Workers AI以外のCloudflareサービスquotaは引き続き有効。
 

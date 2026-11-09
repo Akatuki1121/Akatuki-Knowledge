@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { classifyAgentTaskError } from "../src/background-task-policy.mjs";
-import { reserveAgentAiBudget, settleAgentAiBudget, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, listReassessableImprovementAgentTasks, toSqliteDateTime } from "../src/background-task-store.mjs";
+import { classifyAgentTaskError, isModelResponseShapeInvalidInput } from "../src/background-task-policy.mjs";
+import { reserveAgentAiBudget, settleAgentAiBudget, renewAgentTaskLease, enqueueAgentTask, reserveQueuedAgentTaskBudget, requeueAgentTaskAfterBudgetWait, recordAgentTaskFailure, reassessImprovementAgentTask, listReassessableImprovementAgentTasks, toSqliteDateTime } from "../src/background-task-store.mjs";
 
 const root = new URL("../", import.meta.url);
 const schema = await readFile(new URL("schema-snapshots/live-d1-schema-2026-10-19.sql", root), "utf8");
@@ -223,6 +223,34 @@ assert.deepEqual({ ...row }, {
   lease_expires_at: toSqliteDateTime(staleAt + 120_000),
 });
 
+// Explicit lease renewal: the Workflow never called renewAgentTaskLease, so
+// a single model call observed at 235,677 ms (task e4d16479, 2026-11-09)
+// outlived its 120-second lease and the checkpoint save failed with
+// lease_lost. Renewal extends a live lease and refuses an expired lease
+// or a mismatched token.
+sqlite.prepare(`
+  INSERT INTO agent_tasks (
+    task_id, task_type, status, lease_token, lease_expires_at, deadline_at,
+    created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  "observed-lease-renewal", "github_query", "running", "lease-renew-token",
+  toSqliteDateTime(staleAt + 60_000), staleDeadline, staleExpiry, staleExpiry,
+);
+assert.equal(await renewAgentTaskLease(db, {
+  taskId: "observed-lease-renewal", leaseToken: "lease-renew-token", leaseSeconds: 120, nowMs: staleAt,
+}), true);
+row = sqlite.prepare("SELECT lease_expires_at FROM agent_tasks WHERE task_id = 'observed-lease-renewal'").get();
+assert.equal(row.lease_expires_at, toSqliteDateTime(staleAt + 120_000));
+assert.equal(await renewAgentTaskLease(db, {
+  taskId: "observed-lease-renewal", leaseToken: "wrong-token", leaseSeconds: 120, nowMs: staleAt,
+}), false);
+assert.equal(await renewAgentTaskLease(db, {
+  taskId: "observed-lease-renewal", leaseToken: "lease-renew-token", leaseSeconds: 120, nowMs: staleAt + 121_000,
+}), false);
+row = sqlite.prepare("SELECT lease_expires_at FROM agent_tasks WHERE task_id = 'observed-lease-renewal'").get();
+assert.equal(row.lease_expires_at, toSqliteDateTime(staleAt + 120_000));
+
 // Expired leases must not discard provider settlement or the final failure.
 // The lease token is the fencing value: expiry alone does not mean a new
 // workflow has claimed the task.
@@ -409,6 +437,108 @@ assert.equal(row.retry_policy_version, 5);
 const normalizedToolKeyPayload = JSON.parse(row.payload_json);
 assert.equal(normalizedToolKeyPayload.maxOutputTokens, 8_192);
 assert.equal(normalizedToolKeyPayload.reasoningEffort, "high");
+
+// Production-observed response-shape failures from self-audit improvement
+// tasks (2026-11-07/08): the model's reply shape failed, not the task input.
+// The reassessment decision src/index.js computes must revive them under a
+// new policy while cumulative attempts are preserved.
+const observedShapePayload = {
+  ...observedV3Payload,
+  maxOutputTokens: 8_192,
+  inputHash: "observed-response-shape-input-hash",
+};
+for (const [taskId, notePath, lastError, createdAt, updatedAt] of [
+  ["observed-action-shape-v6", "Notes/改善/自己監査-2026-11-06.md", "Error: invalid_input:action_shape", "2026-11-07 01:00:00", "2026-11-07 01:15:50"],
+  ["observed-response-not-json-v6", "Notes/改善/自己監査-2026-11-07.md", "Error: invalid_input:model_response_not_json", "2026-11-08 01:00:00", "2026-11-08 01:09:29"],
+]) {
+  sqlite.prepare(`
+    INSERT INTO agent_tasks (
+      task_id, task_type, status, budget_reserved, payload_json, attempts, max_attempts,
+      created_at, updated_at, deadline_at, next_attempt_at,
+      last_error_class, last_error, stop_reason, retry_policy_version
+    ) VALUES (?, 'github_query', 'needs_attention', 0, ?, 2, 4,
+      ?, ?, ?, ?, 'invalid_input', ?, 'non_retryable_invalid_input', 6)
+  `).run(taskId, JSON.stringify({ ...observedShapePayload, improvementNotePath: notePath }),
+    createdAt, updatedAt, updatedAt, updatedAt, lastError);
+}
+const discoverableShapeFailures = await listReassessableImprovementAgentTasks(db, { policyVersion: 7, limit: 20 });
+assert.ok(discoverableShapeFailures.some((task) => task.task_id === "observed-action-shape-v6"),
+  "An attempt-2 action_shape task on policy v6 must be included in the v7 sweep");
+assert.ok(discoverableShapeFailures.some((task) => task.task_id === "observed-response-not-json-v6"),
+  "An attempt-2 model_response_not_json task on policy v6 must be included in the v7 sweep");
+for (const [taskId, lastError] of [
+  ["observed-action-shape-v6", "Error: invalid_input:action_shape"],
+  ["observed-response-not-json-v6", "Error: invalid_input:model_response_not_json"],
+]) {
+  const decisionErrorClass = classifyAgentTaskError(new Error(lastError));
+  assert.equal(decisionErrorClass, "invalid_input");
+  const reassessedShapeFailure = await reassessImprovementAgentTask(db, taskId, {
+    nowMs: legacyFailureAt + 50 * 60 * 1000,
+    policyVersion: 7,
+    retryable: decisionErrorClass === "invalid_input" && isModelResponseShapeInvalidInput(lastError),
+    errorClass: decisionErrorClass,
+  });
+  assert.equal(reassessedShapeFailure.reassessed, true, taskId);
+  assert.equal(reassessedShapeFailure.status, "waiting", taskId);
+  assert.equal(reassessedShapeFailure.attempts, 2, "Reassessment must not reset cumulative attempts");
+  assert.equal(reassessedShapeFailure.max_attempts, 4, taskId);
+  assert.equal(reassessedShapeFailure.retry_policy_version, 7, taskId);
+}
+
+// Production-observed lease loss (2026-11-09, v7 wave): the improvement
+// tasks 1009518a (3/4, Notes/改善/自己監査-2026-11-07.md) and 86208436
+// (5/5, Notes/改善/自己監査-2026-11-03.md) failed with "Error: lease_lost"
+// because a single model call (235,677 ms on e4d16479) outlived the
+// 120-second lease. The stored class was "unknown", so reassessment must
+// reclassify the stored error and revive them under policy v8.
+const observedLeasePayload = {
+  ...observedV3Payload,
+  maxOutputTokens: 8_192,
+  inputHash: "observed-lease-lost-input-hash",
+};
+for (const [taskId, notePath, attempts, maxAttempts, createdAt, updatedAt] of [
+  ["observed-lease-lost-v7", "Notes/改善/自己監査-2026-11-07.md", 3, 4, "2026-11-08 01:00:00", "2026-11-08 18:06:04"],
+  ["observed-lease-lost-exhausted-v7", "Notes/改善/自己監査-2026-11-03.md", 5, 5, "2026-11-03 01:00:00", "2026-11-08 18:03:35"],
+]) {
+  sqlite.prepare(`
+    INSERT INTO agent_tasks (
+      task_id, task_type, status, budget_reserved, payload_json, attempts, max_attempts,
+      created_at, updated_at, deadline_at, next_attempt_at,
+      last_error_class, last_error, stop_reason, retry_policy_version
+    ) VALUES (?, 'github_query', 'needs_attention', 0, ?, ?, ?,
+      ?, ?, ?, ?, 'unknown', 'Error: lease_lost', 'non_retryable_or_unknown_error', 7)
+  `).run(taskId, JSON.stringify({ ...observedLeasePayload, improvementNotePath: notePath }),
+    attempts, maxAttempts, createdAt, updatedAt, updatedAt, updatedAt);
+}
+const discoverableLeaseFailures = await listReassessableImprovementAgentTasks(db, { policyVersion: 8, limit: 20 });
+assert.ok(discoverableLeaseFailures.some((task) => task.task_id === "observed-lease-lost-v7"),
+  "An attempt-3 lease_lost task on policy v7 must be included in the v8 sweep");
+assert.ok(discoverableLeaseFailures.some((task) => task.task_id === "observed-lease-lost-exhausted-v7"),
+  "An attempt-5 lease_lost task on policy v7 must be included in the v8 sweep");
+for (const [taskId, attempts, nextMax] of [
+  ["observed-lease-lost-v7", 3, 4],
+  ["observed-lease-lost-exhausted-v7", 5, 6],
+]) {
+  const decisionErrorClass = classifyAgentTaskError(new Error("Error: lease_lost"));
+  assert.equal(decisionErrorClass, "lease_lost");
+  // Mirrors the retryable list src/index.js computes at reassessment.
+  const retryable = [
+    "network_error", "timeout", "rate_limited", "upstream_5xx",
+    "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
+    "workers_ai_transient_failure",
+  ].includes(decisionErrorClass);
+  const reassessedLeaseFailure = await reassessImprovementAgentTask(db, taskId, {
+    nowMs: legacyFailureAt + 50 * 60 * 1000,
+    policyVersion: 8,
+    retryable,
+    errorClass: decisionErrorClass,
+  });
+  assert.equal(reassessedLeaseFailure.reassessed, true, taskId);
+  assert.equal(reassessedLeaseFailure.status, "waiting", taskId);
+  assert.equal(reassessedLeaseFailure.attempts, attempts, "Reassessment must not reset cumulative attempts");
+  assert.equal(reassessedLeaseFailure.max_attempts, nextMax, taskId);
+  assert.equal(reassessedLeaseFailure.retry_policy_version, 8, taskId);
+}
 
 sqlite.prepare("UPDATE agent_tasks SET status = 'running', attempts = 2, lease_token = 'legacy-retry-2', lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
   .run(toSqliteDateTime(legacyFailureAt + 120_000), toSqliteDateTime(legacyFailureAt + 60_000), "observed-attempt-budget-exhausted");

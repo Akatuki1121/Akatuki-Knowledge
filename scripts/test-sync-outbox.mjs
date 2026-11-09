@@ -234,6 +234,130 @@ function statementDb({ row = null, owners = [] } = {}) {
   );
 }
 
+{
+  // A confirmed YAOS tombstone must retire identity state, not recreate it
+  // from the delete response's fileId. The delete payload's sync_uuid is the
+  // lookup key; no live mapping is required after the D1 archive batch.
+  const deletedJob = {
+    job_id: 41,
+    entity_type: "notes",
+    entity_id: "Notes/deleted-by-api.md",
+    operation: "delete",
+    payload_json: JSON.stringify({
+      id: "Notes/deleted-by-api.md",
+      path: "Notes/deleted-by-api.md",
+      syncUuid: uuid,
+      deletedAt: "2026-11-09T00:00:00.000Z"
+    }),
+    attempts: 0
+  };
+  const executed = [];
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async all() {
+          if (sql.includes("SELECT j.job_id")) return { results: [deletedJob] };
+          return { results: [] };
+        },
+        async run() {
+          executed.push({ sql, values });
+          return { meta: { changes: 1 } };
+        }
+      };
+    },
+    async batch(statements) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    }
+  };
+  const client = {
+    getByName() {
+      return {
+        async fetch() {
+          return new Response(JSON.stringify({ ok: true, verified: true, fileId: "vault-file-deleted" }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+      };
+    }
+  };
+  const result = await outbox.drainSyncOutbox({ DB: db, YJS_CLIENT: client }, 1);
+  assert.equal(result.sent, 1, "a verified YAOS delete is delivered");
+  assert.ok(executed.some((entry) => entry.sql.startsWith("DELETE FROM yaos_file_identity_map")),
+    "successful delete delivery repeats identity-map retirement for legacy tombstones");
+  assert.ok(!executed.some((entry) => entry.sql.startsWith("INSERT INTO yaos_file_identity_map")),
+    "a delete response fileId must never recreate a mapping");
+}
+
+{
+  // An upsert queued before logical deletion can be delivered after the
+  // archive batch. It still reaches YAOS for event ordering, but its response
+  // must not recreate the D1 identity mapping.
+  const staleUpsertJob = {
+    job_id: 42,
+    entity_type: "notes",
+    entity_id: "Notes/archived-after-upsert.md",
+    operation: "upsert",
+    payload_json: JSON.stringify({
+      id: "Notes/archived-after-upsert.md",
+      path: "Notes/archived-after-upsert.md",
+      syncUuid: uuidB,
+      deletedAt: null
+    }),
+    attempts: 0
+  };
+  const executed = [];
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async all() {
+          if (sql.includes("SELECT j.job_id")) return { results: [staleUpsertJob] };
+          return { results: [] };
+        },
+        async first() {
+          if (sql.includes("SELECT deleted_at FROM notes WHERE id = ?")) {
+            return { deleted_at: "2026-11-09T00:00:00.000Z" };
+          }
+          throw new Error("Unexpected first query: " + sql);
+        },
+        async run() {
+          executed.push({ sql, values });
+          return { meta: { changes: 1 } };
+        }
+      };
+    },
+    async batch(statements) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    }
+  };
+  const client = {
+    getByName() {
+      return {
+        async fetch() {
+          return new Response(JSON.stringify({ ok: true, verified: true, fileId: "vault-file-stale-upsert" }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+      };
+    }
+  };
+  const result = await outbox.drainSyncOutbox({ DB: db, YJS_CLIENT: client }, 1);
+  assert.equal(result.sent, 1, "the pre-archive upsert remains ordered and is delivered");
+  assert.ok(!executed.some((entry) => entry.sql.startsWith("INSERT INTO yaos_file_identity_map")),
+    "an upsert response for an archived D1 note must not recreate its mapping");
+  assert.ok(executed.some((entry) => entry.sql.startsWith("DELETE FROM yaos_file_identity_map")),
+    "the stale upsert path repeats identity retirement");
+}
+
 console.log("Sync outbox module tests passed.");
 
 {

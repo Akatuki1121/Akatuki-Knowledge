@@ -35,6 +35,7 @@ const TRANSIENT = new Set([
   "rate_limited",
   "upstream_5xx",
   "executor_interrupted",
+  "lease_lost",
   "workers_ai_transient_failure",
 ]);
 
@@ -127,6 +128,32 @@ export function decideTaskRetry(input) {
   };
 }
 
+// invalid_input suffixes that come from the model's own response shape —
+// unparseable or non-object JSON, an oversized reply, and action envelopes
+// with the wrong keys — as opposed to the task input itself
+// (invalid_input:prompt_*, invalid_input:checkpoint_*, tool-argument
+// problems, or a bare invalid_input), which stay non-retryable.
+// classifyAgentTaskError still maps these to the invalid_input class and
+// decideTaskRetry still stops the attempt; the agent loop first tries to
+// correct them in-loop with fixed feedback, and improvement-task
+// reassessment uses this list to revive the ones that still failed when a
+// new retry policy ships a parser/feedback fix, mirroring the existing
+// tool_argument_keys exception.
+export const MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES = Object.freeze([
+  "model_response_not_json",
+  "model_response_not_object",
+  "model_response_size",
+  "action_shape",
+  "final_action_shape",
+]);
+
+export function isModelResponseShapeInvalidInput(errorText) {
+  if (typeof errorText !== "string" || !errorText) return false;
+  return MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES.some(
+    (suffix) => errorText.includes("invalid_input:" + suffix),
+  );
+}
+
 // src/index.js のバンドル由来のヘルパー。移動した関数の __name 注釈が使うため同じ定義を置く。
 const __name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });
 
@@ -168,7 +195,7 @@ export function classifyAgentTaskError(error) {
     error?.workersAiError?.code !== undefined ? String(error.workersAiError.code) : "",
     error?.workersAiError?.status !== undefined ? String(error.workersAiError.status) : "",
   ].filter(Boolean).join(" ");
-  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "tool_output_too_large", "workers_ai_daily_quota_exhausted"]) {
+  for (const fixed of ["credentials_detected", "pii_masking_failed", "invalid_input", "policy_violation", "unauthorized", "forbidden", "unknown_tool", "tool_loop_detected", "tool_budget_exhausted", "web_research_not_enabled", "web_research_budget_exhausted", "web_research_unverified", "web_research_sources_missing", "web_research_invalid_response", "web_research_provider_error", "tool_output_too_large", "workers_ai_daily_quota_exhausted", "lease_lost"]) {
     if (message.includes(fixed)) return fixed;
   }
   if (/workers_ai_(?:request|failure_settlement)_failed/i.test(message) && (/(daily|neuron|quota|allocation)/i.test(message) || /code=3036\b/iu.test(message))) return "workers_ai_daily_quota_exhausted";

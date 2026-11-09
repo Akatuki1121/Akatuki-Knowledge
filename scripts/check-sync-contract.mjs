@@ -129,6 +129,8 @@ for (const contract of [
   'error: "vault_fossil_not_found"',
   'error: "archived_note_precondition_failed"',
   "DELETE FROM yaos_file_identity_map WHERE note_id = ? OR file_id IN (?, ?)",
+  "DELETE FROM yaos_sync_identity_review WHERE path = ?",
+  "DELETE FROM yaos_sync_identity_review WHERE file_id IN (SELECT file_id FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?)",
   "DELETE FROM yaos_sync_identity_review WHERE file_id IN (?, ?)",
   "body.dryRun === true",
   "SELECT file_id, path FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'vault_pull_live_content_conflict'",
@@ -136,6 +138,10 @@ for (const contract of [
   "SELECT file_id FROM yaos_sync_identity_review WHERE classification = 'needs_review' AND reason = 'sync_identity_mapping_conflict'",
   "SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE file_id = ?",
   "DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'sync_identity_mapping_conflict'",
+  "reason IN ('vault_pull_live_content_conflict', 'sync_identity_mapping_conflict')",
+  'stableId(observation.path || "") !== stableId(review.path || "")',
+  "SELECT id, sync_uuid, deleted_at FROM notes WHERE id = ? OR path = ?",
+  'if (job.operation === "delete")',
   "compatibleMappingPath = map.last_path === row.path || map.last_path === path",
   "const candidate = body.notes.find",
   "const revisionHashes = new Set",
@@ -231,7 +237,7 @@ const decodeRoute = (url) => {
 const normalizePath = (value) => value;
 const movedNote = { id: "Notes/Old.md", path: "Notes/New.md", title: "Moved", content: "# Moved", content_hash: "a".repeat(64), sync_uuid: "11111111-1111-4111-8111-111111111111", ai_allowed: 1, review_state: "ready", deleted_at: null };
 function makeDeleteDb(seed) {
-  const state = structuredClone(seed);
+  const state = structuredClone({ ...seed, mappings: seed.mappings || [], reviews: seed.reviews || [] });
   const db = {
     state,
     prepare(sql) {
@@ -257,6 +263,22 @@ function makeDeleteDb(seed) {
             if (note) { note.deleted_at = values[0]; return { meta: { changes: 1 } }; }
             return { meta: { changes: 0 } };
           }
+          if (sql.startsWith("DELETE FROM yaos_sync_identity_review WHERE path = ?")) {
+            const before = state.reviews.length;
+            state.reviews = state.reviews.filter((row) => row.path !== values[0]);
+            return { meta: { changes: before - state.reviews.length } };
+          }
+          if (sql.startsWith("DELETE FROM yaos_sync_identity_review WHERE file_id IN")) {
+            const before = state.reviews.length;
+            const fileIds = new Set(state.mappings.filter((row) => row.note_id === values[0] || row.sync_uuid === values[1]).map((row) => row.file_id));
+            state.reviews = state.reviews.filter((row) => !fileIds.has(row.file_id));
+            return { meta: { changes: before - state.reviews.length } };
+          }
+          if (sql.startsWith("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")) {
+            const before = state.mappings.length;
+            state.mappings = state.mappings.filter((row) => row.note_id !== values[0] && row.sync_uuid !== values[1]);
+            return { meta: { changes: before - state.mappings.length } };
+          }
           return { meta: { changes: 1 } };
         }
       };
@@ -278,10 +300,16 @@ const deleteBehavior = buildHandler("deleteNote", '__name(deleteNote, "deleteNot
   buildAgentMemorySuppressionStatements: () => []
 });
 for (const reference of ["Notes%2FNew.md", "Notes%2FOld.md"]) {
-  const db = makeDeleteDb({ notes: [structuredClone(movedNote)] });
+  const db = makeDeleteDb({
+    notes: [structuredClone(movedNote)],
+    mappings: [{ file_id: "vault-file-delete", sync_uuid: movedNote.sync_uuid, note_id: movedNote.id, last_path: movedNote.path }],
+    reviews: [{ file_id: "vault-file-delete", path: movedNote.path, reason: "sync_identity_mapping_conflict" }]
+  });
   const response = await deleteBehavior(new URL(`https://worker.test/api/notes/${reference}`), { DB: db });
   assert.equal(response.data.deleted, true, `DELETE by ${reference} should delete the moved note`);
   assert.ok(db.state.notes[0].deleted_at, "the addressed note should be archived");
+  assert.equal(db.state.mappings.length, 0, "logical deletion retires the old identity map in the same batch");
+  assert.equal(db.state.reviews.length, 0, "logical deletion retires the matching identity review");
 }
 const readBehavior = buildHandler("getNoteByPath", '__name(getNoteByPath, "getNoteByPath");', {
   json: jsonResult,

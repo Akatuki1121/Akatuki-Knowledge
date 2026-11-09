@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyAgentTaskError, decideTaskRetry, describeAgentTaskStopReason, TASK_BUDGET_CEILINGS } from "../src/background-task-policy.mjs";
+import { classifyAgentTaskError, decideTaskRetry, describeAgentTaskStopReason, isModelResponseShapeInvalidInput, MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES, TASK_BUDGET_CEILINGS } from "../src/background-task-policy.mjs";
 
 const base = {
   nowMs: 10_000,
@@ -81,6 +81,17 @@ assert.equal(
   "retry_would_exceed_task_deadline",
 );
 
+// A lost execution lease is transient: the model call outlived the lease,
+// not the task input. It retries on the same backoff as other transient
+// failures, and still obeys the cumulative attempt budget.
+assert.equal(decideTaskRetry({ ...base, errorClass: "lease_lost" }).action, "retry");
+assert.equal(decideTaskRetry({ ...base, errorClass: "lease_lost" }).delayMs, 30_000);
+assert.equal(decideTaskRetry({ ...base, errorClass: "lease_lost", attempts: 3 }).delayMs, 120_000);
+assert.equal(
+  decideTaskRetry({ ...base, errorClass: "lease_lost", attempts: 4, maxAttempts: 4 }).stopReason,
+  "attempt_budget_exhausted",
+);
+
 // AI call/token counters are telemetry only and cannot stop a task.
 assert.equal(decideTaskRetry({ ...base, aiCallsUsed: 1_000_000, aiTokensUsed: 9_000_000_000 }).action, "retry");
 // Persisted row values cannot raise the retry-attempt ceiling.
@@ -135,9 +146,20 @@ for (const fixed of [
   "web_research_provider_error",
   "tool_output_too_large",
   "workers_ai_daily_quota_exhausted",
+  "lease_lost",
 ]) {
   assert.equal(classifyAgentTaskError(new Error("failed: " + fixed)), fixed, fixed);
 }
+// Production-observed lease loss (2026-11-09): the improvement task
+// 1009518a was written back as "Error: lease_lost" and classified unknown
+// because no branch matched. It must classify as the new transient class.
+assert.equal(classifyAgentTaskError(new Error("Error: lease_lost")), "lease_lost");
+// Lease diagnostics appended to the failure record must not change the class.
+assert.equal(
+  classifyAgentTaskError(new Error("Error: lease_lost; lease_expires_at=2026-11-08T18:06:04; updated_at=2026-11-08T18:04:04; started_at=2026-11-08T18:02:00")),
+  "lease_lost",
+);
+assert.equal(classifyAgentTaskError(new Error("Error: lease_lost; lease_token_mismatch")), "lease_lost");
 // Fixed classes win over the regex classes, and the fixed list order (not the
 // position inside the message) decides between multiple fixed classes.
 assert.equal(classifyAgentTaskError(new Error("credentials_detected (HTTP 429)")), "credentials_detected");
@@ -186,6 +208,53 @@ assert.equal(classifyAgentTaskError(new Error()), "unknown");
 assert.equal(classifyAgentTaskError({}), "unknown");
 assert.equal(classifyAgentTaskError(null), "unknown");
 assert.equal(classifyAgentTaskError(undefined), "unknown");
+
+// --- isModelResponseShapeInvalidInput ---
+// Production-observed errors from self-audit improvement tasks (2026-11-05..08):
+// the model's reply shape failed, not the task input, so reassessment may
+// revive these when a new retry policy ships a parser/feedback fix.
+for (const observed of [
+  "Error: invalid_input:model_response_not_json",
+  "Error: invalid_input:model_response_not_object",
+  "Error: invalid_input:model_response_size",
+  "Error: invalid_input:action_shape",
+  "Error: invalid_input:action_shape:action=answer;missing=tool,arguments;unexpected=reply",
+  "Error: invalid_input:final_action_shape",
+]) {
+  assert.equal(isModelResponseShapeInvalidInput(observed), true, observed);
+}
+// Task-input problems stay outside the exception: prompt and checkpoint
+// validation, tool-argument problems (they carry their own exception), other
+// suffixed validation failures, a bare invalid_input, and unrelated errors.
+for (const other of [
+  "Error: invalid_input",
+  "Error: invalid_input:prompt_too_long",
+  "Error: invalid_input:prompt_not_string",
+  "Error: invalid_input:checkpoint_shape",
+  "Error: invalid_input:tool_argument_keys:tool=search_notes;missing=none;unexpected=extra",
+  "Error: invalid_input:search_notes_query",
+  "Error: workers_ai_request_failed",
+  "",
+]) {
+  assert.equal(isModelResponseShapeInvalidInput(other), false, other);
+}
+for (const nonString of [null, undefined, 0, {}]) {
+  assert.equal(isModelResponseShapeInvalidInput(nonString), false, String(nonString));
+}
+assert.deepEqual([...MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES], [
+  "model_response_not_json",
+  "model_response_not_object",
+  "model_response_size",
+  "action_shape",
+  "final_action_shape",
+]);
+// The class stays invalid_input and the attempt-level decision still stops;
+// revival happens only through improvement-task reassessment.
+assert.equal(classifyAgentTaskError(new Error("Error: invalid_input:action_shape")), "invalid_input");
+assert.equal(
+  decideTaskRetry({ ...base, errorClass: "invalid_input" }).stopReason,
+  "non_retryable_invalid_input",
+);
 
 // --- describeAgentTaskStopReason (moved from src/index.js in #86) ---
 const GUIDANCE = {

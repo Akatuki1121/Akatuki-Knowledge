@@ -8,6 +8,7 @@ import {
   getAgentTask,
   listAgentTasks,
   claimNextAgentTask,
+  renewAgentTaskLease,
   reserveAgentAiBudget,
   settleAgentAiBudget,
   reserveQueuedAgentTaskBudget,
@@ -33,11 +34,11 @@ import { parseGroundedWebResearch } from "./agent-web-research.mjs";
 import {
   buildAgentMemorySuppressionStatements
 } from "./agent-memory.mjs";
-import { hasSensitiveCategory, inspectAndRedact, inspectWholeContent } from "./ai-send-guard.mjs";
+import { hasSensitiveCategory, inspectAndRedact } from "./ai-send-guard.mjs";
 import { createReplyText } from "./reply-text.mjs";
 import { createNoteSearchText } from "./note-search-text.mjs";
 import { createBotAlerts } from "./bot-alerts.mjs";
-import { classifyAgentTaskError } from "./background-task-policy.mjs";
+import { classifyAgentTaskError, isModelResponseShapeInvalidInput } from "./background-task-policy.mjs";
 import { classifyOperationalFailure, describeSafeFailure, safeErrorCode, summarizeReconcile } from "./log-sanitize.mjs";
 // AI 応答テキストの抽出・整形は src/reply-text.mjs に分離した (#86)。
 const { extractReplyFromJsonish, formatTelegramPlainText, parseJsonObject } = createReplyText();
@@ -447,6 +448,27 @@ async function syncNotes(request, env) {
       .bind(fileId || "", noteId || "", syncUuid || "").all();
     return result.results || [];
   };
+  // Line endings are compared line by line: CRLF, LF, and CR, including a
+  // mixture of them inside one body, are not content differences. Stored
+  // bodies are never rewritten for this; normalization happens only while
+  // comparing.
+  const normalizeLineEndings = (text) => String(text ?? "").replace(/\r\n|\r|\n/g, "\n");
+  // True when the D1 row's body matches the observed Vault content hash,
+  // allowing line-ending-only differences. When the exact candidate body is
+  // available and hashes to the observation, compare the bodies line by line
+  // (this also covers mixtures on both sides). Otherwise fall back to hashing
+  // the row body normalized to a uniform LF or CRLF form.
+  const contentsMatchObservation = async (row, candidateContent, observationHash) => {
+    if (!row || !observationHash) return false;
+    if (row.content_hash === observationHash) return true;
+    if (typeof row.content !== "string") return false;
+    if (typeof candidateContent === "string" && await sha256(candidateContent) === observationHash) {
+      return normalizeLineEndings(row.content) === normalizeLineEndings(candidateContent);
+    }
+    const lfForm = normalizeLineEndings(row.content);
+    if (await sha256(lfForm) === observationHash) return true;
+    return await sha256(lfForm.replace(/\n/g, "\r\n")) === observationHash;
+  };
   const insertMapping = async (fileId, row, path) => {
     if (!fileId || !row || !isValidSyncUuid(row.sync_uuid)) throw new Error("invalid_identity_mapping");
     const existing = await mappingsFor(fileId, row.id, row.sync_uuid);
@@ -498,7 +520,7 @@ async function syncNotes(request, env) {
       // the Vault. If the Vault changes again before delivery, YAOS rejects the
       // stale baseline and no concurrent edit is overwritten.
       const candidateInput = noteInputByFileId.get(observation.fileId);
-      const hasContentConflict = row.content_hash !== observation.contentHash;
+      const hasContentConflict = !(await contentsMatchObservation(row, candidateInput?.content, observation.contentHash));
       if (hasContentConflict) {
         if (row.deleted_at || !observation.contentHash || !candidateInput
           || typeof candidateInput.content !== "string"
@@ -684,8 +706,9 @@ async function syncNotes(request, env) {
       if (path !== review.path) continue;
       const mapped = await mappingsFor(review.file_id, "", "");
       if (mapped.length !== 1 || mapped[0].last_path !== path) continue;
-      const row = await env.DB.prepare("SELECT id, path, content_hash, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
-      if (!row || row.deleted_at || row.path !== path || row.content_hash !== observation.contentHash) continue;
+      const row = await env.DB.prepare("SELECT id, path, content_hash, content, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
+      if (!row || row.deleted_at || row.path !== path) continue;
+      if (!(await contentsMatchObservation(row, noteInputByFileId.get(review.file_id)?.content, observation.contentHash))) continue;
       const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(row.id).first();
       if (pending) continue;
       await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'vault_pull_live_content_conflict'").bind(review.file_id).run();
@@ -705,9 +728,10 @@ async function syncNotes(request, env) {
       if (mappings.length !== 1) continue;
       const mapping = mappings[0];
       if (mapping.file_id !== review.file_id || mapping.last_path !== path) continue;
-      const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, deleted_at FROM notes WHERE id = ?").bind(mapping.note_id).first();
+      const row = await env.DB.prepare("SELECT id, path, sync_uuid, content_hash, content, deleted_at FROM notes WHERE id = ?").bind(mapping.note_id).first();
       if (!row || row.deleted_at || row.id !== mapping.note_id || row.sync_uuid !== mapping.sync_uuid
-        || row.path !== path || row.content_hash !== observation.contentHash) continue;
+        || row.path !== path) continue;
+      if (!(await contentsMatchObservation(row, noteInputByFileId.get(review.file_id)?.content, observation.contentHash))) continue;
       const pending = await env.DB.prepare("SELECT job_id FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status IN ('pending', 'processing') LIMIT 1").bind(row.id).first();
       if (pending) continue;
       await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = 'sync_identity_mapping_conflict'").bind(review.file_id).run();
@@ -778,8 +802,9 @@ async function syncNotes(request, env) {
       archivedSkipped++;
       continue;
     }
+    const contentDiffers = Boolean(previous) && !(await contentsMatchObservation(previous, content, contentHash));
     if (body.vaultPull === true && previous && !previous.deleted_at
-      && previous.content_hash !== contentHash && !isVaultAuthoritativePath(path)) {
+      && contentDiffers && !isVaultAuthoritativePath(path)) {
       await recordReview(fileId, path, contentHash, "needs_review", "vault_pull_live_content_conflict");
       continue;
     }
@@ -824,9 +849,8 @@ async function syncNotes(request, env) {
         const archiveEvent = await env.DB.prepare(
           "SELECT archive_event_id, previous_ai_allowed FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1"
         ).bind(previous.id).first();
-        const credential = inspectWholeContent(content, env).credentials;
-        const aiAllowed = credential ? 0 : Number(archiveEvent?.previous_ai_allowed || 0);
-        const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+        const aiAllowed = Number(archiveEvent?.previous_ai_allowed || 0);
+        const reviewState = aiAllowed ? "ready" : "blocked";
         const restoreStatements = [];
         if (previous.content !== content) {
           restoreStatements.push(env.DB.prepare(
@@ -850,7 +874,7 @@ async function syncNotes(request, env) {
           continue;
         }
         updated++;
-      } else if (previous && previous.content_hash === contentHash && previous.title === title) {
+      } else if (previous && !contentDiffers && previous.title === title) {
         await env.DB.batch([
           env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
           env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid").bind(fileId, syncUuid, previous.id, path, now, now),
@@ -882,6 +906,74 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
+  // Identity reviews are a live work queue, not a ledger. On a complete
+  // pull, retire stale rows only when the current Vault observation or the
+  // D1 tombstone proves that the original conflict can no longer be acted on.
+  // A moved/deleted Vault entry retires its old live-content review; if the
+  // moved entry was re-recorded at its new path above, last_seen_at protects
+  // that fresh review. A deleted D1 note retires both review reasons and every
+  // mapping row belonging to that archived identity, including the case where
+  // an operator already removed the map and only the review row remains.
+  if (body.vaultPull === true && observationComplete) {
+    const orphanedReviews = await env.DB.prepare(
+      "SELECT file_id, path, reason, last_seen_at FROM yaos_sync_identity_review WHERE reason IN ('vault_pull_live_content_conflict', 'sync_identity_mapping_conflict')"
+    ).all();
+    for (const review of orphanedReviews.results || []) {
+      if (!review.last_seen_at || review.last_seen_at >= now) continue;
+      if (reconciledConflictFileIds.has(review.file_id)) continue;
+      const observation = observedByFileId.get(review.file_id);
+      const mapped = await mappingsFor(review.file_id, "", "");
+      let archived = null;
+      if (mapped.length === 1) {
+        const row = await env.DB.prepare("SELECT id, sync_uuid, deleted_at FROM notes WHERE id = ?")
+          .bind(mapped[0].note_id).first();
+        if (row?.deleted_at) archived = row;
+      } else if (mapped.length === 0 && review.path) {
+        const candidates = (await env.DB.prepare(
+          "SELECT id, sync_uuid, deleted_at FROM notes WHERE id = ? OR path = ?"
+        ).bind(review.path, review.path).all()).results || [];
+        if (candidates.length === 1 && candidates[0].deleted_at) archived = candidates[0];
+      }
+      if (archived) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
+            .bind(review.file_id, review.reason),
+          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")
+            .bind(archived.id, archived.sync_uuid || "")
+        ]);
+        resolvedReviews++;
+        continue;
+      }
+
+      if (review.reason === "vault_pull_live_content_conflict" && observation
+        && (observation.deleted === true || stableId(observation.path || "") !== stableId(review.path || ""))) {
+        await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
+          .bind(review.file_id, review.reason).run();
+        resolvedReviews++;
+      }
+    }
+
+    // A deleted D1 note can have a stale identity row even when its review
+    // was already removed. Retire that row only when the complete Vault
+    // observation explicitly confirms that the mapped fileId is tombstoned;
+    // live Vault files retain their mapping so the existing restore policy
+    // can still identify them.
+    const archivedMappings = (await env.DB.prepare(
+      "SELECT m.file_id, m.note_id, m.sync_uuid FROM yaos_file_identity_map m INNER JOIN notes n ON n.id = m.note_id WHERE n.deleted_at IS NOT NULL"
+    ).all()).results || [];
+    for (const mapping of archivedMappings) {
+      const observation = observedByFileId.get(mapping.file_id);
+      if (!observation || observation.deleted !== true) continue;
+      const results = await env.DB.batch([
+        env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason IN ('vault_pull_live_content_conflict', 'sync_identity_mapping_conflict')")
+          .bind(mapping.file_id),
+        env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ?")
+          .bind(mapping.file_id, mapping.note_id, mapping.sync_uuid)
+      ]);
+      resolvedReviews += Number(results[0]?.meta?.changes || 0);
+    }
+  }
+
   return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
@@ -942,11 +1034,12 @@ async function createNote(request, env) {
   if (existingUuid) return json({ error: "sync_uuid_exists" }, 409);
   const title = titleFrom(path, body.title);
   const contentHash = await sha256(content);
-  const inspected = inspectWholeContent(content, env);
-  const credential = inspected.credentials;
-  const aiAllowed = credential ? 0 : 1;
-  const sensitivity = credential ? "credentials" : "unknown";
-  const reviewState = credential ? "blocked_credentials" : "ready";
+  // 2026-11-09 の所有者決定で、書き込み時の認証情報スキャンによる
+  // ai_allowed / review_state の遮断 (Gemini 時代の残骸) は撤去した。
+  // 新規ノートは常に AI 可読・ready で保存する。
+  const aiAllowed = 1;
+  const sensitivity = "unknown";
+  const reviewState = "ready";
   const tags = JSON.stringify(extractTags(content, body.tags));
   const now = new Date().toISOString();
   const payload = {
@@ -1088,10 +1181,6 @@ async function setAiPermission(request, url, env) {
   const body = await readJson(request);
   if (typeof body.allowed !== "boolean") return json({ error: "allowed must be boolean" }, 400);
   const table = id2.startsWith("tg:") ? "telegram_notes" : "notes";
-  if (table === "telegram_notes" && body.allowed) {
-    const note = await env.DB.prepare("SELECT review_state FROM telegram_notes WHERE id = ? AND deleted_at IS NULL").bind(id2).first();
-    if (note?.review_state === "blocked_credentials") return json({ error: "\u8A8D\u8A3C\u60C5\u5831\u3092\u542B\u3080Telegram\u30CE\u30FC\u30C8\u306F\u8A31\u53EF\u3067\u304D\u307E\u305B\u3093\u3002", code: "credentials_blocked" }, 409);
-  }
   const state = body.allowed ? "ready" : "blocked";
   const result = await env.DB.prepare(`UPDATE ${table} SET ai_allowed = ?, sensitivity = ?, review_state = ?, next_retry_at = NULL WHERE id = ? AND deleted_at IS NULL`).bind(body.allowed ? 1 : 0, body.allowed ? "user-approved" : "blocked", state, id2).run();
   if (!result.meta?.changes) return json({ error: "Note not found" }, 404);
@@ -1187,7 +1276,8 @@ async function moveNote(request, url, env) {
   ];
   const results = await env.DB.batch([
     ...identityStatements,
-    ...prepared.statements
+    ...prepared.statements,
+    env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(mapping.file_id)
   ]);
   if (!results[0]?.meta?.changes || !results[1]?.meta?.changes) {
     return json({ error: "note_move_precondition_failed" }, 409);
@@ -1234,6 +1324,14 @@ async function deleteNote(url, env) {
       .bind(id2, source, Number(old.ai_allowed || 0), old.review_state || "ready", now),
     env.DB.prepare(`UPDATE ${table} SET deleted_at = ?, ai_allowed = 0, review_state = 'deleted' WHERE id = ? AND deleted_at IS NULL`)
       .bind(now, id2),
+    ...(table === "notes" ? [
+      // Retire the Obsidian identity together with the tombstone. The outbox
+      // payload already carries sync_uuid, so delete delivery does not need a
+      // live D1 mapping and must not recreate one after YAOS confirms deletion.
+      env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE path = ?").bind(old.path || ""),
+      env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (SELECT file_id FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?)").bind(id2, old.sync_uuid || ""),
+      env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(id2, old.sync_uuid || "")
+    ] : []),
     ...buildAgentMemorySuppressionStatements(env.DB, {
       source,
       noteId: id2,
@@ -1257,9 +1355,8 @@ async function restoreNote(url, env) {
   if (!archived) return json({ error: "Archived note not found" }, 404);
   const event = await env.DB.prepare("SELECT archive_event_id, previous_ai_allowed, previous_review_state FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1").bind(id2).first();
   if (!event) return json({ error: "Archive metadata not found" }, 409);
-  const credential = inspectWholeContent(archived.content, env).credentials;
-  const aiAllowed = credential ? 0 : Number(event.previous_ai_allowed || 0);
-  const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+  const aiAllowed = Number(event.previous_ai_allowed || 0);
+  const reviewState = aiAllowed ? "ready" : "blocked";
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const source = table === "notes" ? "obsidian" : "telegram";
   const previousRevision = table === "notes"
@@ -1328,12 +1425,9 @@ async function correctNote(request, url, env) {
   if (old.content_hash === contentHash) return json({ ok: true, unchanged: true, id: id2 });
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 300) : old.title;
-  const inspected = inspectWholeContent(body.content, env);
-  const credential = inspected.credentials;
-  let aiAllowed = old.ai_allowed;
-  if (credential) aiAllowed = 0;
-  else if (table === "telegram_notes" && old.review_state === "blocked_credentials") aiAllowed = 1;
-  const reviewState = credential ? "blocked_credentials" : "ready";
+  // 書き込み時の認証情報スキャンによる遮断は 2026-11-09 の所有者決定で
+  // 撤去した。訂正では ai_allowed を変更せず、review_state は ready に戻す。
+  const reviewState = "ready";
   const tags = JSON.stringify(extractTags(body.content, table === "notes" ? void 0 : []));
   // Prepare the outbox event against the post-correction snapshot before
   // committing anything: an identity conflict throws here and leaves D1
@@ -1350,17 +1444,13 @@ async function correctNote(request, url, env) {
   } else {
     statements.push(env.DB.prepare("INSERT INTO telegram_note_revisions (note_id, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?)").bind(id2, old.title, old.content, old.content_hash, now));
   }
-  if (aiAllowed === 0) {
-    statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = 0, sensitivity = COALESCE(?, sensitivity), review_state = ?, organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, credential ? "credentials" : null, reviewState, id2));
-  } else {
-    statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, ai_allowed = ?, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, aiAllowed, id2));
-  }
+  statements.push(env.DB.prepare(`UPDATE ${table} SET title = ?, content = ?, content_hash = ?, updated_at = ?, tags_json = ?, ai_tags_json = '[]', summary = NULL, related_json = '[]', organized_hash = NULL, review_state = 'ready', organization_failures = 0, last_failure_stage = NULL, next_retry_at = NULL WHERE id = ?`).bind(title, body.content, contentHash, now, tags, id2));
   statements.push(env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = ? AND note_id = ? AND content_hash <> ? AND status IN ('active', 'unverified', 'conflicted')")
     .bind(now, table === "notes" ? "obsidian" : "telegram", id2, contentHash));
   statements.push(env.DB.prepare("DELETE FROM note_relations WHERE source_note_id = ? OR target_note_id = ?").bind(id2, id2));
   if (prepared) statements.push(...prepared.statements);
   await env.DB.batch(statements);
-  return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(aiAllowed) });
+  return json({ ok: true, id: id2, contentHash, reviewState, aiAllowed: Boolean(old.ai_allowed) });
 }
 __name(correctNote, "correctNote");
 async function askQuestion(request, env) {
@@ -11154,12 +11244,10 @@ var YjsClientDO = class extends DurableObject {
           return 0;
         }
         const now = new Date().toISOString();
-        const inspected = inspectWholeContent(vaultContent, this.env);
-        const credential = inspected.credentials;
         const tags = JSON.stringify(extractTags(vaultContent));
         const update = this.env.DB.prepare(
-          "UPDATE notes SET content = ?, content_hash = ?, tags_json = ?, updated_at = ?, ai_allowed = CASE WHEN ? = 1 THEN 0 ELSE ai_allowed END, sensitivity = CASE WHEN ? = 1 THEN 'credentials' ELSE sensitivity END, review_state = CASE WHEN ? = 1 THEN 'blocked_credentials' ELSE 'ready' END WHERE id = ? AND path = ? AND content_hash = ? AND content = ? AND deleted_at IS NULL"
-        ).bind(vaultContent, vaultHash, tags, now, credential ? 1 : 0, credential ? 1 : 0, credential ? 1 : 0, path, path, expectedD1Hash, note.content);
+          "UPDATE notes SET content = ?, content_hash = ?, tags_json = ?, updated_at = ?, review_state = 'ready' WHERE id = ? AND path = ? AND content_hash = ? AND content = ? AND deleted_at IS NULL"
+        ).bind(vaultContent, vaultHash, tags, now, path, path, expectedD1Hash, note.content);
         const revision = this.env.DB.prepare(
           "INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1"
         ).bind(path, path, note.title, note.content, note.content_hash, now);
@@ -11587,7 +11675,14 @@ var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
-var IMPROVEMENT_RETRY_POLICY_VERSION = 6;
+var IMPROVEMENT_RETRY_POLICY_VERSION = 8;
+// Execution-lease lifetime for an agent task claim. A single Workers AI call
+// was observed at 235,677 ms (task e4d16479, 2026-11-09), far beyond one
+// lease, so the lease must be renewed while the call is still in flight.
+// The renewal interval stays below the lease lifetime so the lease always
+// keeps at least one full interval of margin.
+var AGENT_TASK_LEASE_SECONDS = 120;
+var AGENT_TASK_LEASE_RENEWAL_INTERVAL_MS = 60_000;
 async function sha2562(text2) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text2)));
 }
@@ -11733,10 +11828,11 @@ async function reassessOutdatedImprovementTasks(env, limit = 20) {
         ? task.last_error_class
         : (task.last_error ? classifyAgentTaskError(new Error(task.last_error)) : "unknown"));
     const retryable = (errorClass === "invalid_input"
-      && task.last_error?.includes("invalid_input:tool_argument_keys"))
+      && (task.last_error?.includes("invalid_input:tool_argument_keys")
+        || isModelResponseShapeInvalidInput(task.last_error)))
       || [
         "network_error", "timeout", "rate_limited", "upstream_5xx",
-        "executor_interrupted", "workers_ai_daily_quota_exhausted",
+        "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
         "workers_ai_transient_failure"
       ].includes(errorClass);
     const result = await reassessImprovementAgentTask(env.DB, task.task_id, {
@@ -11826,11 +11922,14 @@ async function runImprovementInbox(env) {
         : (previous.last_error_class && previous.last_error_class !== "unknown"
           ? previous.last_error_class
           : (previous.last_error ? classifyAgentTaskError(new Error(previous.last_error)) : "unknown"));
-      const retryable = [
-        "network_error", "timeout", "rate_limited", "upstream_5xx",
-        "executor_interrupted", "workers_ai_daily_quota_exhausted",
-        "workers_ai_transient_failure"
-      ].includes(reassessedClass);
+      const retryable = (reassessedClass === "invalid_input"
+        && (previous.last_error?.includes("invalid_input:tool_argument_keys")
+          || isModelResponseShapeInvalidInput(previous.last_error)))
+        || [
+          "network_error", "timeout", "rate_limited", "upstream_5xx",
+          "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
+          "workers_ai_transient_failure"
+        ].includes(reassessedClass);
       const reassessed = await reassessImprovementAgentTask(env.DB, previous.task_id, {
         nowMs: Date.now(),
         policyVersion: IMPROVEMENT_RETRY_POLICY_VERSION,
@@ -11971,28 +12070,25 @@ __name(describeAgentTaskError, "describeAgentTaskError");
 async function searchAgentTaskNotes(query, env) {
   const matches = await findRelevantNotes(query, env, 8);
   const notes = [];
+  // 2026-11-09 の所有者決定で、ai_allowed と本文の認証情報スキャンによる
+  // 除外 (Gemini 時代の残骸) は撤去した。タイトルと抜粋は、送る直前の
+  // 伏字 (inspectAndRedact) だけを従来どおり適用する。
   for (const note of matches) {
-    if (note.ai_allowed !== 1) continue;
-    const wholeInspection = inspectWholeContent(note.content, env);
-    if (wholeInspection.credentials || hasSensitiveCategory(wholeInspection.findings)) continue;
     const safeTitle = inspectAndRedact(note.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
     const safeExcerpt = inspectAndRedact(excerpt(note.content, query, 800), { blocklist: env.PRIVACY_BLOCKLIST || "" });
-    const sensitive = hasSensitiveCategory([...safeTitle.findings, ...safeExcerpt.findings]);
-    if (safeTitle.ok && safeExcerpt.ok && !sensitive) {
-      notes.push({
-        id: note.id,
-        title: safeTitle.text,
-        text: safeExcerpt.text,
-        kind: note.knowledge_type || "unknown",
-        scope: note.knowledge_scope || "project",
-        memoryKinds: note.memory_kinds || "",
-        memoryTrustLevels: note.memory_trust_levels || "",
-        memoryStatus: note.memory_status || "legacy_unverified",
-        memoryConfidence: note.memory_confidence,
-        memoryRecordedAt: note.memory_recorded_at || null,
-        memoryExpiresAt: note.memory_expires_at || null
-      });
-    }
+    notes.push({
+      id: note.id,
+      title: safeTitle.text,
+      text: safeExcerpt.text,
+      kind: note.knowledge_type || "unknown",
+      scope: note.knowledge_scope || "project",
+      memoryKinds: note.memory_kinds || "",
+      memoryTrustLevels: note.memory_trust_levels || "",
+      memoryStatus: note.memory_status || "legacy_unverified",
+      memoryConfidence: note.memory_confidence,
+      memoryRecordedAt: note.memory_recorded_at || null,
+      memoryExpiresAt: note.memory_expires_at || null
+    });
     if (notes.length >= 6) break;
   }
   return notes;
@@ -12007,6 +12103,71 @@ async function assertAgentTaskRunning(db, taskId, leaseToken) {
 }
 __name(assertAgentTaskRunning, "assertAgentTaskRunning");
 
+// Renew the execution lease once. Never throws: a renewal that fails only
+// means the lease is already gone, and the next checkpoint save reports
+// lease_lost on its own. Callers must not treat a failed renewal as fatal.
+async function tryRenewAgentTaskLease(db, taskId, leaseToken) {
+  try {
+    return await renewAgentTaskLease(db, {
+      taskId, leaseToken, leaseSeconds: AGENT_TASK_LEASE_SECONDS, nowMs: Date.now()
+    });
+  } catch {
+    return false;
+  }
+}
+__name(tryRenewAgentTaskLease, "tryRenewAgentTaskLease");
+
+// Keep the execution lease alive while a long model call runs. Renewal only
+// succeeds while the lease is still alive, so it must happen on a timer
+// during the call, not after the call returns. Returns a stop function the
+// caller runs in a finally block. If a renewal reports the lease is gone,
+// the timer stops itself; the in-flight call keeps running and the next
+// checkpoint save reports lease_lost.
+function startAgentTaskLeaseRenewal(db, taskId, leaseToken) {
+  let stopped = false;
+  let inFlight = false;
+  const timer = setInterval(async () => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      const renewed = await tryRenewAgentTaskLease(db, taskId, leaseToken);
+      if (!renewed) {
+        stopped = true;
+        clearInterval(timer);
+      }
+    } finally {
+      inFlight = false;
+    }
+  }, AGENT_TASK_LEASE_RENEWAL_INTERVAL_MS);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+__name(startAgentTaskLeaseRenewal, "startAgentTaskLeaseRenewal");
+
+// Lease-loss diagnostics for the failure record. The stored expiry implies
+// the last renewal (expiry minus the lease lifetime); started_at is the
+// first claim of the task row and updated_at is its last write. A token
+// mismatch means another executor reclaimed the task, which is a different
+// cause from an expired lease. Never throws; diagnostics must not break
+// failure recording.
+async function describeAgentTaskLeaseLoss(db, taskId, leaseToken, errorDetail) {
+  try {
+    const task = await getAgentTask(db, taskId);
+    if (!task) return errorDetail;
+    if (task.lease_token !== leaseToken) return (errorDetail + "; lease_token_mismatch").slice(0, 200);
+    const parts = [errorDetail];
+    if (task.lease_expires_at) parts.push("lease_expires_at=" + task.lease_expires_at);
+    if (task.updated_at) parts.push("updated_at=" + task.updated_at);
+    if (task.started_at) parts.push("started_at=" + task.started_at);
+    return parts.join("; ").slice(0, 200);
+  } catch {
+    return errorDetail;
+  }
+}
+__name(describeAgentTaskLeaseLoss, "describeAgentTaskLeaseLoss");
+
 class AgentTaskWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const taskId = typeof event?.payload?.taskId === "string" ? event.payload.taskId : "";
@@ -12015,7 +12176,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
 
     for (let attempt = 1; ; attempt++) {
       const claim = await step.do("claim-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
-        const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: 120 });
+        const task = await claimNextAgentTask(this.env.DB, { taskId, leaseToken, leaseSeconds: AGENT_TASK_LEASE_SECONDS });
         return task ? { claimed: true, attempts: task.attempts } : { claimed: false };
       });
       if (!claim.claimed) {
@@ -12193,7 +12354,13 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               });
               if (!reserved) throw new Error("ai_token_budget_exhausted");
               await assertAgentTaskRunning(this.env.DB, taskId, leaseToken);
-              const raw = await callWorkersAi(this.env, inspection.text, adaptiveMaxOutputTokens, {
+              // One model call was observed at 235,677 ms while the lease
+              // lasts 120 s, so the lease must be renewed while the call is
+              // in flight. The timer stops when the call returns or throws.
+              const stopLeaseRenewal = startAgentTaskLeaseRenewal(this.env.DB, taskId, leaseToken);
+              let raw;
+              try {
+                raw = await callWorkersAi(this.env, inspection.text, adaptiveMaxOutputTokens, {
                 ...(adaptiveResponseMimeType ? { responseMimeType: adaptiveResponseMimeType } : {}),
                 reasoningEffort: adaptiveReasoningEffort,
                 onUsage: async (usage) => {
@@ -12211,6 +12378,12 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
                   if (!settled) throw new Error("ai_token_budget_settlement_failed");
                 }
               });
+              } finally {
+                stopLeaseRenewal();
+              }
+              // Renew once more after the call so the checkpoint that
+              // follows does not fail on a lease that expired mid-call.
+              await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
               const safeResponse = inspectAndRedact(raw, { blocklist: this.env.PRIVACY_BLOCKLIST || "" });
               if (!safeResponse.ok) {
                 throw new Error(safeResponse.findings.includes("credentials") ? "credentials_detected" : "invalid_input:model_output_" + (safeResponse.findings.includes("input_too_long") ? "too_long" : "not_string"));
@@ -12336,12 +12509,17 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               const execution = await step.do(
                 "execute-improvement-plan-" + attempt,
                 { retries: { limit: 1, delay: "1 second" } },
-                async () => executeApprovedImprovementPlan({
-                  plan: pending.plan,
-                  expectedPlanHash: pending.planHash,
-                  token: this.env.GITHUB_TOKEN || "",
-                  fetchImpl: fetch
-                })
+                async () => {
+                  // Plan execution (branch, patch, PR creation) can outlast
+                  // the lease left over from the agent loop.
+                  await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
+                  return executeApprovedImprovementPlan({
+                    plan: pending.plan,
+                    expectedPlanHash: pending.planHash,
+                    token: this.env.GITHUB_TOKEN || "",
+                    fetchImpl: fetch
+                  });
+                }
               );
               executionResult = execution.ok
                 ? { status: "completed", pullRequestUrl: execution.pullRequestUrl, autoMergeEnabled: execution.autoMergeEnabled, reason: execution.reason || null }
@@ -12390,6 +12568,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
             + "\n承認期限: " + pendingGitHubWrite.expiresAt
           : (reply || "関連ノートから回答を作成できませんでした。");
         const finalSaved = await step.do("save-formatted-output-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
+          await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
           return saveAgentTaskCheckpoint(this.env.DB, {
             taskId, leaseToken, nowMs: Date.now(),
             checkpoint: {
@@ -12409,6 +12588,7 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         }
 
         const completed = await step.do("complete-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
+          await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);
           return completeAgentTask(this.env.DB, { taskId, leaseToken, nowMs: Date.now() });
         });
         if (completed) {
@@ -12418,10 +12598,12 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
         return { taskId, status: current?.status || "lease_lost", stopReason: current?.stop_reason || null };
       } catch (error) {
         const errorClass = classifyAgentTaskError(error);
-        const errorDetail = describeAgentTaskError(error, this.env);
+        const errorDetail = errorClass === "lease_lost"
+          ? await describeAgentTaskLeaseLoss(this.env.DB, taskId, leaseToken, describeAgentTaskError(error, this.env))
+          : describeAgentTaskError(error, this.env);
         const retryable = [
           "network_error", "timeout", "rate_limited", "upstream_5xx",
-          "executor_interrupted", "workers_ai_daily_quota_exhausted",
+          "executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted",
           "workers_ai_transient_failure"
         ].includes(errorClass);
         const failure = await step.do("record-failure-" + attempt, { retries: { limit: 1, delay: "1 second" } }, async () => {
@@ -12844,9 +13026,8 @@ var wrapper_default = {
         });
         if (!validation.ok) return Response.json({ ok: false, applied: false, error: validation.error }, { status: 409, headers: JSON_HEADERS2 });
         const archiveEvent = await env.DB.prepare("SELECT archive_event_id, previous_ai_allowed FROM note_archive_events WHERE note_id = ? AND restored_at IS NULL ORDER BY archived_at DESC LIMIT 1").bind(note.id).first();
-        const credential = inspectWholeContent(vault.content, env).credentials;
-        const aiAllowed = credential ? 0 : Number(archiveEvent?.previous_ai_allowed || 0);
-        const reviewState = credential ? "blocked_credentials" : aiAllowed ? "ready" : "blocked";
+        const aiAllowed = Number(archiveEvent?.previous_ai_allowed || 0);
+        const reviewState = aiAllowed ? "ready" : "blocked";
         const now = new Date().toISOString();
         const title = titleFrom(path);
         const tags = JSON.stringify(extractTags(vault.content));
