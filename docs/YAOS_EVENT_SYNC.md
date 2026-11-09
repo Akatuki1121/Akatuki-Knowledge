@@ -155,7 +155,7 @@ YAOS の安定した `fileId` が同じで、完全観測上のパスだけが�
 
 ## 削除・移動後の同一性退役とレビュー再評価
 
-Obsidian ノートの API 論理削除では、削除イベントの outbox payload を準備した後、ノートの tombstone・同一性マップの削除・対応するレビュー行の削除を同じ D1 batch で確定する。YAOS への delete 配送は `sync_uuid` を使うため、削除済みノートのマップを配送完了まで残す必要はない。配送成功後も delete job の応答 `fileId` からマップを再作成せず、古い tombstone の再配送時にも同一性を復活させない。復元時は通常の upsert 応答から新しい現行マップを確立する。
+Obsidian ノートの API 論理削除では、削除イベントの outbox payload を準備した後、ノートの tombstone・同一性マップの削除・対応するレビュー行の削除を同じ D1 batch で確定する。YAOS への delete 配送は `sync_uuid` を使うため、削除済みノートのマップを配送完了まで残す必要はない。配送成功後も delete job の応答 `fileId` からマップを再作成せず、古い tombstone の再配送時にも同一性を復活させない。 削除より前にキューされた upsert が後から配送された場合も、配送時点の D1 `deleted_at` を再確認し、アーカイブ済みなら応答からマッピングを作らない。復元時は通常の upsert 応答から新しい現行マップを確立する。
 
 API 移動では、既存の一意なマップの `last_path` をノートのパス変更と同じ batch で移動先へ更新し、その fileId に紐づく古いレビュー行も同時に退役させる。YAOS pull で確認する `vault_pull_live_content_conflict` は、完全な観測で同じ fileId の項目が削除済み、またはレビュー記録時のパスから移動しており、その pull で新しいパスの競合として再記録されていない場合に限って削除する。
 
