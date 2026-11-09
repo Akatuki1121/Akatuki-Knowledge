@@ -873,24 +873,71 @@ async function syncNotes(request, env) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
     }
   }
-  // Orphaned live-content reviews for archived D1 rows: every resolution path
-  // above requires a live D1 row, so a review whose uniquely mapped note has
-  // been archived can never resolve and would linger with a stale reason
-  // forever. On a complete pull, drop such a row only when this pull did not
-  // record it again (its last_seen_at predates this pull). A row that keeps
-  // being re-recorded describes a current problem and is left untouched, as
-  // are rows recorded for any other reason (mapping conflicts in particular).
+  // Identity reviews are a live work queue, not a ledger. On a complete
+  // pull, retire stale rows only when the current Vault observation or the
+  // D1 tombstone proves that the original conflict can no longer be acted on.
+  // A moved/deleted Vault entry retires its old live-content review; if the
+  // moved entry was re-recorded at its new path above, last_seen_at protects
+  // that fresh review. A deleted D1 note retires both review reasons and every
+  // mapping row belonging to that archived identity, including the case where
+  // an operator already removed the map and only the review row remains.
   if (body.vaultPull === true && observationComplete) {
-    const orphanedReviews = await env.DB.prepare("SELECT file_id, last_seen_at FROM yaos_sync_identity_review WHERE reason = 'vault_pull_live_content_conflict'").all();
+    const orphanedReviews = await env.DB.prepare(
+      "SELECT file_id, path, reason, last_seen_at FROM yaos_sync_identity_review WHERE reason IN ('vault_pull_live_content_conflict', 'sync_identity_mapping_conflict')"
+    ).all();
     for (const review of orphanedReviews.results || []) {
       if (!review.last_seen_at || review.last_seen_at >= now) continue;
       if (reconciledConflictFileIds.has(review.file_id)) continue;
+      const observation = observedByFileId.get(review.file_id);
       const mapped = await mappingsFor(review.file_id, "", "");
-      if (mapped.length !== 1) continue;
-      const row = await env.DB.prepare("SELECT id, deleted_at FROM notes WHERE id = ?").bind(mapped[0].note_id).first();
-      if (!row || !row.deleted_at) continue;
-      await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(review.file_id).run();
-      resolvedReviews++;
+      let archived = null;
+      if (mapped.length === 1) {
+        const row = await env.DB.prepare("SELECT id, sync_uuid, deleted_at FROM notes WHERE id = ?")
+          .bind(mapped[0].note_id).first();
+        if (row?.deleted_at) archived = row;
+      } else if (mapped.length === 0 && review.path) {
+        const candidates = (await env.DB.prepare(
+          "SELECT id, sync_uuid, deleted_at FROM notes WHERE id = ? OR path = ?"
+        ).bind(review.path, review.path).all()).results || [];
+        if (candidates.length === 1 && candidates[0].deleted_at) archived = candidates[0];
+      }
+      if (archived) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
+            .bind(review.file_id, review.reason),
+          env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")
+            .bind(archived.id, archived.sync_uuid || "")
+        ]);
+        resolvedReviews++;
+        continue;
+      }
+
+      if (review.reason === "vault_pull_live_content_conflict" && observation
+        && (observation.deleted === true || stableId(observation.path || "") !== stableId(review.path || ""))) {
+        await env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason = ?")
+          .bind(review.file_id, review.reason).run();
+        resolvedReviews++;
+      }
+    }
+
+    // A deleted D1 note can have a stale identity row even when its review
+    // was already removed. Retire that row only when the complete Vault
+    // observation explicitly confirms that the mapped fileId is tombstoned;
+    // live Vault files retain their mapping so the existing restore policy
+    // can still identify them.
+    const archivedMappings = (await env.DB.prepare(
+      "SELECT m.file_id, m.note_id, m.sync_uuid FROM yaos_file_identity_map m INNER JOIN notes n ON n.id = m.note_id WHERE n.deleted_at IS NOT NULL"
+    ).all()).results || [];
+    for (const mapping of archivedMappings) {
+      const observation = observedByFileId.get(mapping.file_id);
+      if (!observation || observation.deleted !== true) continue;
+      const results = await env.DB.batch([
+        env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason IN ('vault_pull_live_content_conflict', 'sync_identity_mapping_conflict')")
+          .bind(mapping.file_id),
+        env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ?")
+          .bind(mapping.file_id, mapping.note_id, mapping.sync_uuid)
+      ]);
+      resolvedReviews += Number(results[0]?.meta?.changes || 0);
     }
   }
 
@@ -1196,7 +1243,8 @@ async function moveNote(request, url, env) {
   ];
   const results = await env.DB.batch([
     ...identityStatements,
-    ...prepared.statements
+    ...prepared.statements,
+    env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(mapping.file_id)
   ]);
   if (!results[0]?.meta?.changes || !results[1]?.meta?.changes) {
     return json({ error: "note_move_precondition_failed" }, 409);
@@ -1243,6 +1291,14 @@ async function deleteNote(url, env) {
       .bind(id2, source, Number(old.ai_allowed || 0), old.review_state || "ready", now),
     env.DB.prepare(`UPDATE ${table} SET deleted_at = ?, ai_allowed = 0, review_state = 'deleted' WHERE id = ? AND deleted_at IS NULL`)
       .bind(now, id2),
+    ...(table === "notes" ? [
+      // Retire the Obsidian identity together with the tombstone. The outbox
+      // payload already carries sync_uuid, so delete delivery does not need a
+      // live D1 mapping and must not recreate one after YAOS confirms deletion.
+      env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE path = ?").bind(old.path || ""),
+      env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id IN (SELECT file_id FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?)").bind(id2, old.sync_uuid || ""),
+      env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?").bind(id2, old.sync_uuid || "")
+    ] : []),
     ...buildAgentMemorySuppressionStatements(env.DB, {
       source,
       noteId: id2,
