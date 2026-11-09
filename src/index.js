@@ -919,6 +919,26 @@ async function syncNotes(request, env) {
         resolvedReviews++;
       }
     }
+
+    // A deleted D1 note can have a stale identity row even when its review
+    // was already removed. Retire that row only when the complete Vault
+    // observation explicitly confirms that the mapped fileId is tombstoned;
+    // live Vault files retain their mapping so the existing restore policy
+    // can still identify them.
+    const archivedMappings = (await env.DB.prepare(
+      "SELECT m.file_id, m.note_id, m.sync_uuid FROM yaos_file_identity_map m INNER JOIN notes n ON n.id = m.note_id WHERE n.deleted_at IS NOT NULL"
+    ).all()).results || [];
+    for (const mapping of archivedMappings) {
+      const observation = observedByFileId.get(mapping.file_id);
+      if (!observation || observation.deleted !== true) continue;
+      const results = await env.DB.batch([
+        env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason IN ('vault_pull_live_content_conflict', 'sync_identity_mapping_conflict')")
+          .bind(mapping.file_id),
+        env.DB.prepare("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ?")
+          .bind(mapping.file_id, mapping.note_id, mapping.sync_uuid)
+      ]);
+      resolvedReviews += Number(results[0]?.meta?.changes || 0);
+    }
   }
 
   return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });

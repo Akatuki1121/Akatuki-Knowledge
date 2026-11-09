@@ -75,6 +75,9 @@ function makeDb(initialNotes = [], initialMappings = []) {
             ).map((r) => ({ ...r })) };
           }
           if (sql.includes("FROM yaos_sync_jobs") && sql.includes("status = 'dead'")) return { results: jobs.filter((j) => j.entity_id === values[0] && j.status === "dead").map((j) => ({ ...j })) };
+          if (sql.includes("FROM yaos_file_identity_map m INNER JOIN notes n")) {
+            return { results: mappings.filter((m) => notes.some((n) => n.id === m.note_id && n.deleted_at)).map((m) => ({ ...m })) };
+          }
           if (sql.includes("FROM yaos_file_identity_map")) {
             const [fileId, noteId, syncUuid] = values;
             return { results: mappings.filter((m) =>
@@ -131,6 +134,19 @@ function makeDb(initialNotes = [], initialMappings = []) {
             const row = mappings.find((m) => m.file_id === v[2] && m.note_id === v[3] && m.sync_uuid === v[4] && m.last_path === v[5]);
             if (row) { row.last_path = v[0]; row.updated_at = v[1]; }
             return { meta: { changes: row ? 1 : 0 } };
+          }
+          if (sql.startsWith("DELETE FROM yaos_sync_identity_review WHERE file_id = ? AND reason IN")) {
+            const reasons = [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+            const before = reviews.length;
+            for (let i = reviews.length - 1; i >= 0; i--) {
+              if (reviews[i].file_id === v[0] && reasons.includes(reviews[i].reason)) reviews.splice(i, 1);
+            }
+            return { meta: { changes: before - reviews.length } };
+          }
+          if (sql.startsWith("DELETE FROM yaos_file_identity_map WHERE file_id = ? AND note_id = ? AND sync_uuid = ?")) {
+            const index = mappings.findIndex((m) => m.file_id === v[0] && m.note_id === v[1] && m.sync_uuid === v[2]);
+            if (index >= 0) mappings.splice(index, 1);
+            return { meta: { changes: index >= 0 ? 1 : 0 } };
           }
           if (sql.startsWith("DELETE FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?")) {
             const before = mappings.length;
@@ -800,6 +816,18 @@ for (const path of [
   assert.equal(db.reviews.length, 0);
   assert.equal(db.mappings.length, 0, "mappings belonging to archived UnityTodo notes are retired");
   assert.ok(db.notes.every((row) => row.deleted_at), "the sweep never restores either note");
+}
+
+{
+  // Even without a remaining review row, a complete Vault tombstone retires
+  // the mapping for an archived D1 note. A live Vault entry is not swept.
+  const path = "Notes/Tasks/archived-without-review.md";
+  const db = makeDb([note(path, path, "# archived", uuidA, "2026-11-07T00:00:00.000Z")], [{
+    file_id: "file-archived-without-review", sync_uuid: uuidA, note_id: path, last_path: path, created_at: now, updated_at: now
+  }]);
+  const res = await syncNotes(request([], [observation("file-archived-without-review", path, "", true)], true, true), { DB: db });
+  assert.equal((await res.json()).resolvedReviews, 0, "no review count is reported when only a map is retired");
+  assert.equal(db.mappings.length, 0, "an archived note's tombstoned Vault mapping is retired even without a review row");
 }
 
 {
