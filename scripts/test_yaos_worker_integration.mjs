@@ -78,7 +78,7 @@ async function waitFor(predicate, label, timeoutMs = 20000) {
     } catch (error) {
       last = error;
     }
-    await delay(250);
+    await delay(100);
   }
   throw new Error(`Timed out waiting for ${label}; last result: ${String(last)}`);
 }
@@ -334,23 +334,6 @@ async function importNote(path, content, title, fileId) {
   return result;
 }
 
-async function seedLocalNote(stateDir, path, content, title) {
-  const literal = value => "'" + String(value).replaceAll("'", "''") + "'";
-  const syncUuid = randomUUID();
-  const contentHash = createHash("sha256").update(content).digest("hex");
-  const now = new Date().toISOString();
-  const sql = "INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state, knowledge_type, knowledge_scope) VALUES ("
-    + [path, path, syncUuid, title, content, contentHash, now, now, "[]", 0, "unknown", "ready", "unknown", "project"].map(literal).join(", ")
-    + ");";
-  const sqlPath = join(stateDir, "seed-note.sql");
-  await writeFile(sqlPath, sql);
-  try {
-    await run("npx", [...WRANGLER, "d1", "execute", "knowledge-integration", "--local", `--file=${sqlPath}`, "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir]);
-  } finally {
-    await rm(sqlPath, { force: true });
-  }
-}
-
 async function verifyArchivedRebindReadsActualVault(clientPath) {
   const target = {
     path: "Notes/Inbox/akatuki-knowledge-triage.md",
@@ -511,35 +494,32 @@ SYNC_TOKEN = "${TOKEN}"
       .replace(/CREATE TABLE _cf_KV\s*\([\s\S]*?\)\s+WITHOUT ROWID;\s*/i, "")
       .replace(/CREATE TABLE ["']?d1_migrations["']?\s*\([\s\S]*?\);\s*/i, "")
       .replace(/CREATE TABLE d1_migrations_legacy_backup\s*\([\s\S]*?\);\s*/i, "");
+    const migrationPaths = [
+      "migrations/0009_yaos_sync_jobs.sql",
+      "migrations/0013_agent_memory_metadata.sql",
+      "migrations/0014_agent_memory_jobs.sql",
+      "migrations/0015_yaos_file_identity_map.sql",
+    ];
+    const migrations = await Promise.all(
+      migrationPaths.map(path => readFile(join(ROOT, path), "utf8")),
+    );
+    const literal = value => "'" + String(value).replaceAll("'", "''") + "'";
+    const initialNoteContent = noteContent("seed only");
+    const initialNoteHash = createHash("sha256").update(initialNoteContent).digest("hex");
+    const initialNoteNow = new Date().toISOString();
+    const initialNoteSql = "INSERT INTO notes (id, path, sync_uuid, title, content, content_hash, imported_at, updated_at, tags_json, ai_allowed, sensitivity, review_state, knowledge_type, knowledge_scope) VALUES ("
+      + [TEST_PATH, TEST_PATH, randomUUID(), "Integration roundtrip", initialNoteContent, initialNoteHash, initialNoteNow, initialNoteNow, "[]", 0, "unknown", "ready", "unknown", "project"].map(literal).join(", ")
+      + ");";
     const seedPath = join(stateDir, "schema-local.sql");
-    await writeFile(seedPath, seedSql);
-    // --local and --persist-to are mandatory on every D1 command.
+    await writeFile(seedPath, [seedSql, ...migrations, initialNoteSql].join("\n\n"));
+    // --local and --persist-to are mandatory. Apply the captured schema,
+    // required migrations and scenario fixture in one Wrangler invocation.
     await run("npx", [
       ...WRANGLER, "d1", "execute", "knowledge-integration",
       "--local", `--file=${seedPath}`,
       "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
     ]);
-    await run("npx", [
-      ...WRANGLER, "d1", "execute", "knowledge-integration",
-      "--local", "--file=./migrations/0009_yaos_sync_jobs.sql",
-      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
-    ]);
-    await run("npx", [
-      ...WRANGLER, "d1", "execute", "knowledge-integration",
-      "--local", "--file=./migrations/0013_agent_memory_metadata.sql",
-      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
-    ]);
-    await run("npx", [
-      ...WRANGLER, "d1", "execute", "knowledge-integration",
-      "--local", "--file=./migrations/0014_agent_memory_jobs.sql",
-      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
-    ]);
-    await run("npx", [
-      ...WRANGLER, "d1", "execute", "knowledge-integration",
-      "--local", "--file=./migrations/0015_yaos_file_identity_map.sql",
-      "--config", KNOWLEDGE_CONFIG, "--persist-to", stateDir,
-    ]);
-    markPhase("ローカルD1の準備完了");
+    markPhase("ローカルD1の準備完了（schema・migration・fixtureを一括適用）");
 
     async function startWorker() {
       worker = spawn("npx", [
@@ -594,7 +574,6 @@ SYNC_TOKEN = "${TOKEN}"
 
     // Create -> update -> rename with stable UUID. A job counts as successful
     // only after the Worker verifies the content by reading it back from YAOS.
-    await seedLocalNote(stateDir, TEST_PATH, noteContent("seed only"), "Integration roundtrip");
     let notes = await getNotes();
     const note = notes.find(item => item.path === TEST_PATH);
     assert.ok(note, "created note is visible in local D1");
