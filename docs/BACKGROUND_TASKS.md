@@ -68,6 +68,52 @@ wrangler.tomlの55 23 * * *（UTC）Cronで、日次のbudget self-auditを実�
 
 自己監査ノートにはorigin: budget-auditとaudit_generated: trueを付ける。監査タスクが別の監査タスクを起票する再帰経路は作らない。日次の監査レポートは一意キーで重複生成を防ぐ。監査結果は認証済みGET /api/budget-auditから最新14件を取得できる。監査結果から必要な修正が見つかった場合は、改善エージェントが実装・テスト・migration・ドキュメントを含むPRを作る。自己監査の定量値だけで不具合がないと断定せず、コード・Workflow・CI・DB schema・Cloudflare quotaの整合性も確認するよう監査依頼に明記する。
 
+## 改善エージェントの分担（Workers AIとClaude）
+
+改善の輪の分担は「Workers AIが行える範囲はWorkers AIに完遂させ、判断の要る輪の中心はClaude側に置く」と定める。区切りの物差しは、出来の正しさがコードで判定できるかどうかであり、本節はその分担の形を記録する。適用は段階ごとのPRで順に行い、段階1（escalation、PR #213）、段階2（failureInventory、PR #214）、段階3（自己監査ノートの宛先、PR #216）、段階4（保護パス、PR #217）、段階5（計画の大きさの区切り、PR #218）までmainに入っている。本節は段階6として、その分担の形を記録する。
+
+Workers AI側（コードとモデルの双方を含む仕組み全体）が完遂する範囲は以下。
+
+- 形の整った小さな改善依頼の実行。下記の保護パスと大きさの区切りを含む範囲検証を通り、ループ内のフィードバック回復で形を保てるもの。
+- 数える仕事。失敗の集計、棚卸しの証拠の作成、予算と使用量の監査はコードが行い、モデルには数えさせない。
+- 機械的な回復。再試行、実行リースの更新、再評価、予算待ちからの再開。
+
+Claude側に置く判断は以下。
+
+- 棚卸しの証拠を見て、繰り返す失敗の原因の当たりを付け、改善の依頼として書き出すこと。
+- 範囲検証で止まった計画と、試し切って終端したタスクの引き取りと実施。
+- 歯止めそのもの（再試行分類、上限、書込み範囲、監査の形）の変更。モデルが自分の制約を書き換える経路は、後述の保護パスで閉じる。
+- 自己監査の横断的な見立て。
+
+### 終端タスクの引き継ぎ（escalation）
+
+改善タスクがneeds_attention、または再評価の対象にならない終端のfailedで終わるとき、appendImprovementResultは結果JSONにescalationフィールドを足して依頼ノートへ書き戻す。中身はerrorClass、stopReason、attempts、retryPolicyVersion、recordedAt。成功時と実行停止（stopped）の結果JSONは従来のまま変えない。Claude側は、朝の点検と作業ボードの巡回で、結果ブロックにescalationまたは後述のhandoffを含むノートを拾い、棚卸しの証拠と合わせて見立てと引き取りを行う。
+
+### 失敗の棚卸し集計（failureInventory）
+
+自己監査の集計（summarizeFindings）はfailureInventoryを含む。直近7日のagent_tasksをlast_error_classとlast_errorの接尾辞で集計し、形ごとに、件数、代表のタスクID（直近のもの最大3件）、対象ノートのパス（payloadのimprovementNotePath、改善タスク以外はnull）、最初に現れた時刻と直近の時刻を出す。接尾辞の切り分けはMODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXESと同じ切り口を使い、形崩れ由来と入力由来を混ぜない。集計は監査レポートのJSON（app_metaのbudget-audit:キー）に含め、監査が失敗しても監査自体は止めない。
+
+### 自己監査ノートの宛先
+
+自己監査ノート（buildAuditNote）の文面は、改善エージェントへの実行依頼ではなく、Claude宛ての監査材料とする。定量結果とfailureInventory（形ごとの件数と代表タスク）を本文に含め、実行条件の列挙ではなく確認観点の列挙とする。frontmatterのorigin: budget-auditとaudit_generated: trueは維持する。runImprovementInboxは、frontmatterにaudit_generated: true（またはorigin: budget-audit）があるノートを改善タスクとして積まず、専用のhandoffフィールドで引き継ぎ記録を書き戻して処理済みにする。監査ノートのパス（Notes/改善/自己監査-）でfrontmatterが読めない場合も、積む側に倒さず、積まずに記録だけを残す（fail-closed）。
+
+### 保護パス
+
+次のファイルは、改善エージェントの変更範囲の対象外とする。validRepositoryPathが理由コードchanged_path_protectedで拒否し、却下された計画はstoppedとなって結果が書き戻されるため、escalation経由でClaude側が拾える。緩める変更と強める変更を区別せず、対象ファイルへの書込み自体を範囲外にする。
+
+- src/background-task-policy.mjs（再試行分類と上限）
+- src/background-task-store.mjs（再試行と記録の決定部）
+- src/agent-improvement-policy.mjs（書込み範囲そのもの）
+- src/agent-improvement-executor.mjs（実行と自動マージの有効化）
+- src/budget-self-audit.mjs（監査と棚卸しの形）
+- src/task-runtime-config.mjs（モデルと出力上限）
+
+既存の.github/workflows/中核3ファイルの保護は従来どおり維持する。この変更は再試行ポリシーの変更ではないため、IMPROVEMENT_RETRY_POLICY_VERSIONは上げない。
+
+### 自動実行できる計画の大きさの区切り
+
+validateImprovementPlanは、ファイル操作（create_file / update_file / apply_patch）の件数上限と、ペイロード合計の上限で計画を区切る。上限はファイル操作5件まで（MAX_PLAN_FILE_OPERATIONS）、ペイロード合計60,000字まで（MAX_PLAN_TOTAL_PAYLOAD_CHARS）とし、名前付きの定数としてsrc/agent-improvement-policy.mjsに置く。件数の上限は、本番で成功したPRの実績（変更ファイル数の中央値4、エージェント実行の先例である5ファイル）に寄せて決めた。超過した計画は理由コードplan_too_large_for_agentで実行されずstoppedとなり、計画自体はcheckpointに残るため、escalationと合わせてClaude側が引き取れる。
+
 ## GitHub自動マージ
 
 .github/workflows/auto-merge.ymlはPurgeの方式を参考にする。pull_request_targetでopened / reopened / ready_for_review / synchronizeを受け、Draftでないこと、PR作成者とイベント実行者が許可された本人であることを確認する。Dependabotはfetch-metadataでsemver update typeを検証し、既知のpatch/minor/majorのみ対象にする。自動マージはgh pr merge --auto --squashで有効化し、必須チェックが成功するまでGitHubに待機させる。自己改善エージェントが作成したPRはexecutorがGraphQL enablePullRequestAutoMerge(SQUASH)を要求する。どちらも必須チェックやbranch protectionを迂回しない。
