@@ -27,6 +27,17 @@ const PROTECTED_PATHS = new Set([
   "src/task-runtime-config.mjs",
 ]);
 const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "apply_patch", "create_pull_request"]);
+// Size caps for plans the improvement agent may execute on its own. Plans
+// beyond these bounds stop with plan_too_large_for_agent and are handed to
+// Muse through the escalation writeback instead of being executed.
+// The file-operation cap follows the observed record of successful pull
+// requests (median 4 changed files; the only agent-branch precedent changed
+// 5), and the total payload cap sits at roughly twice the 90th percentile of
+// observed diff volume while excluding feature-scale changes.
+export const MAX_PLAN_FILE_OPERATIONS = 5;
+export const MAX_PLAN_TOTAL_PAYLOAD_CHARS = 60_000;
+const MAX_FILE_CONTENT_CHARS = 200_000;
+const MAX_PATCH_CHARS = 100_000;
 
 function hasExplicitReadOnlyWorkflowPermissions(content) {
   const lines = content.split(/\r?\n/u);
@@ -80,6 +91,10 @@ export function validateImprovementPlan(plan) {
   const fileOperations = plan.operations.filter((operation) =>
     operation.type === "create_file" || operation.type === "update_file" || operation.type === "apply_patch");
   if (fileOperations.length === 0) return { ok: false, reason: "no_file_changes" };
+  if (fileOperations.length > MAX_PLAN_FILE_OPERATIONS) {
+    return { ok: false, reason: "plan_too_large_for_agent" };
+  }
+  let totalPayloadChars = 0;
   for (const operation of fileOperations) {
     const pathRejection = validRepositoryPath(operation.path, operation.type, operation.type === "apply_patch" ? operation.patch : operation.content);
     if (pathRejection) {
@@ -90,10 +105,14 @@ export function validateImprovementPlan(plan) {
       return { ok: false, reason: "existing_file_sha_required" };
     }
     const filePayload = operation.type === "apply_patch" ? operation.patch : operation.content;
-    const maxFilePayload = operation.type === "apply_patch" ? 100_000 : 200_000;
+    const maxFilePayload = operation.type === "apply_patch" ? MAX_PATCH_CHARS : MAX_FILE_CONTENT_CHARS;
     if (typeof filePayload !== "string" || filePayload.length > maxFilePayload) {
       return { ok: false, reason: "file_content_invalid_or_too_large" };
     }
+    totalPayloadChars += filePayload.length;
+  }
+  if (totalPayloadChars > MAX_PLAN_TOTAL_PAYLOAD_CHARS) {
+    return { ok: false, reason: "plan_too_large_for_agent" };
   }
 
   const branches = plan.operations.filter((operation) => operation.type === "create_branch");
