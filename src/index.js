@@ -11716,15 +11716,29 @@ async function appendImprovementResult(env, payload, taskId, result) {
   if (!row || row.sync_uuid !== payload.sourceSyncUuid) throw new Error("improvement_note_identity_changed");
   const marker = "<!-- akatuki-improvement-result:" + taskId + " -->";
   const recordedError = result.error || null;
-  const resultText = JSON.stringify({
+  const recordedAt = new Date().toISOString();
+  const resultBody = {
     taskId,
     status: result.status,
     pullRequestUrl: result.pullRequestUrl || null,
     autoMergeEnabled: result.autoMergeEnabled === true,
     reason: result.reason || null,
     error: recordedError,
-    recordedAt: new Date().toISOString()
-  });
+    recordedAt
+  };
+  // A terminally failed improvement task is handed over to Muse. Carry the
+  // diagnostic fields a reader needs to triage it from the note alone,
+  // without reopening the task store.
+  if (result.escalation && typeof result.escalation === "object") {
+    resultBody.escalation = {
+      errorClass: typeof result.escalation.errorClass === "string" ? result.escalation.errorClass : null,
+      stopReason: typeof result.escalation.stopReason === "string" ? result.escalation.stopReason : null,
+      attempts: Number.isFinite(result.escalation.attempts) ? result.escalation.attempts : null,
+      retryPolicyVersion: Number.isFinite(result.escalation.retryPolicyVersion) ? result.escalation.retryPolicyVersion : null,
+      recordedAt
+    };
+  }
+  const resultText = JSON.stringify(resultBody);
   const resultBlock = marker + "\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n"
     + resultText + "\n\x60\x60\x60\n";
   const existingMarker = row.content.indexOf(marker);
@@ -12587,7 +12601,13 @@ class AgentTaskWorkflow extends WorkflowEntrypoint {
               await appendImprovementResult(this.env, terminalTask.payload, taskId, {
                 status: "needs_attention",
                 reason: errorClass,
-                error: errorDetail
+                error: errorDetail,
+                escalation: {
+                  errorClass,
+                  stopReason: terminalTask.stop_reason || failure.decision?.stopReason || null,
+                  attempts: Number.isFinite(terminalTask.attempts) ? terminalTask.attempts : null,
+                  retryPolicyVersion: Number.isFinite(terminalTask.retry_policy_version) ? terminalTask.retry_policy_version : null
+                }
               });
             }
           } catch (writebackError) {
