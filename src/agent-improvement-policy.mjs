@@ -13,6 +13,19 @@ const PROTECTED_WORKFLOWS = new Set([
   ".github/workflows/check.yml",
   ".github/workflows/deploy.yml",
 ]);
+// Guardrail files that define the improvement agent's own constraints
+// (retry classification and limits, writable scope, execution and
+// auto-merge, audit shape, model and output limits). The agent must never
+// rewrite its own guardrails, so these paths are rejected outright with
+// the dedicated reason code, whether the change would tighten or loosen.
+const PROTECTED_PATHS = new Set([
+  "src/background-task-policy.mjs",
+  "src/background-task-store.mjs",
+  "src/agent-improvement-policy.mjs",
+  "src/agent-improvement-executor.mjs",
+  "src/budget-self-audit.mjs",
+  "src/task-runtime-config.mjs",
+]);
 const ALLOWED_OPERATION_TYPES = new Set(["create_branch", "create_file", "update_file", "apply_patch", "create_pull_request"]);
 
 function hasExplicitReadOnlyWorkflowPermissions(content) {
@@ -32,20 +45,27 @@ function hasExplicitReadOnlyWorkflowPermissions(content) {
   return entries > 0;
 }
 
+// Returns null when the path is writable for the operation, otherwise the
+// rejection reason code. Protected guardrail paths get their own code so a
+// stopped plan can be routed to Muse with the reason attached.
 function validRepositoryPath(path, operationType, content) {
   if (typeof path !== "string" || !path || path.length > 240
     || path.startsWith("/") || path.includes("\\")
-    || path.split("/").some((part) => part === ".." || part === "." || part === "")) return false;
-  if (ALLOWED_FILE_ROOTS.some((root) => path.startsWith(root))) return true;
-  if (ALLOWED_ROOT_FILES.has(path)) return operationType === "update_file" || operationType === "apply_patch";
+    || path.split("/").some((part) => part === ".." || part === "." || part === "")) return "changed_path_out_of_scope";
+  if (PROTECTED_PATHS.has(path)) return "changed_path_protected";
+  if (ALLOWED_FILE_ROOTS.some((root) => path.startsWith(root))) return null;
+  if (ALLOWED_ROOT_FILES.has(path)) {
+    return operationType === "update_file" || operationType === "apply_patch" ? null : "changed_path_out_of_scope";
+  }
   if (path.startsWith(".github/workflows/")) {
     return operationType === "create_file" && !PROTECTED_WORKFLOWS.has(path)
       && /^[a-z0-9][a-z0-9._-]*\.ya?ml$/iu.test(path.slice(".github/workflows/".length))
       && typeof content === "string"
       && hasExplicitReadOnlyWorkflowPermissions(content)
-      && !/(?:pull_request_target|workflow_run|secrets\.|write-all|[A-Za-z0-9_-]+:\s*write)/iu.test(content);
+      && !/(?:pull_request_target|workflow_run|secrets\.|write-all|[A-Za-z0-9_-]+:\s*write)/iu.test(content)
+      ? null : "changed_path_out_of_scope";
   }
-  return false;
+  return "changed_path_out_of_scope";
 }
 
 export function validateImprovementPlan(plan) {
@@ -61,8 +81,9 @@ export function validateImprovementPlan(plan) {
     operation.type === "create_file" || operation.type === "update_file" || operation.type === "apply_patch");
   if (fileOperations.length === 0) return { ok: false, reason: "no_file_changes" };
   for (const operation of fileOperations) {
-    if (!validRepositoryPath(operation.path, operation.type, operation.type === "apply_patch" ? operation.patch : operation.content)) {
-      return { ok: false, reason: "changed_path_out_of_scope" };
+    const pathRejection = validRepositoryPath(operation.path, operation.type, operation.type === "apply_patch" ? operation.patch : operation.content);
+    if (pathRejection) {
+      return { ok: false, reason: pathRejection };
     }
     if ((operation.type === "update_file" || operation.type === "apply_patch")
       && (typeof operation.sha !== "string" || !/^[a-f0-9]{40}$/iu.test(operation.sha))) {

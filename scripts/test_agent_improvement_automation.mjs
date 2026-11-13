@@ -205,6 +205,38 @@ test("improvement plan allows pending migrations and safe workflows but protects
   assert.equal(validateImprovementPlan(patchPlan).ok, true);
 });
 
+test("improvement plan rejects guardrail files with changed_path_protected", () => {
+  const protectedPaths = [
+    "src/background-task-policy.mjs",
+    "src/background-task-store.mjs",
+    "src/agent-improvement-policy.mjs",
+    "src/agent-improvement-executor.mjs",
+    "src/budget-self-audit.mjs",
+    "src/task-runtime-config.mjs",
+  ];
+  for (const path of protectedPaths) {
+    const plan = validPlan();
+    plan.operations[1] = {
+      type: "update_file", branch: "agent/fix-small-check", path,
+      content: "export const changed = true;\n", message: "歯止めを変更", sha: "a".repeat(40),
+    };
+    assert.deepEqual(validateImprovementPlan(plan), { ok: false, reason: "changed_path_protected" }, path);
+  }
+  const patchPlan = validPlan();
+  patchPlan.operations[1] = {
+    type: "apply_patch", branch: "agent/fix-small-check", path: "src/task-runtime-config.mjs",
+    patch: "--- a/src/task-runtime-config.mjs\n+++ b/src/task-runtime-config.mjs\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+    message: "上限を変更", sha: "a".repeat(40),
+  };
+  assert.deepEqual(validateImprovementPlan(patchPlan), { ok: false, reason: "changed_path_protected" });
+  const normalPlan = validPlan();
+  normalPlan.operations[1] = {
+    type: "update_file", branch: "agent/fix-small-check", path: "src/index.js",
+    content: "export const ok = true;\n", message: "通常の修正", sha: "a".repeat(40),
+  };
+  assert.equal(validateImprovementPlan(normalPlan).ok, true);
+});
+
 test("improvement request fixture uses current frontmatter-free heading format", async () => {
   const note = [
     "## 何が困っているか",
