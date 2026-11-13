@@ -240,10 +240,11 @@ var POST_WRITE_DRAIN_BATCH_SIZE = 20;
 var POST_WRITE_DRAIN_MAX_BATCHES = 5;
 // Post-write pull. When the chained drain above actually delivered at least
 // one job, run one vault pull (apply) so the vault-side state converges into
-// D1 immediately after an AI edit session instead of waiting for the hourly
-// scheduled pull, which stays a safety net. Bursts of writes are coalesced by
-// a cooldown: at most one post-write pull per POST_WRITE_PULL_COOLDOWN_MS,
-// tracked in app_meta under POST_WRITE_PULL_LAST_KEY. The pull keeps the
+// D1 immediately after an AI edit session instead of waiting for the next
+// scheduled pull (every five minutes), which is the standing intake path.
+// Bursts of writes are coalesced by a cooldown: at most one post-write pull
+// per POST_WRITE_PULL_COOLDOWN_MS, tracked in app_meta under
+// POST_WRITE_PULL_LAST_KEY. The pull keeps the
 // existing per-run caps and conflict guards, and its outcome is recorded in
 // the same vault_pull_latest diagnostics as scheduled and manual pulls. A
 // failed or skipped post-write pull never affects the write that triggered
@@ -251,9 +252,13 @@ var POST_WRITE_DRAIN_MAX_BATCHES = 5;
 // and recorded.
 var POST_WRITE_PULL_COOLDOWN_MS = 120000;
 var POST_WRITE_PULL_LAST_KEY = "vault_pull_post_write_last";
-async function readPostWritePullLastAt(env) {
+// Pull cooldown bookkeeping, shared by the post-write pull below and the
+// scheduled pull: the last claimed start time per key lives in app_meta as
+// { at: <ISO timestamp> }. Reads and claims never throw; a bookkeeping
+// failure degrades to "no previous pull recorded" and lets the pull run.
+async function readPullLastAt(env, key) {
   try {
-    const row = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(POST_WRITE_PULL_LAST_KEY).first();
+    const row = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(key).first();
     const parsed = row?.value ? JSON.parse(row.value) : null;
     const at = parsed && typeof parsed.at === "string" ? Date.parse(parsed.at) : NaN;
     return Number.isFinite(at) ? at : 0;
@@ -261,27 +266,27 @@ async function readPostWritePullLastAt(env) {
     return 0;
   }
 }
-__name(readPostWritePullLastAt, "readPostWritePullLastAt");
-async function claimPostWritePullSlot(env, nowIso) {
+__name(readPullLastAt, "readPullLastAt");
+async function claimPullSlot(env, key, nowIso) {
   try {
     await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-      .bind(POST_WRITE_PULL_LAST_KEY, JSON.stringify({ at: nowIso }), nowIso).run();
+      .bind(key, JSON.stringify({ at: nowIso }), nowIso).run();
   } catch {
-    // Cooldown bookkeeping must never break the post-write path.
+    // Cooldown bookkeeping must never break a pull path.
   }
 }
-__name(claimPostWritePullSlot, "claimPostWritePullSlot");
+__name(claimPullSlot, "claimPullSlot");
 async function pullAfterWrite(env, ctx, origin, sent) {
   if (!Number.isFinite(sent) || sent < 1) return { triggered: false, reason: "no_delivered_jobs" };
   if (!env.DB || !ctx || !origin) return { triggered: false, reason: "pull_context_unavailable" };
-  const lastAt = await readPostWritePullLastAt(env);
+  const lastAt = await readPullLastAt(env, POST_WRITE_PULL_LAST_KEY);
   const now = Date.now();
   if (lastAt > 0 && now - lastAt < POST_WRITE_PULL_COOLDOWN_MS) {
     return { triggered: false, reason: "cooldown", lastPullAt: new Date(lastAt).toISOString(), cooldownMs: POST_WRITE_PULL_COOLDOWN_MS };
   }
   // Claim the cooldown slot before running, so a burst of near-simultaneous
   // writes cannot all pass the gate and pull at once.
-  await claimPostWritePullSlot(env, new Date(now).toISOString());
+  await claimPullSlot(env, POST_WRITE_PULL_LAST_KEY, new Date(now).toISOString());
   let result = null;
   let error = null;
   try {
@@ -299,6 +304,29 @@ async function pullAfterWrite(env, ctx, origin, sent) {
   return { triggered: true, ...summary };
 }
 __name(pullAfterWrite, "pullAfterWrite");
+// Scheduled pull cooldown. The scheduled pull runs every five minutes
+// (PULL_CRON), so a run that is still in flight when the next tick arrives
+// must not overlap with it. Each tick claims its start in app_meta under
+// SCHEDULED_PULL_LAST_KEY before pulling, in the same shape as the
+// post-write cooldown above; a tick that finds the previous claim younger
+// than SCHEDULED_PULL_COOLDOWN_MS skips its pull. A skipped tick is not
+// retried or queued — the next tick is at most one interval away — and the
+// skip is recorded in the same vault_pull_latest diagnostics with
+// skipped: "cooldown".
+var SCHEDULED_PULL_COOLDOWN_MS = 120000;
+var SCHEDULED_PULL_LAST_KEY = "vault_pull_scheduled_last";
+async function claimScheduledPull(env) {
+  const lastAt = await readPullLastAt(env, SCHEDULED_PULL_LAST_KEY);
+  const now = Date.now();
+  if (lastAt > 0 && now - lastAt < SCHEDULED_PULL_COOLDOWN_MS) {
+    return { claimed: false, reason: "cooldown", lastPullAt: new Date(lastAt).toISOString(), cooldownMs: SCHEDULED_PULL_COOLDOWN_MS };
+  }
+  // Claim the slot before running, so a tick that starts while the previous
+  // pull is still in flight sees the fresh claim and skips.
+  await claimPullSlot(env, SCHEDULED_PULL_LAST_KEY, new Date(now).toISOString());
+  return { claimed: true };
+}
+__name(claimScheduledPull, "claimScheduledPull");
 async function drainSyncOutboxAfterWrite(env, ctx, origin) {
   let processed = 0, sent = 0, failed = 0, batches = 0;
   while (batches < POST_WRITE_DRAIN_MAX_BATCHES) {
@@ -951,8 +979,10 @@ __name(syncNotes, "syncNotes");
 // through the ordinary syncNotes candidate path as a single, deliberately
 // incomplete observation. A single push is never a complete vault
 // observation: it creates no D1 note, resolves no rename, and runs none of
-// the complete-observation self-resolution passes. The hourly pull remains
-// the safety net for creation, rename, deletion, and every deferred case.
+// the complete-observation self-resolution passes. This endpoint is dormant:
+// the method-1 plugin was not adopted, so nothing calls it in practice. The
+// live intake path is the scheduled pull (method 2, every five minutes),
+// which also covers creation, rename, deletion, and every deferred case.
 async function pushVaultNote(request, env) {
   let body;
   try {
@@ -11741,7 +11771,7 @@ var YjsClientDO = class extends DurableObject {
 };
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
-var PULL_CRON = "0 * * * *";
+var PULL_CRON = "*/5 * * * *";
 var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
 // Bump only when the improvement retry/reassessment policy changes materially.
@@ -13471,13 +13501,21 @@ var wrapper_default = {
       let improvementPullReady = false;
       try {
         await drainSyncOutbox(env, 10);
-        const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
-        improvementPullReady = result.ok === true;
-        // Persist every scheduled pull outcome (success and failure alike) so
-        // GET /sync/status can show the latest pull without reading logs.
-        await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "scheduled"));
-        if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, errorCode: safeErrorCode(result.error) } }));
-        if (!result.ok) console.error(JSON.stringify({ pullFailure: { ok: false, stage: result.stage, errorCode: safeErrorCode(result.error) } }));
+        const gate = await claimScheduledPull(env);
+        if (!gate.claimed) {
+          // The previous scheduled pull started inside the cooldown window
+          // and may still be running; skip this tick rather than overlap.
+          // The skip itself is the recorded outcome for this tick.
+          await persistVaultPullDiagnostics(env, summarizeVaultPull({ ok: true, skipped: "cooldown" }, null, "scheduled"));
+        } else {
+          const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
+          improvementPullReady = result.ok === true;
+          // Persist every scheduled pull outcome (success and failure alike) so
+          // GET /sync/status can show the latest pull without reading logs.
+          await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "scheduled"));
+          if (!result.ok || result.applied) console.log(JSON.stringify({ pull: { ok: result.ok, stage: result.stage, queued: result.queued, created: result.created, updated: result.updated, errorCode: safeErrorCode(result.error) } }));
+          if (!result.ok) console.error(JSON.stringify({ pullFailure: { ok: false, stage: result.stage, errorCode: safeErrorCode(result.error) } }));
+        }
       } catch (error) {
         await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "scheduled"));
         console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
