@@ -11809,6 +11809,24 @@ async function markImprovementSeen(env, syncUuid, contentHash) {
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at").bind(key, now).run();
 }
+// Scalar fields of a note's frontmatter, read from the leading block only.
+// Returns null when the note has no well-formed leading block, so callers
+// that must not guess can treat an unreadable block as a failed read instead
+// of falling back to the note body.
+function improvementNoteFrontmatter(content) {
+  if (typeof content !== "string") return null;
+  const lines = content.split("\n");
+  if (lines[0]?.trim() !== "---") return null;
+  const fields = {};
+  for (let index = 1; index < lines.length; index++) {
+    const line = lines[index];
+    if (line.trim() === "---") return fields;
+    const match = /^([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(line);
+    if (!match) return null;
+    fields[match[1]] = match[2];
+  }
+  return null;
+}
 async function appendImprovementResult(env, payload, taskId, result) {
   if (payload?.improvementRequest !== true || typeof payload.improvementNotePath !== "string"
     || typeof payload.sourceSyncUuid !== "string") return false;
@@ -11839,6 +11857,16 @@ async function appendImprovementResult(env, payload, taskId, result) {
       stopReason: typeof result.escalation.stopReason === "string" ? result.escalation.stopReason : null,
       attempts: Number.isFinite(result.escalation.attempts) ? result.escalation.attempts : null,
       retryPolicyVersion: Number.isFinite(result.escalation.retryPolicyVersion) ? result.escalation.retryPolicyVersion : null,
+      recordedAt
+    };
+  }
+  // A handoff marks material routed to Muse without a task ever running
+  // (currently the self-audit notes). It is a separate field from escalation,
+  // which belongs to a task that ran and terminated.
+  if (result.handoff && typeof result.handoff === "object") {
+    resultBody.handoff = {
+      kind: typeof result.handoff.kind === "string" ? result.handoff.kind : null,
+      reason: typeof result.handoff.reason === "string" ? result.handoff.reason : null,
       recordedAt
     };
   }
@@ -11973,6 +12001,37 @@ async function runImprovementInbox(env) {
     const idempotencyKey = await improvementIdempotencyKey(note.sync_uuid, note.content_hash);
     const seenKey = await improvementSeenKey(note.sync_uuid, note.content_hash);
     const seen = await env.DB.prepare("SELECT key FROM app_meta WHERE key = ?").bind(seenKey).first();
+    // Self-audit notes are material for Muse, not work for the improvement
+    // agent: the cross-cutting judgement they used to request is the heaviest
+    // decision in the loop. Route them out before any task handling, leave a
+    // handoff record in the usual writeback format, and mark the note seen so
+    // it is never queued. The decision reads only the leading frontmatter
+    // block; an audit-path note whose block cannot be read fails closed the
+    // same way, so a malformed audit note is never executed by accident.
+    const frontmatter = improvementNoteFrontmatter(note.content);
+    const auditGenerated = frontmatter !== null
+      && (frontmatter.audit_generated === "true" || frontmatter.origin === "budget-audit");
+    const auditFrontmatterUnreadable = frontmatter === null
+      && note.path.startsWith("Notes/改善/自己監査-");
+    if (auditGenerated || auditFrontmatterUnreadable) {
+      if (!seen) {
+        try {
+          await appendImprovementResult(env, {
+            improvementRequest: true, improvementNotePath: note.path, sourceSyncUuid: note.sync_uuid
+          }, "handoff-" + idempotencyKey, {
+            status: "handed_off",
+            handoff: {
+              kind: "budget_self_audit_note",
+              reason: auditGenerated ? "audit_generated" : "audit_frontmatter_unreadable"
+            }
+          });
+        } catch (error) {
+          console.log(JSON.stringify({ improvementInboxAuditHandoff: { ok: false, reason: safeErrorCode(error?.message) } }));
+          await markImprovementSeen(env, note.sync_uuid, note.content_hash);
+        }
+      }
+      continue;
+    }
     const previous = await env.DB.prepare(`
       SELECT task_id, status, stop_reason, payload_json, retry_policy_version,
         last_error_class, last_error, attempts, max_attempts, budget_reserved
