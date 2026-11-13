@@ -157,10 +157,22 @@ export function summarizeFindings(input = {}) {
   };
 }
 
-function buildAuditNote(day, report) {
+export function buildAuditNote(day, report) {
   const findingLines = report.findings.length
     ? report.findings.map((item) => "- " + item.code + ": " + JSON.stringify(item.details)).join("\n")
     : "- 定量メトリクス上の警告はありません。";
+  const inventory = Array.isArray(report.failureInventory) ? report.failureInventory : [];
+  const inventoryLines = inventory.length
+    ? inventory.map((item) => {
+      const representatives = (Array.isArray(item.representatives) ? item.representatives : [])
+        .filter((row) => typeof row?.taskId === "string" && row.taskId)
+        .map((row) => (row.notePath ? row.taskId + "（" + row.notePath + "）" : row.taskId))
+        .join("、");
+      return "- " + item.shape + ": " + item.count + "件（最初: " + (item.firstSeenAt || "不明")
+        + "、直近: " + (item.lastSeenAt || "不明") + "）"
+        + (representatives ? "\n  - 代表タスク: " + representatives : "");
+    }).join("\n")
+    : "- 直近7日に記録された失敗はありません。";
   return [
     "---",
     "origin: budget-audit",
@@ -169,21 +181,7 @@ function buildAuditNote(day, report) {
     "",
     "# Akatuki-Knowledge 定期自己監査 " + day,
     "",
-    "## 何が困っているか",
-    "",
-    "定期自己監査で、運用メトリクスとシステム構成の改善余地を確認する必要があります。",
-    "",
-    "## どうなっていてほしいか",
-    "",
-    "Cloudflare Free の実際のクォータを超えず、処理を不必要なアプリ側の件数・トークン制限で止めず、改善依頼を最後まで実行できる状態にしてください。",
-    "",
-    "## どうなれば直ったと言えるか",
-    "",
-    "- 現行 main の実装、テスト、Workflow、D1 migration、Cloudflare 設定を実際に確認している",
-    "- 不具合・ボトルネック・不足しているテストを、根拠と影響度付きで示している",
-    "- 必要な変更があれば、関連する実装・テスト・migration・ドキュメントをまとめて変更したPRを作成している",
-    "- 変更が不要なら、その根拠を記録し、無意味なPRを作らない",
-    "- デプロイや本番migrationの適用は実行せず、必要な手順と前提を明記する",
+    "これは Muse 宛ての監査材料です。改善エージェントが自動で取り込む実行用の依頼ではなく、自己監査は定量の集計と失敗の棚卸しをここへ届け、横断的な見立てと改善方針の判断は Muse 側で行います。",
     "",
     "## 今回の定量監査結果",
     "",
@@ -198,19 +196,16 @@ function buildAuditNote(day, report) {
     "",
     findingLines,
     "",
-    "## 監査対象と実行方針",
+    "## 失敗の棚卸し（直近7日）",
     "",
-    "リポジトリ Akatuki1121/Akatuki-Knowledge の main を対象に、少なくとも以下を横断して監査してください。",
+    inventoryLines,
     "",
-    "- Worker本体、Agent Workflow、改善ノートの自動処理、自己監査",
-    "- Workers AIのCloudflare Free枠、モデル仕様、エラー時の待機と日次リセット後の再開",
-    "- Workflows / D1 / Durable Objects / YAOS の無料枠とアプリ側予約の整合性",
-    "- D1 migration履歴と本番デプロイ条件の整合性",
-    "- GitHub Actions、必須チェック、Purge方式のsquash自動マージ",
-    "- 失敗時の回復、冪等性、重複実行、ログの個人情報・認証情報保護",
-    "- 実装を妨げている不要な件数制限や重複した安全ゲート",
+    "## 確認観点",
     "",
-    "改善が必要な場合は、対象を狭めて見送るのではなく、依存する変更・テスト・migration・ドキュメントを一つの整合したPRにまとめてください。既存の安全性と必須CIは弱めず、自己監査が自身を再起動する循環は作らないでください。",
+    "- 繰り返している失敗の形が、実装の不具合か、ポリシーの区切りか、入力側の問題か",
+    "- 予算（Workflow steps と Workers AI Neurons）の配分に、無駄や偏りがないか",
+    "- 失敗の回復（再試行、再評価、リース回復）が、記録の上で効いているか",
+    "- 前回の監査以降、同じ形の失敗が減っているか増えているか",
   ].join("\n");
 }
 

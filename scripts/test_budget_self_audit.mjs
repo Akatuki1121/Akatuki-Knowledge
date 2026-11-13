@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildFailureInventory, runBudgetSelfAudit, summarizeFindings } from "../src/budget-self-audit.mjs";
+import { buildAuditNote, buildFailureInventory, runBudgetSelfAudit, summarizeFindings } from "../src/budget-self-audit.mjs";
 
 const summary = summarizeFindings({
   budget: { tasks_reserved: 55, workflow_steps_reserved: 2300 },
@@ -153,6 +153,32 @@ assert.equal(attention.noteCreated, true);
 assert.match(createdNote.path, /^Notes\/改善\/自己監査-2026-10-30\.md$/u);
 assert.match(createdNote.content, /origin: budget-audit/);
 assert.match(createdNote.content, /audit_generated: true/);
+// The audit note is material handed to Muse, not an execution request to
+// the improvement agent: it must carry the quantitative results and the
+// failure inventory as evidence, phrase the follow-up as viewpoints to
+// check, and contain no imperative execution instructions.
+assert.match(createdNote.content, /Muse 宛ての監査材料/);
+assert.match(createdNote.content, /## 失敗の棚卸し（直近7日）/);
+assert.match(createdNote.content, /invalid_input:action_shape: 2件/);
+assert.match(createdNote.content, /2830c7a3-623f-440f-85ed-62e77e968a2d/);
+assert.match(createdNote.content, /## 確認観点/);
+assert.doesNotMatch(createdNote.content, /してください/);
+assert.doesNotMatch(createdNote.content, /どうなれば直ったと言えるか/);
+assert.doesNotMatch(createdNote.content, /PRを作成/);
+
+const bareNote = buildAuditNote("2026-11-14", {
+  checkedAt: "2026-11-14T00:00:00.000Z",
+  status: "normal",
+  findings: [],
+  metrics: {
+    tasksTotal: 0, failedTasks: 0, workflowStepsReserved: 0,
+    workersAiNeuronsReserved: 0, workersAiNeuronsActual: 0,
+    workersAiCallsCompleted: 0, workersAiCallsFailed: 0,
+  },
+});
+assert.match(bareNote, /^---\norigin: budget-audit\naudit_generated: true\n---/, "The routing marks stay in the frontmatter");
+assert.match(bareNote, /直近7日に記録された失敗はありません。/, "A report without an inventory renders the empty case");
+assert.doesNotMatch(bareNote, /してください/);
 
 
 const existingReport = { day: "2026-10-30", status: "normal", noteCreated: true };

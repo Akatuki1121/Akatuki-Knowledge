@@ -346,6 +346,54 @@ test("terminal improvement failures write back an escalation for Muse triage", a
   assert.ok(terminalWriteback.includes("retryPolicyVersion: Number.isFinite(terminalTask.retry_policy_version)"));
 });
 
+test("self-audit notes are handed to Muse instead of being queued as improvement tasks", async () => {
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const appendStart = source.indexOf("async function appendImprovementResult");
+  const inboxStart = source.indexOf("async function runImprovementInbox", appendStart);
+  const recoveryStart = source.indexOf("async function recoverAgentTaskWorkflows", inboxStart);
+  assert.ok(appendStart >= 0 && inboxStart > appendStart && recoveryStart > inboxStart);
+  const append = source.slice(appendStart, inboxStart);
+  const inbox = source.slice(inboxStart, recoveryStart);
+  assert.ok(append.includes('result.handoff && typeof result.handoff === "object"'),
+    "The writeback carries a dedicated handoff field, distinct from escalation");
+  for (const field of ["kind", "reason"]) {
+    assert.ok(append.includes(field + ":"), "Handoff carries " + field);
+  }
+  assert.ok(inbox.includes("function improvementNoteFrontmatter") || source.includes("function improvementNoteFrontmatter"),
+    "The routing decision reads the note frontmatter");
+  assert.ok(inbox.includes('frontmatter.audit_generated === "true"'));
+  assert.ok(inbox.includes('frontmatter.origin === "budget-audit"'));
+  assert.ok(inbox.includes("audit_frontmatter_unreadable"),
+    "An audit-path note whose frontmatter cannot be read fails closed instead of being queued");
+  assert.ok(inbox.includes('status: "handed_off"'));
+  assert.ok(inbox.includes('kind: "budget_self_audit_note"'));
+  assert.ok(inbox.includes('"handoff-" + idempotencyKey'), "The handoff writeback uses a stable per-note record id");
+  const routingAt = inbox.indexOf('frontmatter.audit_generated === "true"');
+  const enqueueAt = inbox.indexOf("enqueueAgentTask(env.DB");
+  assert.ok(routingAt >= 0 && enqueueAt > routingAt, "Audit routing runs before task admission");
+});
+
+test("improvement result blocks carrying a handoff are removed before retrying the original request", () => {
+  const original = "## 困っていること\n\n確認してほしい。";
+  const handoffResult = {
+    taskId: "handoff-abc",
+    status: "handed_off",
+    pullRequestUrl: null,
+    autoMergeEnabled: false,
+    reason: null,
+    error: null,
+    recordedAt: "2026-11-14T00:00:00.000Z",
+    handoff: {
+      kind: "budget_self_audit_note",
+      reason: "audit_generated",
+      recordedAt: "2026-11-14T00:00:00.000Z"
+    }
+  };
+  const withHandoff = original + "\n\n<!-- akatuki-improvement-result:handoff-abc -->\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n"
+    + JSON.stringify(handoffResult) + "\n\x60\x60\x60\n";
+  assert.equal(stripImprovementResults(withHandoff), original);
+});
+
 test("failed improvement tasks remain unchanged until edited; transient retries use the task retry schedule", async () => {
   const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
   const storeSource = await readFile(new URL("../src/background-task-store.mjs", import.meta.url), "utf8");
