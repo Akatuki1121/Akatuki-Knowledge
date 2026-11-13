@@ -95,7 +95,7 @@ for (const contract of [
   'pathToId.set(desiredPath, fileId)',
   'pathToId.delete(current.path)',
   'current.deleted || pathChanged || indexChanged ? 1 : 0',
-  'var PULL_CRON = "0 * * * *";',
+  'var PULL_CRON = "*/5 * * * *";',
   'var TASK_RECOVERY_CRON = "*/15 * * * *";',
   "function summarizeVaultPull(result, error, source)",
   "async function persistVaultPullDiagnostics(env, summary)",
@@ -110,6 +110,9 @@ for (const contract of [
   "var POST_WRITE_DRAIN_MAX_BATCHES = 5;",
   "var POST_WRITE_PULL_COOLDOWN_MS = 120000;",
   '"vault_pull_post_write_last"',
+  "var SCHEDULED_PULL_COOLDOWN_MS = 120000;",
+  '"vault_pull_scheduled_last"',
+  "async function claimScheduledPull(env)",
   "async function pullAfterWrite(env, ctx, origin, sent)",
   "async function drainSyncOutboxAfterWrite(env, ctx, origin)",
   "await drainSyncOutbox(env, POST_WRITE_DRAIN_BATCH_SIZE)",
@@ -200,7 +203,7 @@ for (const [name, endMarker, batchCall] of [
 
 assert.ok(!source.includes('SELECT id, path, title, content, deleted_at FROM " + entityType'), "Telegram notes do not have a path column");
 assert.ok(!source.includes("isHourlyCronTick"), "The hourly gate from the reverted 15-minute cron change must not return");
-assert.ok(!source.includes('var PULL_CRON = "*/15 * * * *"'), "The scheduled pull stays hourly; prompt convergence comes from the post-write pull, not a faster cron");
+assert.ok(!source.includes('var PULL_CRON = "0 * * * *"'), "The scheduled pull runs every five minutes (method 2); the hourly schedule must not return");
 
 for (const contract of [
   "CREATE TABLE yaos_sync_jobs",

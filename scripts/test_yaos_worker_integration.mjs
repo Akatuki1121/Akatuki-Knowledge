@@ -138,7 +138,7 @@ async function stopProcessTree(child) {
 }
 
 async function triggerDrain() {
-  const response = await fetch(HOST + "/__scheduled?cron=0+*+*+*+*", {
+  const response = await fetch(HOST + "/__scheduled?cron=*/5+*+*+*+*", {
     signal: AbortSignal.timeout(5000),
   });
   const text = await response.text();
@@ -447,7 +447,7 @@ database_name = "knowledge-integration"
 database_id = "00000000-0000-0000-0000-000000000001"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/5 * * * *"]
 
 [[durable_objects.bindings]]
 name = "YJS_CLIENT"
