@@ -1,10 +1,97 @@
+import { MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES } from "./background-task-policy.mjs";
+
 const WORKFLOW_STEP_DAILY_ALLOCATION = 3_000;
 const WORKFLOW_STEP_ADMISSION_BUDGET = 2_700;
 const WORKERS_AI_FREE_DAILY_NEURONS = 10_000;
 const AUDIT_KEY_PREFIX = "budget-audit:";
+const FAILURE_INVENTORY_WINDOW_DAYS = 7;
+const FAILURE_INVENTORY_ROW_LIMIT = 500;
+const FAILURE_INVENTORY_REPRESENTATIVE_LIMIT = 3;
 
 function countByStatus(groups, status) {
   return Number(groups.find((item) => item.status === status)?.count || 0);
+}
+
+// The recorded error text carries the class and, for input errors, a suffix
+// after a colon (e.g. "Error: invalid_input:model_response_not_json"). The
+// suffix is the shape discriminator: suffixes listed in
+// MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES come from the model's own
+// response shape, everything else is input-side or infrastructure.
+function failureSuffix(errorClass, errorText) {
+  if (typeof errorClass !== "string" || !errorClass || typeof errorText !== "string") return null;
+  const marker = errorClass + ":";
+  const at = errorText.indexOf(marker);
+  if (at < 0) return null;
+  const match = errorText.slice(at + marker.length).match(/^[a-z0-9_]+/u);
+  return match ? match[0] : null;
+}
+
+function failureNotePath(payloadJson) {
+  if (typeof payloadJson !== "string" || !payloadJson) return null;
+  try {
+    const payload = JSON.parse(payloadJson);
+    return typeof payload?.improvementNotePath === "string" ? payload.improvementNotePath : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Group recent failed-task rows into an evidence bundle by failure shape
+ * (error class plus suffix). Counting stays in code; the model never sees
+ * raw rows. Rows are the agent_tasks records of the last
+ * FAILURE_INVENTORY_WINDOW_DAYS days with a recorded error class.
+ */
+export function buildFailureInventory(rows) {
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const errorClass = typeof row?.last_error_class === "string" && row.last_error_class
+      ? row.last_error_class : "unknown";
+    const suffix = failureSuffix(errorClass, row.last_error);
+    const shape = suffix ? errorClass + ":" + suffix : errorClass;
+    let group = groups.get(shape);
+    if (!group) {
+      group = {
+        shape,
+        errorClass,
+        suffix,
+        modelResponseShape: suffix !== null && MODEL_RESPONSE_SHAPE_INVALID_INPUT_SUFFIXES.includes(suffix),
+        count: 0,
+        rows: [],
+        firstSeenAt: null,
+        lastSeenAt: null,
+      };
+      groups.set(shape, group);
+    }
+    group.count++;
+    const seenAt = typeof row.updated_at === "string" ? row.updated_at : null;
+    if (seenAt) {
+      if (group.firstSeenAt === null || seenAt < group.firstSeenAt) group.firstSeenAt = seenAt;
+      if (group.lastSeenAt === null || seenAt > group.lastSeenAt) group.lastSeenAt = seenAt;
+    }
+    group.rows.push({
+      taskId: typeof row.task_id === "string" ? row.task_id : null,
+      notePath: failureNotePath(row.payload_json),
+      seenAt,
+    });
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      shape: group.shape,
+      errorClass: group.errorClass,
+      suffix: group.suffix,
+      modelResponseShape: group.modelResponseShape,
+      count: group.count,
+      representatives: group.rows
+        .sort((a, b) => String(b.seenAt || "").localeCompare(String(a.seenAt || "")))
+        .slice(0, FAILURE_INVENTORY_REPRESENTATIVE_LIMIT)
+        .map((row) => ({ taskId: row.taskId, notePath: row.notePath })),
+      firstSeenAt: group.firstSeenAt,
+      lastSeenAt: group.lastSeenAt,
+    }))
+    .sort((a, b) => b.count - a.count
+      || String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || ""))
+      || a.shape.localeCompare(b.shape));
 }
 
 export function summarizeFindings(input = {}) {
@@ -57,6 +144,7 @@ export function summarizeFindings(input = {}) {
   return {
     status: findings.length ? "attention" : "normal",
     findings,
+    failureInventory: buildFailureInventory(input.failureRows),
     metrics: {
       tasksTotal,
       failedTasks,
@@ -200,6 +288,7 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now(), options = {}) 
   let budget = null;
   let taskGroups = [];
   let errorGroups = [];
+  let failureRows = [];
   let aiUsage = null;
   const nowSql = checkedAt.slice(0, 19).replace("T", " ");
 
@@ -219,18 +308,28 @@ export async function runBudgetSelfAudit(env, nowMs = Date.now(), options = {}) 
     // Error history is optional until the task schema is available.
   }
   try {
+    failureRows = (await env.DB.prepare(
+      "SELECT task_id, last_error_class, last_error, payload_json, created_at, updated_at FROM agent_tasks "
+      + "WHERE last_error_class IS NOT NULL AND updated_at >= datetime(?, '-" + FAILURE_INVENTORY_WINDOW_DAYS + " days') "
+      + "ORDER BY updated_at DESC LIMIT " + FAILURE_INVENTORY_ROW_LIMIT
+    ).bind(nowSql).all()).results || [];
+  } catch {
+    // The failure inventory is evidence for triage; its absence must not stop the audit.
+  }
+  try {
     aiUsage = await env.DB.prepare("SELECT reserved_neurons, actual_neurons, calls_failed, calls_completed FROM workers_ai_daily_usage WHERE usage_day = ?").bind(day).first();
   } catch {
     // Workers AI usage telemetry is optional; Cloudflare itself remains the quota authority.
   }
 
-  const summary = summarizeFindings({ budget, taskGroups, errorGroups, aiUsage });
+  const summary = summarizeFindings({ budget, taskGroups, errorGroups, failureRows, aiUsage });
   const report = {
     version: 1,
     day,
     checkedAt,
     status: summary.status,
     findings: summary.findings,
+    failureInventory: summary.failureInventory,
     metrics: summary.metrics,
     telemetry: {
       workflowBudgetAvailable: Boolean(budget),
