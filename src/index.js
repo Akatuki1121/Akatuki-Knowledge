@@ -212,6 +212,7 @@ var worker_default = {
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/correction")) { const response = await correctNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/move")) { const response = await moveNote(request, url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "POST" && url.pathname === "/api/sync") return syncNotes(request, env);
+        if (request.method === "POST" && url.pathname === "/api/sync/push-note") return pushVaultNote(request, env);
         if (request.method === "GET" && url.pathname === "/api/search") return searchNotes(url, env);
         if (request.method === "POST" && url.pathname === "/api/ask") return askQuestion(request, env);
         return json({ error: "Not found" }, 404);
@@ -944,6 +945,109 @@ async function syncNotes(request, env) {
   return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
+// Realtime vault push (method 1): an Obsidian plugin sends one edited note at
+// a time. The plugin cannot know the YAOS fileId, so identity is resolved
+// here from the persisted mapping by its last_path, and the note is then fed
+// through the ordinary syncNotes candidate path as a single, deliberately
+// incomplete observation. A single push is never a complete vault
+// observation: it creates no D1 note, resolves no rename, and runs none of
+// the complete-observation self-resolution passes. The hourly pull remains
+// the safety net for creation, rename, deletion, and every deferred case.
+async function pushVaultNote(request, env) {
+  let body;
+  try {
+    body = await readJson(request);
+  } catch {
+    return json({ ok: false, error: "invalid_or_too_large_body" }, 400);
+  }
+  const path = typeof body?.path === "string" ? stableId(body.path.trim()) : "";
+  const content = typeof body?.content === "string" ? body.content : null;
+  const contentHash = typeof body?.contentHash === "string" ? body.contentHash.toLowerCase() : "";
+  const safePath = typeof path === "string" && path.trim() && !path.startsWith("/")
+    && !path.split("/").includes("..") && path.length <= 1000 && /\.md$/i.test(path);
+  if (!safePath || path.split("/").some((part) => part.startsWith("."))
+    || path.startsWith(RESERVED_ROOT + "/") || content === null
+    || !/^[a-f0-9]{64}$/.test(contentHash)) {
+    return json({ ok: false, error: "invalid_push_request" }, 400);
+  }
+  if (content.length > MAX_NOTE_CHARS) return json({ ok: false, error: "note_too_large" }, 413);
+  if (await sha256(content) !== contentHash) return json({ ok: false, error: "content_hash_mismatch" }, 400);
+  if (!env.DB) return json({ ok: false, error: "database_unavailable" }, 503);
+
+  const mappings = (await env.DB.prepare(
+    "SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE last_path = ?"
+  ).bind(path).all()).results || [];
+  if (!mappings.length) {
+    return json({ ok: true, result: "deferred", reason: "mapping_missing", syncUuid: null });
+  }
+  if (mappings.length !== 1) {
+    return json({ ok: true, result: "needs_review", reason: "sync_identity_mapping_conflict", syncUuid: null });
+  }
+  const mapping = mappings[0];
+  const row = await env.DB.prepare(
+    "SELECT id, path, sync_uuid, content_hash, title, content, deleted_at FROM notes WHERE id = ?"
+  ).bind(mapping.note_id).first();
+  if (!row || row.sync_uuid !== mapping.sync_uuid || !isValidSyncUuid(row.sync_uuid)) {
+    return json({ ok: true, result: "needs_review", reason: "sync_identity_mapping_conflict", syncUuid: null });
+  }
+  if (row.deleted_at) {
+    return json({ ok: true, result: "needs_review", reason: "archived_note_identity", syncUuid: row.sync_uuid });
+  }
+  if (row.path !== path) {
+    return json({ ok: true, result: "needs_review", reason: "path_identity_conflict", syncUuid: row.sync_uuid });
+  }
+  // A dead upsert means the current D1 body was already rejected by the
+  // Vault once. Accepting the Vault's older body here would silently drop
+  // that D1 edit, so the case stays with the pull conflict machinery.
+  const deadJobs = (await env.DB.prepare(
+    "SELECT operation, payload_json, last_error FROM yaos_sync_jobs WHERE entity_type = 'notes' AND entity_id = ? AND status = 'dead' ORDER BY job_id DESC LIMIT 20"
+  ).bind(row.id).all()).results || [];
+  if (deadJobs.some((job) => job.operation === "upsert")) {
+    return json({ ok: true, result: "needs_review", reason: "dead_delivery_conflict", syncUuid: row.sync_uuid });
+  }
+
+  const syncRequest = new Request("https://internal/api/sync", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      notes: [{
+        fileId: mapping.file_id,
+        path,
+        title: row.title,
+        content,
+        ...(typeof body.clientSentAt === "string" ? { modifiedAt: body.clientSentAt.slice(0, 64) } : {})
+      }],
+      observations: [{ fileId: mapping.file_id, path, contentHash }],
+      observationComplete: false
+    })
+  });
+  const syncResponse = await syncNotes(syncRequest, env);
+  const syncResult = await syncResponse.json().catch(() => ({}));
+  if (!syncResponse.ok || syncResult.ok !== true) return json({ ok: false, error: "sync_failed" }, 502);
+
+  let result = null;
+  let reason = null;
+  if (syncResult.updated === 1) result = "applied";
+  else if (syncResult.unchanged === 1) result = "unchanged";
+  else {
+    const reviews = (await env.DB.prepare(
+      "SELECT file_id, path, content_hash, classification, reason FROM yaos_sync_identity_review WHERE file_id = ?"
+    ).bind(mapping.file_id).all()).results || [];
+    if (reviews.length) {
+      result = reviews[0].classification === "deferred" ? "deferred" : "needs_review";
+      reason = reviews[0].reason;
+    }
+  }
+  if (!result) return json({ ok: false, error: "push_not_classified" }, 502);
+  if (result === "applied") {
+    const verified = await env.DB.prepare("SELECT content_hash FROM notes WHERE id = ?").bind(row.id).first();
+    if (!verified || verified.content_hash !== contentHash) {
+      return json({ ok: false, error: "push_verification_failed" }, 502);
+    }
+  }
+  return json({ ok: true, result, reason, syncUuid: row.sync_uuid });
+}
+__name(pushVaultNote, "pushVaultNote");
 async function syncManifest(url, env) {
   const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 500)));
   const cursor = (url.searchParams.get("cursor") || "").slice(0, 1e3);
