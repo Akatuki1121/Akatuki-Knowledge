@@ -301,6 +301,51 @@ test("improvement result blocks are removed before retrying the original request
   assert.equal(stripImprovementResults(original), original);
 });
 
+test("improvement result blocks carrying an escalation are removed before retrying the original request", () => {
+  const original = "## 困っていること\n\n確認してほしい。";
+  const escalationResult = {
+    taskId: "task-9",
+    status: "needs_attention",
+    pullRequestUrl: null,
+    autoMergeEnabled: false,
+    reason: "invalid_input",
+    error: "Error: invalid_input:model_response_not_json",
+    recordedAt: "2026-11-14T00:00:00.000Z",
+    escalation: {
+      errorClass: "invalid_input",
+      stopReason: "non_retryable_invalid_input",
+      attempts: 4,
+      retryPolicyVersion: 8,
+      recordedAt: "2026-11-14T00:00:00.000Z"
+    }
+  };
+  const withEscalation = original + "\n\n<!-- akatuki-improvement-result:task-9 -->\n### 改善エージェント実行結果\n\n\x60\x60\x60json\n"
+    + JSON.stringify(escalationResult) + "\n\x60\x60\x60\n";
+  assert.equal(stripImprovementResults(withEscalation), original);
+  assert.equal(stripImprovementResults(original), original);
+});
+
+test("terminal improvement failures write back an escalation for Muse triage", async () => {
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const appendStart = source.indexOf("async function appendImprovementResult");
+  const inboxStart = source.indexOf("async function runImprovementInbox", appendStart);
+  assert.ok(appendStart >= 0 && inboxStart > appendStart);
+  const append = source.slice(appendStart, inboxStart);
+  assert.ok(append.includes('result.escalation && typeof result.escalation === "object"'),
+    "Escalation is opt-in per result so completed/stopped writebacks keep their current shape");
+  for (const field of ["errorClass", "stopReason", "attempts", "retryPolicyVersion"]) {
+    assert.ok(append.includes(field + ":"), "Escalation carries " + field);
+  }
+  assert.ok(append.includes("recordedAt"), "Escalation carries recordedAt");
+  const workflowStart = source.indexOf("if (failure.status === \"needs_attention\")");
+  assert.ok(workflowStart >= 0);
+  const terminalWriteback = source.slice(workflowStart, workflowStart + 1600);
+  assert.ok(terminalWriteback.includes('status: "needs_attention"'));
+  assert.ok(terminalWriteback.includes("escalation: {"));
+  assert.ok(terminalWriteback.includes("stopReason: terminalTask.stop_reason || failure.decision?.stopReason || null"));
+  assert.ok(terminalWriteback.includes("retryPolicyVersion: Number.isFinite(terminalTask.retry_policy_version)"));
+});
+
 test("failed improvement tasks remain unchanged until edited; transient retries use the task retry schedule", async () => {
   const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
   const storeSource = await readFile(new URL("../src/background-task-store.mjs", import.meta.url), "utf8");
