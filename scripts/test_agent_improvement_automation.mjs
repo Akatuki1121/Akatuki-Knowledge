@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { callWorkersAi, WORKERS_AI_MODEL, WORKERS_AI_MAX_OUTPUT_TOKENS } from "../src/workers-ai-client.mjs";
 import { IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS, IMPROVEMENT_TASK_REASONING_EFFORT } from "../src/task-runtime-config.mjs";
 import { executeApprovedImprovementPlan } from "../src/agent-improvement-executor.mjs";
-import { validateImprovementPlan, improvementIdempotencyKey, stripImprovementResults } from "../src/agent-improvement-policy.mjs";
+import { validateImprovementPlan, improvementIdempotencyKey, stripImprovementResults, MAX_PLAN_FILE_OPERATIONS, MAX_PLAN_TOTAL_PAYLOAD_CHARS } from "../src/agent-improvement-policy.mjs";
 import { hashGitHubWritePlan } from "../src/agent-github-tools.mjs";
 
 function createBudgetDb() {
@@ -235,6 +235,63 @@ test("improvement plan rejects guardrail files with changed_path_protected", () 
     content: "export const ok = true;\n", message: "通常の修正", sha: "a".repeat(40),
   };
   assert.equal(validateImprovementPlan(normalPlan).ok, true);
+});
+
+function planWithFileOperations(fileOperations) {
+  return {
+    repository: "Akatuki1121/Akatuki-Knowledge",
+    summary: "計画の大きさの区切りの検査",
+    operations: [
+      { type: "create_branch", branch: "agent/fix-small-check", base_ref: "main" },
+      ...fileOperations,
+      { type: "create_pull_request", head: "agent/fix-small-check", base: "main", title: "修正を追加", body: "自動化テスト用", draft: false }
+    ]
+  };
+}
+
+const createFileOperation = (index, content = "export const ok = true;\n") => ({
+  type: "create_file", branch: "agent/fix-small-check", path: `src/example-${index}.mjs`, content, message: "修正を追加"
+});
+
+test("improvement plan at the file operation cap passes and one over the cap stops for Muse", () => {
+  const atCap = planWithFileOperations([
+    ...Array.from({ length: MAX_PLAN_FILE_OPERATIONS - 1 }, (_, index) => createFileOperation(index)),
+    {
+      type: "apply_patch", branch: "agent/fix-small-check", path: "src/index.js",
+      patch: "--- a/src/index.js\n+++ b/src/index.js\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+      message: "差分修正", sha: "a".repeat(40),
+    },
+  ]);
+  assert.equal(validateImprovementPlan(atCap).ok, true);
+
+  const overCap = planWithFileOperations(
+    Array.from({ length: MAX_PLAN_FILE_OPERATIONS + 1 }, (_, index) => createFileOperation(index)));
+  assert.deepEqual(validateImprovementPlan(overCap), { ok: false, reason: "plan_too_large_for_agent" });
+});
+
+test("improvement plan at the total payload cap passes and one character over stops for Muse", () => {
+  const atCap = planWithFileOperations([createFileOperation(0, "x".repeat(MAX_PLAN_TOTAL_PAYLOAD_CHARS))]);
+  assert.equal(validateImprovementPlan(atCap).ok, true);
+
+  const half = Math.floor(MAX_PLAN_TOTAL_PAYLOAD_CHARS / 2);
+  const overCap = planWithFileOperations([
+    createFileOperation(0, "x".repeat(half)),
+    createFileOperation(1, "x".repeat(MAX_PLAN_TOTAL_PAYLOAD_CHARS - half + 1)),
+  ]);
+  assert.deepEqual(validateImprovementPlan(overCap), { ok: false, reason: "plan_too_large_for_agent" });
+
+  const singleOverCap = planWithFileOperations([createFileOperation(0, "x".repeat(MAX_PLAN_TOTAL_PAYLOAD_CHARS + 1))]);
+  assert.deepEqual(validateImprovementPlan(singleOverCap), { ok: false, reason: "plan_too_large_for_agent" });
+});
+
+test("oversized improvement plan makes no GitHub calls through the executor", async () => {
+  let calls = 0;
+  const fetchImpl = async () => { calls++; throw new Error("should_not_call"); };
+  const overCap = planWithFileOperations(
+    Array.from({ length: MAX_PLAN_FILE_OPERATIONS + 1 }, (_, index) => createFileOperation(index)));
+  assert.deepEqual(await executeApprovedImprovementPlan({ plan: overCap, expectedPlanHash: "unused", token: "test-token", fetchImpl }),
+    { ok: false, reason: "plan_too_large_for_agent" });
+  assert.equal(calls, 0);
 });
 
 test("improvement request fixture uses current frontmatter-free heading format", async () => {
