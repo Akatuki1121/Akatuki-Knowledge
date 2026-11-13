@@ -205,7 +205,7 @@ var worker_default = {
         if (request.method === "GET" && url.pathname === "/api/sync/manifest") return syncManifest(url, env);
         if (request.method === "POST" && url.pathname === "/api/sync/export") return exportSyncNotes(request, env);
         if (request.method === "GET" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/related")) return listRelatedNotes(url, env);
-        if (request.method === "GET" && url.pathname.startsWith("/api/notes/")) return getNoteByPath(url, env);
+        if (request.method === "GET" && url.pathname.startsWith("/api/notes/")) { await refreshVaultBeforeRead(env, ctx, url.origin); return getNoteByPath(url, env); }
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/ai-permission")) return setAiPermission(request, url, env);
         if (request.method === "POST" && url.pathname.startsWith("/api/notes/") && url.pathname.endsWith("/restore")) { const response = await restoreNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
         if (request.method === "DELETE" && url.pathname.startsWith("/api/notes/")) { const response = await deleteNote(url, env); if (response.ok) ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin)); return response; }
@@ -241,7 +241,7 @@ var POST_WRITE_DRAIN_MAX_BATCHES = 5;
 // Post-write pull. When the chained drain above actually delivered at least
 // one job, run one vault pull (apply) so the vault-side state converges into
 // D1 immediately after an AI edit session instead of waiting for the next
-// scheduled pull (every five minutes), which is the standing intake path.
+// scheduled pull, which is the standing intake path.
 // Bursts of writes are coalesced by a cooldown: at most one post-write pull
 // per POST_WRITE_PULL_COOLDOWN_MS, tracked in app_meta under
 // POST_WRITE_PULL_LAST_KEY. The pull keeps the
@@ -304,16 +304,21 @@ async function pullAfterWrite(env, ctx, origin, sent) {
   return { triggered: true, ...summary };
 }
 __name(pullAfterWrite, "pullAfterWrite");
-// Scheduled pull cooldown. The scheduled pull runs every five minutes
-// (PULL_CRON), so a run that is still in flight when the next tick arrives
-// must not overlap with it. Each tick claims its start in app_meta under
-// SCHEDULED_PULL_LAST_KEY before pulling, in the same shape as the
-// post-write cooldown above; a tick that finds the previous claim younger
-// than SCHEDULED_PULL_COOLDOWN_MS skips its pull. A skipped tick is not
-// retried or queued — the next tick is at most one interval away — and the
-// skip is recorded in the same vault_pull_latest diagnostics with
-// skipped: "cooldown".
-var SCHEDULED_PULL_COOLDOWN_MS = 120000;
+// Scheduled pull cooldown. While the vault is active the pull trigger
+// fires every minute (PULL_CRON), so a run that is still in flight when
+// the next tick arrives must not overlap with it. Each tick claims its
+// start in app_meta under SCHEDULED_PULL_LAST_KEY before pulling, in the
+// same shape as the post-write cooldown above; a tick that finds the
+// previous claim younger than SCHEDULED_PULL_COOLDOWN_MS skips its pull.
+// The read-side refresh (refreshVaultBeforeRead) claims through the same
+// gate, so the two pull paths can never overlap either. The cooldown sits
+// below the one-minute active tick — a longer one would starve every
+// second tick — and above the sync timeout (SYNC_TIMEOUT_MS) plus the
+// reflection time, so a claim only ever blocks a genuine overlap. A
+// skipped tick is not retried or queued — the next tick is at most one
+// interval away — and the skip is recorded in the same vault_pull_latest
+// diagnostics with skipped: "cooldown".
+var SCHEDULED_PULL_COOLDOWN_MS = 45000;
 var SCHEDULED_PULL_LAST_KEY = "vault_pull_scheduled_last";
 async function claimScheduledPull(env) {
   const lastAt = await readPullLastAt(env, SCHEDULED_PULL_LAST_KEY);
@@ -327,6 +332,102 @@ async function claimScheduledPull(env) {
   return { claimed: true };
 }
 __name(claimScheduledPull, "claimScheduledPull");
+// Adaptive scheduled cadence. The pull trigger fires every minute, but a
+// scheduled pull only runs while the vault is active. A pull that observes
+// vault changes marks the vault active, and ACTIVE_EMPTY_PULL_LIMIT
+// consecutive scheduled diff pulls without a change let it go quiet again.
+// While quiet, a non-hour tick does nothing at all — the hourly full pull
+// is the only scheduled intake left, so an untouched vault costs one
+// app_meta read per minute. The vault wakes when a pull whose outcome is
+// fed to updateVaultPullActivity observes a change: the scheduled pulls
+// (the hourly full pull included) and the read-side refresh below count;
+// manual and post-write pulls do not move the state. The state lives in
+// app_meta under PULL_ACTIVITY_KEY as
+// { active, emptyStreak }; bookkeeping failures degrade to "active", so a
+// broken state row can cost extra pulls but never stops the intake.
+var PULL_ACTIVITY_KEY = "vault_pull_activity";
+var ACTIVE_EMPTY_PULL_LIMIT = 5;
+async function readVaultPullActivity(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM app_meta WHERE key = ?").bind(PULL_ACTIVITY_KEY).first();
+    const parsed = row?.value ? JSON.parse(row.value) : null;
+    if (parsed && typeof parsed === "object") {
+      return {
+        active: parsed.active !== false,
+        emptyStreak: Number.isFinite(parsed.emptyStreak) ? Math.max(0, Math.floor(parsed.emptyStreak)) : 0
+      };
+    }
+  } catch {
+    // Activity bookkeeping must never break a pull path.
+  }
+  return { active: true, emptyStreak: 0 };
+}
+__name(readVaultPullActivity, "readVaultPullActivity");
+async function writeVaultPullActivity(env, activity) {
+  try {
+    const nowIso = new Date().toISOString();
+    await env.DB.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .bind(PULL_ACTIVITY_KEY, JSON.stringify(activity), nowIso).run();
+  } catch {
+    // Activity bookkeeping must never break a pull path.
+  }
+}
+__name(writeVaultPullActivity, "writeVaultPullActivity");
+function vaultPullChanged(result) {
+  if (!result || result.ok !== true) return false;
+  return ["differ", "new", "created", "updated"].some((key) => Number(result[key] || 0) > 0);
+}
+__name(vaultPullChanged, "vaultPullChanged");
+async function updateVaultPullActivity(env, route, result) {
+  if (!result || result.ok !== true || result.skipped) return;
+  if (vaultPullChanged(result)) {
+    await writeVaultPullActivity(env, { active: true, emptyStreak: 0 });
+    return;
+  }
+  if (route !== "diff") return;
+  const activity = await readVaultPullActivity(env);
+  if (!activity.active) return;
+  const emptyStreak = activity.emptyStreak + 1;
+  await writeVaultPullActivity(env, emptyStreak >= ACTIVE_EMPTY_PULL_LIMIT
+    ? { active: false, emptyStreak: 0 }
+    : { active: true, emptyStreak });
+}
+__name(updateVaultPullActivity, "updateVaultPullActivity");
+// Read-side freshness. The note read path (GET /api/notes/<path>) runs
+// this before serving: when the latest recorded successful pull is older
+// than READ_REFRESH_STALE_MS (or none ever succeeded), one diff pull runs
+// through the same claim gate as the scheduled pull, so a note the owner
+// just edited in the vault is read after the intake had its chance to
+// land it. The refresh never fails the read: any error is recorded as a
+// pull outcome and the read continues with what D1 already holds. A
+// refresh that observes changes also marks the vault active (see the
+// cadence note above), so the scheduled diff cadence takes over from
+// there.
+var READ_REFRESH_STALE_MS = 60000;
+async function refreshVaultBeforeRead(env, ctx, origin) {
+  try {
+    if (!env.DB || !env.YJS_CLIENT) return { refreshed: false, reason: "pull_unavailable" };
+    const latest = await readVaultPullDiagnostics(env);
+    const recordedAt = latest && latest.ok === true ? Date.parse(latest.recordedAt || "") : NaN;
+    if (Number.isFinite(recordedAt) && Date.now() - recordedAt < READ_REFRESH_STALE_MS) {
+      return { refreshed: false, reason: "fresh" };
+    }
+    const gate = await claimScheduledPull(env);
+    if (!gate.claimed) return { refreshed: false, reason: "cooldown" };
+    const result = await pullFromVault(env, ctx, origin, true, "diff");
+    await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "read"));
+    await updateVaultPullActivity(env, "diff", result);
+    return { refreshed: result.ok === true, route: result.route || "diff" };
+  } catch (error) {
+    try {
+      await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "read"));
+    } catch {
+      // Diagnostics must never break the read path either.
+    }
+    return { refreshed: false, reason: "pull_failed" };
+  }
+}
+__name(refreshVaultBeforeRead, "refreshVaultBeforeRead");
 async function drainSyncOutboxAfterWrite(env, ctx, origin) {
   let processed = 0, sent = 0, failed = 0, batches = 0;
   while (batches < POST_WRITE_DRAIN_MAX_BATCHES) {
@@ -10189,6 +10290,15 @@ var MAX_LIST = 300;
 var MAX_SMALL_LIST = 30;
 var MAX_PULL_NOTES = 20;
 var MAX_PULL_BYTES = 6.5e5;
+// Persisted intake state for the diff pull path (diffFromPersistedState):
+// the encoded Doc and the file index live in this object's own storage,
+// the meta record under PULL_STATE_STORAGE_KEY and the Doc state in
+// fixed-size chunks next to it, so neither value approaches the storage
+// value limit whatever the vault size. The latest pull outcome is kept
+// under PULL_RECORD_STORAGE_KEY.
+var PULL_STATE_STORAGE_KEY = "vault_pull_state";
+var PULL_STATE_CHUNK_BYTES = 1e5;
+var PULL_RECORD_STORAGE_KEY = "vault_pull_record";
 var DEFAULT_STRIP_LIMIT = 100;
 var MAX_STRIP_LIMIT = 1000;
 var RESERVED_ROOT = "Akatuki Knowledge";
@@ -10234,10 +10344,16 @@ var YjsClientDO = class extends DurableObject {
   lastPlanAt = "";
   lastSummary = null;
   lastPullStats = { updates: 0, bytes: 0, textFrames: 0, lastText: "" };
+  lastPullRecord = null;
+  pullChain = Promise.resolve();
   // mutate を渡すと、同期完了後にその変更だけをUPDATEフレームとして1回送ってから閉じる。mutateは変更件数を返す(0なら何も送らない)。
-  async pullVault(mutate) {
+  // options.doc に復元済みの Doc を渡すと、その状態ベクトルで SyncStep1 を送る(差分経路)。
+  // options.idleAfterSyncMs は Step2 受信後のアイドル待ちの上書きで、差分経路では 0 にする
+  // (Step2 が届いた時点で同期は完了しており、待ちは変更の無い回の費用にしかならない)。
+  async pullVault(mutate, options = {}) {
     this.lastPullStats = { updates: 0, bytes: 0, textFrames: 0, lastText: "" };
-    const doc2 = new Doc();
+    const doc2 = options.doc || new Doc();
+    const idleDelayMs = options.idleAfterSyncMs !== void 0 ? options.idleAfterSyncMs : configuredSyncDelay(this.env.SYNC_IDLE_AFTER_MS, IDLE_AFTER_SYNC_MS);
     const url = `https://yaos.internal/vault/sync/${encodeURIComponent(this.env.VAULT_ID)}?schemaVersion=${SCHEMA_VERSION}`;
     const resp = await this.env.YAOS.fetch(url, {
       headers: { Upgrade: "websocket", Authorization: `Bearer ${this.env.YAOS_TOKEN}` }
@@ -10306,7 +10422,7 @@ var YjsClientDO = class extends DurableObject {
           if (subType === SYNC_STEP2) gotStep2 = true;
           if (gotStep2) {
             clearTimeout(idleTimer);
-            idleTimer = setTimeout(settleOrPush, configuredSyncDelay(this.env.SYNC_IDLE_AFTER_MS, IDLE_AFTER_SYNC_MS));
+            idleTimer = setTimeout(settleOrPush, idleDelayMs);
           }
         } catch (err) {
           finish(new Error(`decode_failed_${String(err)}`));
@@ -10448,7 +10564,8 @@ var YjsClientDO = class extends DurableObject {
       ok: true, readOnly: true, initialized, vaultFiles: 0, skipped: 0, unreadable: 0,
       same: 0, notes: [], observations: [], collectedBytes: 0, differ: [],
       differOnlyLineEnding: 0, newInVault: [], differCount: 0, newCount: 0,
-      observationComplete: false
+      observationComplete: false,
+      transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes }
     };
     const entries = [];
     meta.forEach((value, fileId) => {
@@ -10459,12 +10576,15 @@ var YjsClientDO = class extends DurableObject {
       entries.push({ path: norm(path), fileId, deleted });
     });
     let queuedCandidates = 0;
+    const candidateD1State = /* @__PURE__ */ new Map();
+    const queuedFileIds = /* @__PURE__ */ new Set();
     const queue = (path, fileId, content, contentHash) => {
       queuedCandidates++;
       const contentBytes = new TextEncoder().encode(content).byteLength;
       if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + contentBytes > MAX_PULL_BYTES) return;
       const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
       result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
+      queuedFileIds.add(fileId);
       result.collectedBytes += contentBytes;
     };
     for (const entry of entries) {
@@ -10497,6 +10617,7 @@ var YjsClientDO = class extends DurableObject {
       const mappedRow = mapping ? byId.get(mapping.note_id) : null;
       const pathRow = byPath.get(path);
       const known = mapping ? mappedRow : pathRow;
+      candidateD1State.set(fileId, known && !known.deleted_at ? { path: norm(known.path), hash: known.content_hash } : null);
       if (!known || known.deleted_at) {
         queue(path, fileId, content, hash);
         result.newCount++;
@@ -10521,6 +10642,259 @@ var YjsClientDO = class extends DurableObject {
       if (result.differ.length < MAX_SMALL_LIST) result.differ.push(path);
     }
     result.observationComplete = initialized && result.unreadable === 0 && result.notes.length === queuedCandidates;
+    if (collect && initialized) {
+      // An intake pull also maintains the persisted state the diff path
+      // (diffFromPersistedState) starts from: the encoded Doc, and the
+      // file index (path + content hash per fileId) at this observation.
+      // Deleted entries are not indexed; a file that returns from a
+      // tombstone re-enters through the diff path as a change. A
+      // candidate the per-run caps cut off is indexed with its D1-side
+      // path and hash (or not indexed at all when D1 has no live row),
+      // so the diff path still sees it as a change and queues it on a
+      // later pull instead of mistaking it for settled.
+      const index = {};
+      for (const observation of result.observations) {
+        if (observation.deleted === true) continue;
+        if (candidateD1State.has(observation.fileId) && !queuedFileIds.has(observation.fileId)) {
+          const d1State = candidateD1State.get(observation.fileId);
+          if (d1State) index[observation.fileId] = d1State;
+          continue;
+        }
+        index[observation.fileId] = { path: observation.path, hash: observation.contentHash };
+      }
+      await this.savePersistedPullState(doc2, index, []);
+      await this.recordPullOutcome({ route: "full", ok: true, updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, queued: result.notes.length, candidates: result.differCount + result.newCount });
+    }
+    return result;
+  }
+  // Serialize the intake pulls inside this object: a full pull and a diff
+  // pull must never interleave their reads and writes of the persisted
+  // state. (The write flows that call pullVault directly with a mutation
+  // do not touch the persisted state and stay outside this chain.)
+  runPullSerialized(task) {
+    const run = this.pullChain.then(task, task);
+    this.pullChain = run.then(() => void 0, () => void 0);
+    return run;
+  }
+  async loadPersistedPullState() {
+    try {
+      const raw = await this.ctx.storage.get(PULL_STATE_STORAGE_KEY);
+      if (!raw || typeof raw !== "string") return null;
+      const meta = JSON.parse(raw);
+      if (!meta || meta.version !== 1 || !Number.isFinite(meta.stateBytes) || !Number.isFinite(meta.stateChunks)
+        || !meta.index || typeof meta.index !== "object") return null;
+      const keys = Array.from({ length: meta.stateChunks }, (_, i) => `${PULL_STATE_STORAGE_KEY}_chunk_${i}`);
+      const chunks = keys.length ? await this.ctx.storage.get(keys) : /* @__PURE__ */ new Map();
+      const state = new Uint8Array(meta.stateBytes);
+      let offset = 0;
+      for (const key of keys) {
+        const chunk = chunks.get(key);
+        if (!(chunk instanceof Uint8Array) || offset + chunk.byteLength > state.byteLength) return null;
+        state.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      if (offset !== state.byteLength) return null;
+      return {
+        state,
+        index: meta.index,
+        pending: Array.isArray(meta.pending) ? meta.pending.filter((fileId) => typeof fileId === "string") : [],
+        savedAt: typeof meta.savedAt === "string" ? meta.savedAt : null
+      };
+    } catch {
+      return null;
+    }
+  }
+  async savePersistedPullState(doc2, index, pending) {
+    try {
+      const state = encodeStateAsUpdate(doc2);
+      const chunkCount = Math.max(1, Math.ceil(state.byteLength / PULL_STATE_CHUNK_BYTES));
+      const previousRaw = await this.ctx.storage.get(PULL_STATE_STORAGE_KEY);
+      const previousMeta = previousRaw ? JSON.parse(previousRaw) : null;
+      const puts = {};
+      for (let i = 0; i < chunkCount; i++) {
+        puts[`${PULL_STATE_STORAGE_KEY}_chunk_${i}`] = state.slice(i * PULL_STATE_CHUNK_BYTES, (i + 1) * PULL_STATE_CHUNK_BYTES);
+      }
+      puts[PULL_STATE_STORAGE_KEY] = JSON.stringify({
+        version: 1, savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        stateBytes: state.byteLength, stateChunks: chunkCount, index, pending
+      });
+      await this.ctx.storage.put(puts);
+      const staleKeys = [];
+      const previousChunks = Number.isFinite(previousMeta?.stateChunks) ? previousMeta.stateChunks : 0;
+      for (let i = chunkCount; i < previousChunks; i++) staleKeys.push(`${PULL_STATE_STORAGE_KEY}_chunk_${i}`);
+      if (staleKeys.length) await this.ctx.storage.delete(staleKeys);
+      return true;
+    } catch {
+      // Persistence only serves the next pull; losing it must never fail
+      // the pull that produced the state.
+      return false;
+    }
+  }
+  async clearPersistedPullState() {
+    try {
+      const raw = await this.ctx.storage.get(PULL_STATE_STORAGE_KEY);
+      const meta = raw ? JSON.parse(raw) : null;
+      const keys = [PULL_STATE_STORAGE_KEY];
+      const chunkCount = Number.isFinite(meta?.stateChunks) ? meta.stateChunks : 0;
+      for (let i = 0; i < chunkCount; i++) keys.push(`${PULL_STATE_STORAGE_KEY}_chunk_${i}`);
+      await this.ctx.storage.delete(keys);
+    } catch {
+      // A state that cannot be cleared is rebuilt by the next full pull.
+    }
+  }
+  async recordPullOutcome(record) {
+    this.lastPullRecord = { at: (/* @__PURE__ */ new Date()).toISOString(), ...record };
+    try {
+      await this.ctx.storage.put(PULL_RECORD_STORAGE_KEY, JSON.stringify(this.lastPullRecord));
+    } catch {
+      // The record is measurement only; it must never fail a pull.
+    }
+  }
+  // Diff intake path. Restores the Doc and the file index persisted by
+  // the previous intake pull and syncs with that state vector, so YAOS
+  // only sends what changed since. Only the files the sync touched, the
+  // files still pending from a capped run, and the index entries whose
+  // path moved are read and hashed; untouched files keep their index
+  // hash, and D1 is never consulted here. The observation list still
+  // covers the whole vault (built from the restored Doc and the index),
+  // so /api/sync receives a complete observation and creations, renames,
+  // and deletions take exactly the full pull's path. The Doc state and
+  // the index advance optimistically with this pull; if the Worker's
+  // /api/sync POST then fails, the Worker invalidates the state (the
+  // "invalidate-pull-state" action) and the next pull re-reads in full.
+  async diffFromPersistedState() {
+    const persisted = await this.loadPersistedPullState();
+    if (!persisted) {
+      const bootstrapped = await this.diffAgainstD1(true);
+      return { ...bootstrapped, route: "full" };
+    }
+    const doc2 = new Doc();
+    const touched = new Set(persisted.pending);
+    try {
+      applyUpdate(doc2, persisted.state, "persisted");
+      const collectTouched = /* @__PURE__ */ __name((events) => {
+        for (const event of events) {
+          const head = Array.isArray(event?.path) ? event.path[0] : null;
+          if (typeof head === "string") touched.add(head);
+          if (event?.keysChanged) for (const key of event.keysChanged) touched.add(key);
+        }
+      }, "collectTouched");
+      doc2.getMap("meta").observeDeep(collectTouched);
+      doc2.getMap("idToText").observeDeep(collectTouched);
+    } catch {
+      // The persisted state cannot be read back: drop it and rebuild
+      // from a full read in the same run.
+      await this.clearPersistedPullState();
+      await this.recordPullOutcome({ route: "diff", ok: false, error: "persisted_state_unreadable", fallback: "full" });
+      const rebuilt = await this.diffAgainstD1(true);
+      return { ...rebuilt, route: "full_fallback" };
+    }
+    try {
+      await this.pullVault(null, { doc: doc2, idleAfterSyncMs: 0 });
+    } catch (error) {
+      const message = String(error);
+      if (message.includes("decode_failed")) {
+        // The incoming diff could not be applied to the persisted
+        // state: drop the state and rebuild from a full read.
+        await this.clearPersistedPullState();
+        await this.recordPullOutcome({ route: "diff", ok: false, error: "diff_apply_failed", fallback: "full" });
+        const rebuilt = await this.diffAgainstD1(true);
+        return { ...rebuilt, route: "full_fallback" };
+      }
+      await this.recordPullOutcome({ route: "diff", ok: false, error: "sync_failed" });
+      return { ok: false, route: "diff", error: message.slice(0, 300), transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes } };
+    }
+    const meta = doc2.getMap("meta");
+    const idToText = doc2.getMap("idToText");
+    const initialized = doc2.getMap("sys").get("initialized") === true;
+    const result = {
+      ok: true, readOnly: true, route: "diff", initialized, vaultFiles: 0, skipped: 0, unreadable: 0,
+      same: 0, notes: [], observations: [], collectedBytes: 0, differ: [],
+      differOnlyLineEnding: 0, newInVault: [], differCount: 0, newCount: 0,
+      observationComplete: false,
+      transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes }
+    };
+    let queuedCandidates = 0;
+    const queue = (path, fileId, content, contentHash) => {
+      queuedCandidates++;
+      const contentBytes = new TextEncoder().encode(content).byteLength;
+      if (result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + contentBytes > MAX_PULL_BYTES) return false;
+      const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
+      result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
+      result.collectedBytes += contentBytes;
+      return true;
+    };
+    const current = /* @__PURE__ */ new Map();
+    meta.forEach((value, fileId) => {
+      const isMap = value instanceof YMap;
+      const path = isMap ? value.get("path") : value?.path;
+      if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
+      const deleted = isMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
+      current.set(fileId, { path: norm(path), deleted });
+    });
+    const nextIndex = {};
+    const nextPending = /* @__PURE__ */ new Set();
+    for (const [fileId, entry] of current) {
+      const previous = persisted.index[fileId];
+      if (entry.deleted) {
+        result.observations.push({ fileId, path: entry.path, deleted: true, contentHash: "" });
+        continue;
+      }
+      const segments = entry.path.split("/");
+      if (segments.some((s) => s.startsWith(".")) || entry.path.startsWith(`${RESERVED_ROOT}/`)) {
+        result.skipped++;
+        if (previous) nextIndex[fileId] = { path: entry.path, hash: previous.hash };
+        continue;
+      }
+      const mustRead = touched.has(fileId) || !previous || previous.path !== entry.path;
+      if (!mustRead) {
+        result.vaultFiles++;
+        result.same++;
+        result.observations.push({ fileId, path: entry.path, deleted: false, contentHash: previous.hash });
+        nextIndex[fileId] = previous;
+        continue;
+      }
+      const text2 = idToText.get(fileId);
+      const content = text2 instanceof YText ? text2.toString() : null;
+      if (content === null || content.length > 5e5) {
+        result.skipped++;
+        result.unreadable++;
+        if (previous) nextIndex[fileId] = previous;
+        nextPending.add(fileId);
+        continue;
+      }
+      result.vaultFiles++;
+      const hash = await sha256Hex(content);
+      result.observations.push({ fileId, path: entry.path, deleted: false, contentHash: hash, legacyId: readUuid(content) });
+      if (previous && previous.hash === hash && previous.path === entry.path) {
+        result.same++;
+        nextIndex[fileId] = previous;
+        continue;
+      }
+      const included = queue(entry.path, fileId, content, hash);
+      if (!previous) {
+        result.newCount++;
+        if (result.newInVault.length < MAX_SMALL_LIST) result.newInVault.push(entry.path);
+      } else {
+        result.differCount++;
+        if (result.differ.length < MAX_SMALL_LIST) result.differ.push(entry.path);
+      }
+      if (included) {
+        nextIndex[fileId] = { path: entry.path, hash };
+      } else {
+        nextPending.add(fileId);
+        if (previous) nextIndex[fileId] = previous;
+      }
+    }
+    // Index entries whose file vanished from the vault meta entirely are
+    // deletions too; their observation carries the last indexed path.
+    for (const fileId of Object.keys(persisted.index)) {
+      if (current.has(fileId)) continue;
+      result.observations.push({ fileId, path: persisted.index[fileId].path, deleted: true, contentHash: "" });
+    }
+    result.observationComplete = initialized && result.unreadable === 0 && result.notes.length === queuedCandidates;
+    await this.savePersistedPullState(doc2, nextIndex, [...nextPending]);
+    await this.recordPullOutcome({ route: "diff", ok: true, updates: result.transfer.updates, bytes: result.transfer.bytes, queued: result.notes.length, candidates: queuedCandidates, pending: nextPending.size });
     return result;
   }
   // Recover stable note IDs only for Vault files that already exist and whose body matches D1.
@@ -11740,19 +12114,32 @@ var YjsClientDO = class extends DurableObject {
       }
     }
     if (action === "status") {
-      return Response.json({ mode: "read-only", lastError: this.lastError, lastPlanAt: this.lastPlanAt, lastSummary: this.lastSummary });
+      return Response.json({ mode: "read-only", lastError: this.lastError, lastPlanAt: this.lastPlanAt, lastSummary: this.lastSummary, lastPullRecord: this.lastPullRecord });
     }
     if (action === "changes") {
       try {
-        return Response.json(await this.diffAgainstD1(true));
+        return Response.json(await this.runPullSerialized(() => this.diffAgainstD1(true)));
       } catch (err) {
         this.lastError = String(err);
         return Response.json({ ok: false, error: this.lastError }, { status: 502 });
       }
     }
+    if (action === "changes-diff") {
+      try {
+        return Response.json(await this.runPullSerialized(() => this.diffFromPersistedState()));
+      } catch (err) {
+        this.lastError = String(err);
+        return Response.json({ ok: false, error: this.lastError }, { status: 502 });
+      }
+    }
+    if (action === "invalidate-pull-state") {
+      await this.clearPersistedPullState();
+      await this.recordPullOutcome({ route: "diff", ok: false, error: "reflection_failed_state_invalidated" });
+      return Response.json({ ok: true });
+    }
     if (action === "diff") {
       try {
-        return Response.json(await this.diffAgainstD1());
+        return Response.json(await this.runPullSerialized(() => this.diffAgainstD1()));
       } catch (err) {
         this.lastError = String(err);
         return Response.json({ ok: false, error: this.lastError }, { status: 502 });
@@ -11771,9 +12158,23 @@ var YjsClientDO = class extends DurableObject {
 };
 var originalFetch = worker_default.fetch;
 var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-store" };
-var PULL_CRON = "*/5 * * * *";
+// The pull trigger fires every minute so the diff intake can track an
+// editing session closely; whether a tick actually pulls is decided by
+// the vault activity state and the fire time (see the scheduled handler
+// and the adaptive cadence note at updateVaultPullActivity), never by
+// matching this expression. The interval lives only here and in
+// wrangler.toml.
+var PULL_CRON = "* * * * *";
 var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
+// True when a scheduled fire time lands on the hour (minute zero). The
+// full/diff branch is keyed on this, so changing the pull interval can
+// never silently change which ticks run the full safety-net pull.
+function isOnTheHourTick(scheduledTime) {
+  const at = new Date(scheduledTime);
+  return Number.isFinite(at.getTime()) && at.getUTCMinutes() === 0;
+}
+__name(isOnTheHourTick, "isOnTheHourTick");
 // Bump only when the improvement retry/reassessment policy changes materially.
 // Each task is reassessed at most once per version and cumulative attempts cap at six.
 var IMPROVEMENT_RETRY_POLICY_VERSION = 8;
@@ -12849,7 +13250,7 @@ __name(persistRecoveryDiagnostics, "persistRecoveryDiagnostics");
 // never note content, raw error text, or IDs. GET /sync/status exposes it as
 // the "pull" field.
 function summarizeVaultPull(result, error, source) {
-  const summary = { recordedAt: new Date().toISOString(), ok: false, source: ["scheduled", "post_write", "manual"].includes(source) ? source : "unknown" };
+  const summary = { recordedAt: new Date().toISOString(), ok: false, source: ["scheduled", "post_write", "manual", "read"].includes(source) ? source : "unknown" };
   if (error) {
     summary.failure = describeSafeFailure("vault_pull_failed", error);
     return summary;
@@ -12859,7 +13260,12 @@ function summarizeVaultPull(result, error, source) {
   if (result.applied !== void 0) summary.applied = result.applied === true;
   if (typeof result.stage === "string" && /^[a-z_]{1,40}$/.test(result.stage)) summary.stage = result.stage;
   if (typeof result.skipped === "string" && /^[a-z_]{1,60}$/.test(result.skipped)) summary.skipped = result.skipped;
-  for (const key of ["vaultFiles", "queued", "created", "updated", "unchanged", "deferred", "needsReview", "identityConflicts", "resolvedReviews"]) {
+  // The intake route (full / diff / full_fallback) and the YAOS transfer
+  // the pull actually consumed, so the cost of each route — above all the
+  // near-zero transfer of a no-change diff pull — is readable from the
+  // recorded outcome alone.
+  if (typeof result.route === "string" && /^[a-z_]{1,40}$/.test(result.route)) summary.route = result.route;
+  for (const key of ["vaultFiles", "queued", "created", "updated", "unchanged", "deferred", "needsReview", "identityConflicts", "resolvedReviews", "transferBytes", "transferUpdates"]) {
     if (Number.isFinite(result[key])) summary[key] = result[key];
   }
   if (result.error !== void 0) summary.errorCode = safeErrorCode(result.error);
@@ -12891,12 +13297,18 @@ function doFetch(env, action) {
   return env.YJS_CLIENT.getByName("default").fetch(new Request(`https://internal/${action}`));
 }
 __name(doFetch, "doFetch");
-async function pullFromVault(env, ctx, origin, apply) {
-  const res = await doFetch(env, "changes");
+// route "full" reads the whole vault and compares it against D1 (the
+// "changes" action); route "diff" asks the Durable Object for the
+// diff intake (the "changes-diff" action), which restores its persisted
+// state and only evaluates what changed. Either way the Durable Object
+// reports the route that actually ran (a diff request can fall back to a
+// full read) and the transfer it consumed.
+async function pullFromVault(env, ctx, origin, apply, route = "full") {
+  const res = await doFetch(env, route === "diff" ? "changes-diff" : "changes");
   const data = await res.json();
-  if (!res.ok || !data.ok) return { ok: false, stage: "read_vault", error: data.error || `status_${res.status}` };
-  if (!data.initialized || data.vaultFiles === 0) return { ok: true, skipped: "vault_not_initialized", vaultFiles: data.vaultFiles };
-  const summary = { ok: true, vaultFiles: data.vaultFiles, same: data.same, differ: data.differCount, new: data.newCount, queued: data.notes.length };
+  if (!res.ok || !data.ok) return { ok: false, stage: "read_vault", route: data.route || route, error: data.error || `status_${res.status}` };
+  if (!data.initialized || data.vaultFiles === 0) return { ok: true, skipped: "vault_not_initialized", route: data.route || route, vaultFiles: data.vaultFiles };
+  const summary = { ok: true, route: data.route || route, transferBytes: data.transfer?.bytes, transferUpdates: data.transfer?.updates, vaultFiles: data.vaultFiles, same: data.same, differ: data.differCount, new: data.newCount, queued: data.notes.length };
   if (!apply) return { ...summary, applied: false, paths: data.notes.map((n) => n.path) };
   const sync = await originalFetch(
     new Request(`${origin}/api/sync`, {
@@ -12908,6 +13320,17 @@ async function pullFromVault(env, ctx, origin, apply) {
     ctx
   );
   const body = await sync.json().catch(() => ({}));
+  if (!sync.ok) {
+    // The Durable Object advanced its persisted intake state for this
+    // pull, but D1 never accepted the reflection. Drop the state so the
+    // next pull re-reads the vault in full instead of trusting an index
+    // whose changes D1 has not seen.
+    try {
+      await doFetch(env, "invalidate-pull-state");
+    } catch {
+      // The hourly full pull rebuilds the state even if this is lost.
+    }
+  }
   const conflictDelivery = sync.ok && body.reconciledConflicts > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledConflicts)) : null;
   return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, reconciledConflicts: body.reconciledConflicts || 0, conflictDelivery: conflictDelivery ? { sent: conflictDelivery.sent, failed: conflictDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
 }
@@ -13498,6 +13921,17 @@ var wrapper_default = {
       return;
     }
     if (event.cron === PULL_CRON) {
+      // The route is decided by the fire time, not by the cron
+      // expression: the tick that lands on the hour runs the full pull
+      // (the safety net) and always runs; every other tick runs the diff
+      // pull, and only while the vault is active. A quiet non-hour tick
+      // returns here — no drain, no pull, no automation — so an
+      // untouched vault costs one app_meta read per minute.
+      const onTheHour = isOnTheHourTick(event.scheduledTime);
+      if (!onTheHour) {
+        const activity = await readVaultPullActivity(env);
+        if (!activity.active) return;
+      }
       let improvementPullReady = false;
       try {
         await drainSyncOutbox(env, 10);
@@ -13508,8 +13942,10 @@ var wrapper_default = {
           // The skip itself is the recorded outcome for this tick.
           await persistVaultPullDiagnostics(env, summarizeVaultPull({ ok: true, skipped: "cooldown" }, null, "scheduled"));
         } else {
-          const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true);
+          const route = onTheHour ? "full" : "diff";
+          const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true, route);
           improvementPullReady = result.ok === true;
+          await updateVaultPullActivity(env, route, result);
           // Persist every scheduled pull outcome (success and failure alike) so
           // GET /sync/status can show the latest pull without reading logs.
           await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "scheduled"));
