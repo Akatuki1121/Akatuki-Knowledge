@@ -193,4 +193,114 @@ function refreshHarness({ diagnostics, claim, pull }) {
   assert.ok(failing.calls.persisted[0].error instanceof Error, "the recording carries the failure");
 }
 
+// --- update shape probe -----------------------------------------------------
+//
+// The probe functions are sliced from the bundle and driven with a
+// scripted struct reader: the "updates" below are struct streams in the
+// shape the real decoder yields (an id with a client, and a parent that
+// is a root type name, another struct's id, or null). The real decoding
+// of wire bytes is covered by scripts/test-sync-diff-premise.mjs, which
+// runs the probe inside the full bundle against a live Yjs peer.
+
+function rootTypeList() {
+  const match = source.match(/var UPDATE_SHAPE_ROOT_TYPES = (\[[^\]]*\]);/);
+  assert.ok(match, "Could not find UPDATE_SHAPE_ROOT_TYPES in the Worker bundle");
+  return JSON.parse(match[1]);
+}
+
+function buildShapeHelpers() {
+  class FakeUpdateDecoder {
+    constructor(script) { this.script = script; }
+  }
+  class FakeStructReader {
+    constructor(decoder) {
+      if (decoder.script.throws) throw new Error("undecodable update");
+      this.structs = decoder.script.structs;
+      this.index = 0;
+      this.curr = this.structs.length ? this.structs[0] : null;
+    }
+    next() {
+      this.index++;
+      this.curr = this.index < this.structs.length ? this.structs[this.index] : null;
+      return this.curr;
+    }
+  }
+  const globals = {
+    UPDATE_SHAPE_ROOT_TYPES: rootTypeList(),
+    UPDATE_SHAPE_MAX_CLIENTS: constantValue("UPDATE_SHAPE_MAX_CLIENTS"),
+    createDecoder: (update) => update,
+    UpdateDecoderV1: FakeUpdateDecoder,
+    LazyStructReader: FakeStructReader
+  };
+  const parts = [
+    sliceFunction("describeUpdateShape"),
+    sliceFunction("mergeUpdateShape"),
+    sliceFunction("materializeUpdateShape"),
+    sliceFunction("sanitizeUpdateShape"),
+    sliceFunction("summarizeVaultPull")
+  ];
+  const factory = new Function(
+    ...Object.keys(globals),
+    `${parts.join("\n")}\nreturn { describeUpdateShape, mergeUpdateShape, materializeUpdateShape, sanitizeUpdateShape, summarizeVaultPull };`
+  );
+  return factory(...Object.values(globals));
+}
+
+{
+  const { describeUpdateShape, mergeUpdateShape, materializeUpdateShape } = buildShapeHelpers();
+  const item = (client, parent) => ({ id: { client, clock: 0 }, parent });
+  const update = {
+    structs: [
+      item(111, "sys"),
+      item(111, "meta"),
+      item(111, { client: 111, clock: 0 }),
+      item(222, "idToText"),
+      item(222, "Notes/AI共有/hidden.md"),
+      item(333, null),
+      item(444, "meta"),
+      item(555, "meta"),
+      item(666, "pathToId")
+    ]
+  };
+  const shape = materializeUpdateShape(describeUpdateShape(update));
+  assert.deepEqual(shape, {
+    types: ["idToText", "meta", "pathToId", "sys"],
+    clients: [111, 222, 333, 444],
+    clientCount: 6,
+    structs: 9
+  }, "only root type names are recorded, clients are capped with the full count kept, structs are counted");
+
+  const more = describeUpdateShape({ structs: [item(666, "sys"), item(777, "meta")] });
+  const merged = materializeUpdateShape(mergeUpdateShape(describeUpdateShape(update), more));
+  assert.equal(merged.structs, 11, "struct counts add across the updates of one pull");
+  assert.equal(merged.clientCount, 7, "client counts union across the updates of one pull");
+  assert.deepEqual(merged.types, ["idToText", "meta", "pathToId", "sys"]);
+
+  assert.equal(materializeUpdateShape(mergeUpdateShape(null, null)), null, "no updates means no shape");
+  assert.equal(describeUpdateShape({ throws: true }), null, "an undecodable update yields no shape instead of failing");
+}
+
+{
+  const { sanitizeUpdateShape, summarizeVaultPull } = buildShapeHelpers();
+  assert.deepEqual(
+    sanitizeUpdateShape({ types: ["meta", "bogus", "sys", "meta"], clients: [1, "x", 2, 3, 4, 5], clientCount: 6, structs: 42 }),
+    { types: ["meta", "sys"], clients: [1, 2, 3, 4], clientCount: 6, structs: 42 },
+    "the persisted shape keeps only root type names and a capped list of bare client numbers"
+  );
+  assert.equal(sanitizeUpdateShape({ types: ["meta"], clients: [], clientCount: NaN, structs: 1 }), null, "non-finite counts reject the shape");
+  assert.equal(sanitizeUpdateShape(null), null);
+  assert.equal(sanitizeUpdateShape("meta"), null);
+
+  const summary = summarizeVaultPull(
+    { ok: true, route: "diff", transferBytes: 15246, transferUpdates: 1, updateShape: { types: ["meta"], clients: [424242], clientCount: 1, structs: 744 } },
+    null,
+    "scheduled"
+  );
+  assert.equal(summary.transferBytes, 15246);
+  assert.deepEqual(summary.updateShape, { types: ["meta"], clients: [424242], clientCount: 1, structs: 744 }, "a constant payload is identifiable from the recorded outcome alone");
+
+  const unshaped = summarizeVaultPull({ ok: true, route: "diff", transferBytes: 2, transferUpdates: 1 }, null, "scheduled");
+  assert.ok(!("updateShape" in unshaped), "a pull without a reported shape records none");
+}
+
 console.log("Sync diff pull cadence and read-refresh checks passed.");
