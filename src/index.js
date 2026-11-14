@@ -10315,6 +10315,64 @@ function encodeSyncFrame(subType, payload) {
   return toUint8Array(enc);
 }
 __name(encodeSyncFrame, "encodeSyncFrame");
+// Shape-only probe of the sync updates a pull receives. The transfer
+// counters (updates / bytes) show how much arrived but not what arrived;
+// when a no-change diff pull still transfers a constant payload, this
+// probe is what identifies it. It records structure only — which of the
+// vault's root shared types the decoded structs belong to, the bare
+// client numbers that wrote them, and the approximate struct count.
+// Update content (file names, note bodies) is never read into the record:
+// a parent is recorded only when the decoded parent is exactly one of
+// the root type names below, and the client list is capped while the
+// full distinct count is kept alongside it.
+var UPDATE_SHAPE_ROOT_TYPES = ["meta", "pathToId", "idToText", "sys"];
+var UPDATE_SHAPE_MAX_CLIENTS = 4;
+// Decodes one update into raw shape parts (sets, not yet record-safe).
+// Returns null when the bytes cannot be decoded: the probe is
+// diagnostics only, and applying the same update in the pull path is
+// what surfaces any real problem.
+function describeUpdateShape(update) {
+  const types = /* @__PURE__ */ new Set();
+  const clients = /* @__PURE__ */ new Set();
+  let structs = 0;
+  try {
+    const reader = new LazyStructReader(new UpdateDecoderV1(createDecoder(update)), false);
+    for (let struct = reader.curr; struct !== null; struct = reader.next()) {
+      structs++;
+      clients.add(struct.id.client);
+      if (typeof struct.parent === "string" && UPDATE_SHAPE_ROOT_TYPES.includes(struct.parent)) types.add(struct.parent);
+    }
+  } catch {
+    return null;
+  }
+  return { types, clients, structs };
+}
+__name(describeUpdateShape, "describeUpdateShape");
+// Unions the raw parts of one update into the parts accumulated over a
+// whole pull (a pull can receive several updates). Mutates and returns
+// the accumulator; either side may be null.
+function mergeUpdateShape(current, next) {
+  if (!next) return current;
+  if (!current) return next;
+  for (const type of next.types) current.types.add(type);
+  for (const client of next.clients) current.clients.add(client);
+  current.structs += next.structs;
+  return current;
+}
+__name(mergeUpdateShape, "mergeUpdateShape");
+// Converts raw accumulated parts into the plain record shape: type names
+// sorted, the client list capped at UPDATE_SHAPE_MAX_CLIENTS with the
+// full distinct count kept alongside it.
+function materializeUpdateShape(parts) {
+  if (!parts) return null;
+  return {
+    types: [...parts.types].sort(),
+    clients: [...parts.clients].slice(0, UPDATE_SHAPE_MAX_CLIENTS),
+    clientCount: parts.clients.size,
+    structs: parts.structs
+  };
+}
+__name(materializeUpdateShape, "materializeUpdateShape");
 function readUuid(text2) {
   const fm = text2.slice(0, 4e3).match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!fm) return null;
@@ -10344,6 +10402,10 @@ var YjsClientDO = class extends DurableObject {
   lastPlanAt = "";
   lastSummary = null;
   lastPullStats = { updates: 0, bytes: 0, textFrames: 0, lastText: "" };
+  // Raw shape parts of the updates the latest pull received, accumulated
+  // by describeUpdateShape / mergeUpdateShape and read back through
+  // materializeUpdateShape wherever the pull outcome is recorded.
+  lastPullShape = null;
   lastPullRecord = null;
   pullChain = Promise.resolve();
   // mutate を渡すと、同期完了後にその変更だけをUPDATEフレームとして1回送ってから閉じる。mutateは変更件数を返す(0なら何も送らない)。
@@ -10352,6 +10414,7 @@ var YjsClientDO = class extends DurableObject {
   // (Step2 が届いた時点で同期は完了しており、待ちは変更の無い回の費用にしかならない)。
   async pullVault(mutate, options = {}) {
     this.lastPullStats = { updates: 0, bytes: 0, textFrames: 0, lastText: "" };
+    this.lastPullShape = null;
     const doc2 = options.doc || new Doc();
     const idleDelayMs = options.idleAfterSyncMs !== void 0 ? options.idleAfterSyncMs : configuredSyncDelay(this.env.SYNC_IDLE_AFTER_MS, IDLE_AFTER_SYNC_MS);
     const url = `https://yaos.internal/vault/sync/${encodeURIComponent(this.env.VAULT_ID)}?schemaVersion=${SCHEMA_VERSION}`;
@@ -10418,6 +10481,7 @@ var YjsClientDO = class extends DurableObject {
           const update = readVarUint8Array(decoder);
           this.lastPullStats.updates++;
           this.lastPullStats.bytes += update.byteLength;
+          this.lastPullShape = mergeUpdateShape(this.lastPullShape, describeUpdateShape(update));
           applyUpdate(doc2, update, "remote");
           if (subType === SYNC_STEP2) gotStep2 = true;
           if (gotStep2) {
@@ -10565,7 +10629,7 @@ var YjsClientDO = class extends DurableObject {
       same: 0, notes: [], observations: [], collectedBytes: 0, differ: [],
       differOnlyLineEnding: 0, newInVault: [], differCount: 0, newCount: 0,
       observationComplete: false,
-      transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes }
+      transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, updateShape: materializeUpdateShape(this.lastPullShape) }
     };
     const entries = [];
     meta.forEach((value, fileId) => {
@@ -10663,7 +10727,7 @@ var YjsClientDO = class extends DurableObject {
         index[observation.fileId] = { path: observation.path, hash: observation.contentHash };
       }
       await this.savePersistedPullState(doc2, index, []);
-      await this.recordPullOutcome({ route: "full", ok: true, updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, queued: result.notes.length, candidates: result.differCount + result.newCount });
+      await this.recordPullOutcome({ route: "full", ok: true, updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, updateShape: materializeUpdateShape(this.lastPullShape), queued: result.notes.length, candidates: result.differCount + result.newCount });
     }
     return result;
   }
@@ -10802,7 +10866,7 @@ var YjsClientDO = class extends DurableObject {
         return { ...rebuilt, route: "full_fallback" };
       }
       await this.recordPullOutcome({ route: "diff", ok: false, error: "sync_failed" });
-      return { ok: false, route: "diff", error: message.slice(0, 300), transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes } };
+      return { ok: false, route: "diff", error: message.slice(0, 300), transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, updateShape: materializeUpdateShape(this.lastPullShape) } };
     }
     const meta = doc2.getMap("meta");
     const idToText = doc2.getMap("idToText");
@@ -10812,7 +10876,7 @@ var YjsClientDO = class extends DurableObject {
       same: 0, notes: [], observations: [], collectedBytes: 0, differ: [],
       differOnlyLineEnding: 0, newInVault: [], differCount: 0, newCount: 0,
       observationComplete: false,
-      transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes }
+      transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, updateShape: materializeUpdateShape(this.lastPullShape) }
     };
     let queuedCandidates = 0;
     const queue = (path, fileId, content, contentHash) => {
@@ -10894,7 +10958,7 @@ var YjsClientDO = class extends DurableObject {
     }
     result.observationComplete = initialized && result.unreadable === 0 && result.notes.length === queuedCandidates;
     await this.savePersistedPullState(doc2, nextIndex, [...nextPending]);
-    await this.recordPullOutcome({ route: "diff", ok: true, updates: result.transfer.updates, bytes: result.transfer.bytes, queued: result.notes.length, candidates: queuedCandidates, pending: nextPending.size });
+    await this.recordPullOutcome({ route: "diff", ok: true, updates: result.transfer.updates, bytes: result.transfer.bytes, updateShape: result.transfer.updateShape, queued: result.notes.length, candidates: queuedCandidates, pending: nextPending.size });
     return result;
   }
   // Recover stable note IDs only for Vault files that already exist and whose body matches D1.
@@ -13242,13 +13306,26 @@ async function persistRecoveryDiagnostics(env, result) {
     .bind(JSON.stringify(summary), now).run();
 }
 __name(persistRecoveryDiagnostics, "persistRecoveryDiagnostics");
+// Validates an update shape reported by the Durable Object before it
+// enters the persisted pull summary: only the vault's root type names,
+// a capped list of bare client numbers, and finite counts survive. The
+// shape carries structure only, so nothing here can leak note content.
+function sanitizeUpdateShape(shape) {
+  if (!shape || typeof shape !== "object") return null;
+  if (!Number.isFinite(shape.clientCount) || !Number.isFinite(shape.structs)) return null;
+  const types = Array.isArray(shape.types) ? shape.types.filter((type) => UPDATE_SHAPE_ROOT_TYPES.includes(type)) : [];
+  const clients = Array.isArray(shape.clients) ? shape.clients.filter((client) => Number.isFinite(client)).slice(0, UPDATE_SHAPE_MAX_CLIENTS) : [];
+  return { types: [...new Set(types)].sort(), clients, clientCount: shape.clientCount, structs: shape.structs };
+}
+__name(sanitizeUpdateShape, "sanitizeUpdateShape");
 // Vault pull outcome, persisted like the recovery diagnostics above
 // (app_meta, latest value only) so a failed pull stays visible after the run
 // instead of existing only in Workers Logs. Scheduled, post-write, and manual
 // pulls all record here; the summary carries a "source" tag saying which one
-// ran, plus counts, fixed stage/skip codes, and a sanitized error code only:
-// never note content, raw error text, or IDs. GET /sync/status exposes it as
-// the "pull" field.
+// ran, plus counts, fixed stage/skip codes, a sanitized error code, and the
+// structure-only shape of the received updates (root type names and bare
+// Yjs client numbers, via sanitizeUpdateShape): never note content, raw
+// error text, or note IDs. GET /sync/status exposes it as the "pull" field.
 function summarizeVaultPull(result, error, source) {
   const summary = { recordedAt: new Date().toISOString(), ok: false, source: ["scheduled", "post_write", "manual", "read"].includes(source) ? source : "unknown" };
   if (error) {
@@ -13268,6 +13345,12 @@ function summarizeVaultPull(result, error, source) {
   for (const key of ["vaultFiles", "queued", "created", "updated", "unchanged", "deferred", "needsReview", "identityConflicts", "resolvedReviews", "transferBytes", "transferUpdates"]) {
     if (Number.isFinite(result[key])) summary[key] = result[key];
   }
+  // The shape of what YAOS sent (root types, writer clients, struct
+  // count), so a transfer the counters alone cannot explain — above all
+  // a constant payload on no-change diff pulls — is identifiable from
+  // the recorded outcome alone.
+  const updateShape = sanitizeUpdateShape(result.updateShape);
+  if (updateShape) summary.updateShape = updateShape;
   if (result.error !== void 0) summary.errorCode = safeErrorCode(result.error);
   return summary;
 }
@@ -13308,7 +13391,7 @@ async function pullFromVault(env, ctx, origin, apply, route = "full") {
   const data = await res.json();
   if (!res.ok || !data.ok) return { ok: false, stage: "read_vault", route: data.route || route, error: data.error || `status_${res.status}` };
   if (!data.initialized || data.vaultFiles === 0) return { ok: true, skipped: "vault_not_initialized", route: data.route || route, vaultFiles: data.vaultFiles };
-  const summary = { ok: true, route: data.route || route, transferBytes: data.transfer?.bytes, transferUpdates: data.transfer?.updates, vaultFiles: data.vaultFiles, same: data.same, differ: data.differCount, new: data.newCount, queued: data.notes.length };
+  const summary = { ok: true, route: data.route || route, transferBytes: data.transfer?.bytes, transferUpdates: data.transfer?.updates, updateShape: data.transfer?.updateShape, vaultFiles: data.vaultFiles, same: data.same, differ: data.differCount, new: data.newCount, queued: data.notes.length };
   if (!apply) return { ...summary, applied: false, paths: data.notes.map((n) => n.path) };
   const sync = await originalFetch(
     new Request(`${origin}/api/sync`, {

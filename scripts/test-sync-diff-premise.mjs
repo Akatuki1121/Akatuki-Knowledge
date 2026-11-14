@@ -15,7 +15,11 @@
  *   3. one edited file is the only candidate of the next pull;
  *   4. a rename and a tombstone arrive through the same diff path;
  *   5. losing or corrupting the persisted state recovers via a full
- *      read in the same run, and the pull after that is a clean diff.
+ *      read in the same run, and the pull after that is a clean diff;
+ *   6. every pull records the shape of what arrived (root shared types,
+ *      writer clients, struct count) in its transfer and in the pull
+ *      record, so a constant payload from the production peer would be
+ *      identifiable from the records alone.
  *
  * This proves the Akatuki-side machinery against the protocol contract.
  * Whether the production YAOS handler itself honours non-empty vectors
@@ -154,6 +158,11 @@ try {
   assert.equal(boot.route, "full", "the first diff pull bootstraps with a full read");
   assert.equal(boot.notes.length, 12, "all twelve files are candidates against an empty D1");
   assert.ok(boot.transfer.bytes > 4000, `the bootstrap transfer is the whole vault (got ${boot.transfer.bytes})`);
+  assert.ok(boot.transfer.updateShape.types.includes("sys"), "the bootstrap shape names the sys root");
+  assert.ok(boot.transfer.updateShape.types.includes("meta"), "the bootstrap shape names the meta root");
+  assert.ok(boot.transfer.updateShape.types.includes("idToText"), "the bootstrap shape names the idToText root");
+  assert.equal(boot.transfer.updateShape.clientCount, 1, "the vault doc has a single writer client");
+  assert.ok(boot.transfer.updateShape.structs > 24, `the bootstrap shape counts the vault's structs (got ${boot.transfer.updateShape.structs})`);
   assert.equal(boot.observationComplete, true);
   assert.ok(storage.map.has("vault_pull_state"), "the pull persisted its intake state");
 
@@ -166,12 +175,14 @@ try {
   assert.equal(quiet.observations.length, 12, "the observation still covers the whole vault");
   assert.equal(quiet.observationComplete, true);
   assert.ok(quiet.transfer.bytes < 32, `the no-change diff transfer is ~0 (got ${quiet.transfer.bytes} bytes)`);
+  assert.deepEqual(quiet.transfer.updateShape, { types: [], clients: [], clientCount: 0, structs: 0 }, "the no-change shape is empty: no structs arrived at all");
   console.log(`premise: bootstrap transfer ${boot.transfer.bytes} bytes -> second pull ${quiet.transfer.bytes} bytes`);
 
   const statusRes = await second.fetch(new Request("https://internal/status"));
   const status = await statusRes.json();
   assert.equal(status.lastPullRecord.route, "diff", "the pull record names the route");
   assert.ok(status.lastPullRecord.bytes < 32, "the pull record carries the transfer size");
+  assert.deepEqual(status.lastPullRecord.updateShape, { types: [], clients: [], clientCount: 0, structs: 0 }, "the pull record carries the received shape");
 
   // 3. One edit: only that file is read, hashed, and queued.
   const edited = FILES[2];
