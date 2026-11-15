@@ -58,6 +58,7 @@ export const checks = [
   ["vault-organization-store-syntax", process.execPath, ["--check", "src/vault-organization-store.mjs"]],
   ["vault-organization-rules", process.execPath, ["scripts/test-vault-organization-rules.mjs"]],
   ["vault-organization-scan", process.execPath, ["scripts/test-vault-organization-scan.mjs"]],
+  ["vault-organization-stage2", process.execPath, ["scripts/test-vault-organization-stage2.mjs"]],
   ["vault-organization-contract", process.execPath, ["scripts/check-vault-organization-contract.mjs"]],
   ["notion-inbox-transfer", process.execPath, ["scripts/test-notion-inbox-transfer.mjs"]],
   ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]

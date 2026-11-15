@@ -4,6 +4,8 @@ import {
   buildVaultClassificationPrompt,
   checkVaultNoteExclusion,
   classifyVaultNoteByRules,
+  isWhitespaceOnlyChange,
+  normalizeVaultNoteWhitespace,
   parseVaultClassificationResponse,
   VAULT_ORGANIZATION_TARGET_FOLDERS,
 } from "../src/vault-organization-rules.mjs";
@@ -163,6 +165,34 @@ test("parse: unusable responses return null", () => {
   assert.equal(parseVaultClassificationResponse('{"target": "日常", "reason": ""}'), null);
   assert.equal(parseVaultClassificationResponse('{"target": "日常", "confidence": 1.5, "reason": ""}'), null);
   assert.equal(parseVaultClassificationResponse(""), null);
+});
+
+test("whitespace normalization strips trailing blanks and compresses blank runs", () => {
+  const messy = "一行目  \n二行目\t\n\n\n\n三行目\n\n\n";
+  assert.equal(normalizeVaultNoteWhitespace(messy), "一行目\n二行目\n\n三行目\n");
+  // 2行までの空行はそのまま残す。
+  assert.equal(normalizeVaultNoteWhitespace("一\n\n\n二\n"), "一\n\n\n二\n");
+  // 末尾の改行を1つに揃える。
+  assert.equal(normalizeVaultNoteWhitespace("一行だけ"), "一行だけ\n");
+  assert.equal(normalizeVaultNoteWhitespace("一行だけ\n"), "一行だけ\n");
+  // 冪等である。
+  const once = normalizeVaultNoteWhitespace(messy);
+  assert.equal(normalizeVaultNoteWhitespace(once), once);
+  // 本文の文字そのものには触らない。
+  assert.equal(normalizeVaultNoteWhitespace(""), "");
+});
+
+test("the R4 check accepts whitespace-only differences and rejects content changes", () => {
+  const before = "一行目  \n二行目\n\n\n\n三行目\n";
+  assert.equal(isWhitespaceOnlyChange(before, normalizeVaultNoteWhitespace(before)), true);
+  // 文字が変われば通らない。
+  assert.equal(isWhitespaceOnlyChange(before, "一行目\n二行目\n\n三行目X\n"), false);
+  // 行の結合は空白だけの差とはみなさない。
+  assert.equal(isWhitespaceOnlyChange(before, "一行目二行目\n\n三行目\n"), false);
+  // 行頭の空白の変化も通らない。
+  assert.equal(isWhitespaceOnlyChange(before, " 一行目\n二行目\n\n三行目\n"), false);
+  // 空行の除去そのものは空白だけの差として通る (操作の範囲の確認用)。
+  assert.equal(isWhitespaceOnlyChange(before, "一行目\n二行目\n三行目\n"), true);
 });
 
 console.log("Vault organization rules tests passed.");
