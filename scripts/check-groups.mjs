@@ -54,6 +54,11 @@ export const checks = [
   ["agent-task-recovery", "python3", ["scripts/test_agent_task_recovery.py"]],
   ["agent-memory-migration", "python3", ["scripts/test_agent_memory_migration.py"]],
   ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
+  ["vault-organization-rules-syntax", process.execPath, ["--check", "src/vault-organization-rules.mjs"]],
+  ["vault-organization-store-syntax", process.execPath, ["--check", "src/vault-organization-store.mjs"]],
+  ["vault-organization-rules", process.execPath, ["scripts/test-vault-organization-rules.mjs"]],
+  ["vault-organization-scan", process.execPath, ["scripts/test-vault-organization-scan.mjs"]],
+  ["vault-organization-contract", process.execPath, ["scripts/check-vault-organization-contract.mjs"]],
   ["notion-inbox-transfer", process.execPath, ["scripts/test-notion-inbox-transfer.mjs"]],
   ["wrangler-config", process.execPath, ["scripts/check-wrangler-config.mjs"]]
 ];
@@ -62,7 +67,7 @@ export function selectChecks(args = []) {
   return args.includes("--sync-only")
   ? checks.filter(([name]) => name.startsWith("sync-") || name === "safe-note-id-recovery" || name === "sync-contract" || name === "yaos-integration-classifier" || name === "sync-module-syntax")
   : args.includes("--agent-only")
-    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
+    ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name.startsWith("vault-organization-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
     : args.includes("--core-only")
       ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config"].includes(name))
       : checks;

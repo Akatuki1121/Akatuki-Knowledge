@@ -24,9 +24,15 @@ import {
 import { runAgentToolLoop } from "./agent-tool-loop.mjs";
 import { createSyncOutbox, listSyncOutboxJobs, retrySyncOutboxJob } from "./sync-outbox.mjs";
 import { executeGitHubReadTool, hashGitHubWritePlan, validateGitHubWritePlan } from "./agent-github-tools.mjs";
-import { callWorkersAi, WORKERS_AI_MAX_OUTPUT_TOKENS } from "./workers-ai-client.mjs";
+import { callWorkersAi, WORKERS_AI_MAX_OUTPUT_TOKENS, WORKERS_AI_MODEL } from "./workers-ai-client.mjs";
 import { IMPROVEMENT_TASK_MAX_OUTPUT_TOKENS, IMPROVEMENT_TASK_REASONING_EFFORT } from "./task-runtime-config.mjs";
-import { estimateWorkersAiPromptTokens } from "./workers-ai-budget.mjs";
+import { calculateWorkersAiNeurons, estimateWorkersAiPromptTokens } from "./workers-ai-budget.mjs";
+import {
+  buildVaultClassificationPrompt,
+  parseVaultClassificationResponse,
+  VAULT_ORGANIZATION_AI_MAX_OUTPUT_TOKENS
+} from "./vault-organization-rules.mjs";
+import { scanVaultOrganizationInbox } from "./vault-organization-store.mjs";
 import { improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { runBudgetSelfAudit } from "./budget-self-audit.mjs";
 import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
@@ -444,7 +450,7 @@ async function drainSyncOutboxAfterWrite(env, ctx, origin) {
 }
 __name(drainSyncOutboxAfterWrite, "drainSyncOutboxAfterWrite");
 async function runPostPullAutomation(env, pullSucceeded) {
-  const result = { reconciliation: null, improvementInbox: null };
+  const result = { reconciliation: null, improvementInbox: null, vaultOrganization: null };
   try {
     const response = await doFetch(env, "reconcile-existing-note-ids");
     const reconcile = await response.json().catch(() => ({ ok: false, error: "invalid_reconcile_response" }));
@@ -469,6 +475,17 @@ async function runPostPullAutomation(env, pullSucceeded) {
     }
   } else {
     result.improvementInbox = { skipped: "vault_pull_failed" };
+  }
+  if (pullSucceeded) {
+    try {
+      result.vaultOrganization = await runVaultOrganizationScan(env);
+      console.log(JSON.stringify({ vaultOrganization: { scanned: Number(result.vaultOrganization?.scanned || 0), excluded: Number(result.vaultOrganization?.excluded || 0), deferred: Number(result.vaultOrganization?.deferred || 0), ruleDecided: Number(result.vaultOrganization?.ruleDecided || 0), aiCalled: Number(result.vaultOrganization?.aiCalled || 0), aiDecided: Number(result.vaultOrganization?.aiDecided || 0), undecided: Number(result.vaultOrganization?.undecided || 0), skipped: safeErrorCode(result.vaultOrganization?.skipped) } }));
+    } catch (error) {
+      result.vaultOrganization = { ok: false };
+      console.log(JSON.stringify({ vaultOrganization: { ok: false }, failure: describeSafeFailure("vault_organization_scan_failed", error) }));
+    }
+  } else {
+    result.vaultOrganization = { skipped: "vault_pull_failed" };
   }
   return result;
 }
@@ -12468,6 +12485,50 @@ async function reassessOutdatedImprovementTasks(env, limit = 20) {
 }
 __name(reassessOutdatedImprovementTasks, "reassessOutdatedImprovementTasks");
 
+// 保管庫の整理自動化・段階1の第1層 (Workers AI の一次振り分け)。
+// 題と冒頭だけを、送信直前の伏字を適用してから渡す。本文全体の走査による
+// 除外や、許可フラグによる遮断はしない (2026-11-09 の所有者決定のまま)。
+// 伏字で認証情報が検出された材料は AI へ送らず、除外寄りの記録にする。
+async function classifyVaultNoteWithAi(env, input) {
+  const safeTitle = inspectAndRedact(input.title || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
+  const safeHead = inspectAndRedact(input.contentHead || "", { blocklist: env.PRIVACY_BLOCKLIST || "" });
+  if (safeTitle.findings.includes("credentials") || safeHead.findings.includes("credentials")) {
+    return { outcome: "blocked", neurons: 0 };
+  }
+  let neurons = 0;
+  const captureNeurons = (usage) => {
+    try {
+      neurons = calculateWorkersAiNeurons(WORKERS_AI_MODEL, usage) ?? neurons;
+    } catch {
+      // 実績が取れない場合は見積りのまま (0) にする。分類自体は止めない。
+    }
+  };
+  try {
+    const text = await callWorkersAi(env, buildVaultClassificationPrompt({ title: safeTitle.text, contentHead: safeHead.text }), VAULT_ORGANIZATION_AI_MAX_OUTPUT_TOKENS, {
+      responseMimeType: "application/json",
+      onUsage: (usage) => captureNeurons(usage),
+      onFailure: ({ inputTokens }) => captureNeurons({ prompt_tokens: inputTokens, completion_tokens: 0 })
+    });
+    const parsed = parseVaultClassificationResponse(text);
+    if (!parsed) return { outcome: "undecided", confidence: null, neurons };
+    if (!parsed.decided) return { outcome: "undecided", confidence: parsed.confidence, neurons };
+    return { outcome: "decided", targetPath: parsed.targetPath, confidence: parsed.confidence, reason: parsed.reason, neurons };
+  } catch {
+    return { outcome: "error", neurons };
+  }
+}
+__name(classifyVaultNoteWithAi, "classifyVaultNoteWithAi");
+// 保管庫の整理自動化・段階1の巡回。分類と記録だけで、ノートは変更しない。
+// 本体は src/vault-organization-store.mjs に置き、ここでは Workers AI の
+// 呼び出しを注入するだけにする。
+async function runVaultOrganizationScan(env) {
+  if (!env.DB) return { scanned: 0, skipped: "db_unavailable" };
+  const classifyWithAi = typeof env.AI?.run === "function"
+    ? (input) => classifyVaultNoteWithAi(env, input)
+    : null;
+  return scanVaultOrganizationInbox(env.DB, { classifyWithAi });
+}
+__name(runVaultOrganizationScan, "runVaultOrganizationScan");
 async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
   // Reassess terminal improvement tasks independently of note updated_at. The
