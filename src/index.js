@@ -32,7 +32,11 @@ import {
   parseVaultClassificationResponse,
   VAULT_ORGANIZATION_AI_MAX_OUTPUT_TOKENS
 } from "./vault-organization-rules.mjs";
-import { scanVaultOrganizationInbox } from "./vault-organization-store.mjs";
+import {
+  listVaultOrganizationRecords,
+  scanVaultOrganizationInbox,
+  VAULT_ORGANIZATION_BASIS_KINDS
+} from "./vault-organization-store.mjs";
 import { improvementIdempotencyKey, stripImprovementResults } from "./agent-improvement-policy.mjs";
 import { runBudgetSelfAudit } from "./budget-self-audit.mjs";
 import { executeApprovedImprovementPlan } from "./agent-improvement-executor.mjs";
@@ -479,7 +483,7 @@ async function runPostPullAutomation(env, pullSucceeded) {
   if (pullSucceeded) {
     try {
       result.vaultOrganization = await runVaultOrganizationScan(env);
-      console.log(JSON.stringify({ vaultOrganization: { scanned: Number(result.vaultOrganization?.scanned || 0), excluded: Number(result.vaultOrganization?.excluded || 0), deferred: Number(result.vaultOrganization?.deferred || 0), ruleDecided: Number(result.vaultOrganization?.ruleDecided || 0), aiCalled: Number(result.vaultOrganization?.aiCalled || 0), aiDecided: Number(result.vaultOrganization?.aiDecided || 0), undecided: Number(result.vaultOrganization?.undecided || 0), skipped: safeErrorCode(result.vaultOrganization?.skipped) } }));
+      console.log(JSON.stringify({ vaultOrganization: { scanned: Number(result.vaultOrganization?.scanned || 0), excluded: Number(result.vaultOrganization?.excluded || 0), deferred: Number(result.vaultOrganization?.deferred || 0), ruleDecided: Number(result.vaultOrganization?.ruleDecided || 0), aiCalled: Number(result.vaultOrganization?.aiCalled || 0), aiDecided: Number(result.vaultOrganization?.aiDecided || 0), undecided: Number(result.vaultOrganization?.undecided || 0), moved: Number(result.vaultOrganization?.moved || 0), formatted: Number(result.vaultOrganization?.formatted || 0), executionFailed: Number(result.vaultOrganization?.executionFailed || 0), skipped: safeErrorCode(result.vaultOrganization?.skipped) } }));
     } catch (error) {
       result.vaultOrganization = { ok: false };
       console.log(JSON.stringify({ vaultOrganization: { ok: false }, failure: describeSafeFailure("vault_organization_scan_failed", error) }));
@@ -12518,17 +12522,81 @@ async function classifyVaultNoteWithAi(env, input) {
   }
 }
 __name(classifyVaultNoteWithAi, "classifyVaultNoteWithAi");
-// 保管庫の整理自動化・段階1の巡回。分類と記録だけで、ノートは変更しない。
-// 本体は src/vault-organization-store.mjs に置き、ここでは Workers AI の
-// 呼び出しを注入するだけにする。
+// 保管庫の整理自動化の巡回。本体は src/vault-organization-store.mjs に
+// 置き、ここでは Workers AI の呼び出しと、段階2の実行 (公開 API の
+// 経路の内部呼び出し) を注入するだけにする。実行は、記録テーブルが
+// 実在し、そのノートの分類の記録が書けた場合に限る (store 側で gate)。
 async function runVaultOrganizationScan(env) {
   if (!env.DB) return { scanned: 0, skipped: "db_unavailable" };
   const classifyWithAi = typeof env.AI?.run === "function"
     ? (input) => classifyVaultNoteWithAi(env, input)
     : null;
-  return scanVaultOrganizationInbox(env.DB, { classifyWithAi });
+  const executeMove = (input) => executeVaultOrganizationMove(env, input);
+  const executeFormat = (input) => executeVaultOrganizationFormat(env, input);
+  return scanVaultOrganizationInbox(env.DB, { classifyWithAi, executeMove, executeFormat });
 }
 __name(runVaultOrganizationScan, "runVaultOrganizationScan");
+// 保管庫の整理自動化・段階2の段1 (移動) の実行。移動そのものは公開 API
+// の経路 (moveNote) を内部呼び出しし、同一性を保つ移動だけを使う。
+// 作り直して元を消す代替手段へは落とさない。
+// R2: 実行直前にノートを取り直し、分類時点の contentHash と照合する
+// (moveNote 側でも expectedContentHash で前提照合する)。
+// R3: 移動後に sync_uuid と contentHash が不変であることを照合する。
+async function executeVaultOrganizationMove(env, input) {
+  const note = await env.DB.prepare("SELECT id, path, content_hash, sync_uuid FROM notes WHERE id = ? AND deleted_at IS NULL").bind(input.noteId).first();
+  if (!note) return { outcome: "failed", error: "note_not_found" };
+  if (note.path !== input.sourcePath || note.content_hash !== input.expectedContentHash || note.sync_uuid !== input.syncUuid) {
+    return { outcome: "failed", error: "content_changed_since_classification" };
+  }
+  const route = new URL("/api/notes/" + encodeURIComponent(input.sourcePath) + "/move", "https://internal");
+  const request = new Request(route, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ newPath: input.targetPath, expectedContentHash: input.expectedContentHash })
+  });
+  const response = await moveNote(request, route, env);
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    return { outcome: "failed", error: typeof payload?.error === "string" ? payload.error : "move_failed" };
+  }
+  const after = await env.DB.prepare("SELECT path, content_hash, sync_uuid FROM notes WHERE id = ? AND deleted_at IS NULL").bind(input.noteId).first();
+  if (!after || after.path !== input.targetPath || after.sync_uuid !== input.syncUuid || after.content_hash !== input.expectedContentHash) {
+    return { outcome: "failed", error: "move_verification_failed" };
+  }
+  return { outcome: "moved", contentHash: after.content_hash };
+}
+__name(executeVaultOrganizationMove, "executeVaultOrganizationMove");
+// 保管庫の整理自動化・段階2の段2 (整形) の実行。書き戻しは公開 API の
+// 経路 (correctNote) を内部呼び出しする。correctNote は同一内容なら
+// 書かず、旧本文を note_revisions へ残す安全な更新の形になっている。
+// R2: 実行直前に全文を取り直し、分類時点の本文とハッシュを照合する。
+// R4: 書き戻し後に、保存された本文が意図した正規化形と一致することを
+// 照合する。
+async function executeVaultOrganizationFormat(env, input) {
+  const note = await env.DB.prepare("SELECT id, path, content, content_hash FROM notes WHERE id = ? AND deleted_at IS NULL").bind(input.noteId).first();
+  if (!note) return { outcome: "failed", error: "note_not_found" };
+  if (note.path !== input.path || note.content_hash !== input.expectedContentHash || note.content !== input.expectedContent) {
+    return { outcome: "failed", error: "content_changed_since_classification" };
+  }
+  const route = new URL("/api/notes/" + encodeURIComponent(input.noteId) + "/correction", "https://internal");
+  const request = new Request(route, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: input.content })
+  });
+  const response = await correctNote(request, route, env);
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    return { outcome: "failed", error: typeof payload?.error === "string" ? payload.error : "format_failed" };
+  }
+  if (payload?.unchanged) return { outcome: "unchanged" };
+  const after = await env.DB.prepare("SELECT content, content_hash FROM notes WHERE id = ? AND deleted_at IS NULL").bind(input.noteId).first();
+  if (!after || after.content !== input.content) {
+    return { outcome: "failed", error: "format_verification_failed" };
+  }
+  return { outcome: "formatted", contentHashAfter: after.content_hash };
+}
+__name(executeVaultOrganizationFormat, "executeVaultOrganizationFormat");
 async function runImprovementInbox(env) {
   if (!env.DB || !env.AGENT_TASK_WORKFLOW || !env.AI) return { scanned: 0, queued: 0, skipped: "automation_binding_unavailable" };
   // Reassess terminal improvement tasks independently of note updated_at. The
@@ -13624,6 +13692,52 @@ var wrapper_default = {
         }, { status: 200, headers: JSON_HEADERS2 });
       } catch {
         return Response.json({ error: "task_queue_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      }
+    }
+
+    if (url.pathname === "/api/organization/records" && request.method === "GET") {
+      if (!await isAuthorized(request, env)) return Response.json({ error: "unauthorized" }, { status: 401, headers: JSON_HEADERS2 });
+      if (!env.DB) return Response.json({ error: "organization_records_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+      const basisKind = url.searchParams.get("basis_kind") || null;
+      if (basisKind && !VAULT_ORGANIZATION_BASIS_KINDS.includes(basisKind)) {
+        return Response.json({ error: "invalid_basis_kind_filter" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      const action = url.searchParams.get("action") || null;
+      if (action && !["classify", "move", "format"].includes(action)) {
+        return Response.json({ error: "invalid_action_filter" }, { status: 400, headers: JSON_HEADERS2 });
+      }
+      const requestedLimit = Number(url.searchParams.get("limit") || 20);
+      const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, Math.floor(requestedLimit))) : 20;
+      try {
+        const records = await listVaultOrganizationRecords(env.DB, {
+          since: url.searchParams.get("since") || null,
+          until: url.searchParams.get("until") || null,
+          basisKind,
+          action,
+          limit
+        });
+        if (records === null) return Response.json({ error: "organization_records_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
+        return Response.json({
+          records: records.map((record) => ({
+            recordId: record.record_id,
+            noteId: record.note_id,
+            syncUuid: record.sync_uuid,
+            path: record.path,
+            contentHashBefore: record.content_hash_before,
+            contentHashAfter: record.content_hash_after,
+            stage: record.stage,
+            action: record.action,
+            basisKind: record.basis_kind,
+            basisDetail: record.basis_detail,
+            targetPath: record.target_path,
+            confidence: record.confidence,
+            outcome: record.outcome,
+            detail: record.detail_json,
+            createdAt: record.created_at
+          }))
+        }, { status: 200, headers: JSON_HEADERS2 });
+      } catch {
+        return Response.json({ error: "organization_records_unavailable" }, { status: 503, headers: JSON_HEADERS2 });
       }
     }
 

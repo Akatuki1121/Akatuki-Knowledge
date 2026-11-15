@@ -218,6 +218,51 @@ export function buildVaultClassificationPrompt(input) {
 }
 
 /**
+ * 段2 (整形) のうち段階2で実行する唯一の操作: 空白の正規化。
+ * 行末の空白 (半角空白とタブ) の除去、3行以上の連続空行を1行への圧縮、
+ * 末尾の改行を1つに揃える、だけを行う。本文の文字そのものには触らない。
+ * 冪等で、既に正規化済みの本文はそのまま返す。
+ */
+export function normalizeVaultNoteWhitespace(content) {
+  if (typeof content !== "string" || content === "") return "";
+  const lines = content.split("\n").map((line) => line.replace(/[ \t]+$/u, ""));
+  const out = [];
+  let pendingBlanks = 0;
+  const flushBlanks = () => {
+    const count = pendingBlanks >= 3 ? 1 : pendingBlanks;
+    for (let i = 0; i < count; i++) out.push("");
+    pendingBlanks = 0;
+  };
+  for (const line of lines) {
+    if (line === "") {
+      pendingBlanks++;
+      continue;
+    }
+    flushBlanks();
+    out.push(line);
+  }
+  // 末尾の空行は落とし、改行1つで終える (flushBlanks は呼ばない)。
+  return out.join("\n") + "\n";
+}
+
+/**
+ * R4 の機械照合: 2つの本文の差が空白だけであることを確かめる。
+ * 空白を全部除いた文字列が一致し、かつ本文の行 (行末の空白を除いた
+ * 空でない行) の並びが一致する場合だけ true を返す。行の結合や分割、
+ * 行頭の空白の変化も「空白だけの差」とはみなさない。
+ */
+export function isWhitespaceOnlyChange(before, after) {
+  if (typeof before !== "string" || typeof after !== "string") return false;
+  if (before.replace(/\s+/gu, "") !== after.replace(/\s+/gu, "")) return false;
+  const significantLines = (text) => text.split("\n")
+    .map((line) => line.replace(/[ \t]+$/u, ""))
+    .filter((line) => line !== "");
+  const a = significantLines(before);
+  const b = significantLines(after);
+  return a.length === b.length && a.every((line, index) => line === b[index]);
+}
+
+/**
  * 第1層の応答の解釈。読めない応答、宛先集合に無いフォルダ、数値でない
  * 確信度は「AI では決まらない」として null を返す (失敗とは別に扱う)。
  * 形が整っていれば { decided, target, targetPath, confidence, reason } を
