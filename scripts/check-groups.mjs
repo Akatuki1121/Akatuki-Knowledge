@@ -53,6 +53,7 @@ export const checks = [
   ["agent-task-store-sql", "python3", ["scripts/test_agent_task_store_sql.py"]],
   ["agent-task-recovery", "python3", ["scripts/test_agent_task_recovery.py"]],
   ["agent-memory-migration", "python3", ["scripts/test_agent_memory_migration.py"]],
+  ["agent-search-suppression-scan", "python3", ["scripts/test_search_suppression_scan.py"]],
   ["agent-organization", process.execPath, ["scripts/check-agent-organization.mjs"]],
   ["vault-organization-rules-syntax", process.execPath, ["--check", "src/vault-organization-rules.mjs"]],
   ["vault-organization-store-syntax", process.execPath, ["--check", "src/vault-organization-store.mjs"]],

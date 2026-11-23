@@ -1382,8 +1382,16 @@ async function findRelevantNotes(q, env, limit = MAX_SEARCH_RESULTS) {
       AND NOT EXISTS (
         SELECT 1 FROM agent_memory_suppressions s
         WHERE s.content_hash = n.content_hash
-           OR s.memory_key_hash IN (SELECT memory_key_hash FROM agent_memory_metadata WHERE source = n.source AND note_id = n.id)
-           OR s.value_hash IN (SELECT value_hash FROM agent_memory_metadata WHERE source = n.source AND note_id = n.id)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_memory_metadata md
+        JOIN agent_memory_suppressions s ON s.memory_key_hash = md.memory_key_hash
+        WHERE md.source = n.source AND md.note_id = n.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_memory_metadata md
+        JOIN agent_memory_suppressions s ON s.value_hash = md.value_hash
+        WHERE md.source = n.source AND md.note_id = n.id
       )
     ORDER BY relevance DESC, n.updated_at DESC LIMIT ?`;
   const { results } = await env.DB.prepare(sql).bind(...bindings, limit).all();
