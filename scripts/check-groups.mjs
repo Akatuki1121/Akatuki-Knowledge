@@ -3,6 +3,7 @@ export const checks = [
   ["check-group-coverage", process.execPath, ["scripts/test-check-groups.mjs"]],
   ["sync-module-syntax", process.execPath, ["--check", "src/sync-outbox.mjs"]],
   ["notes-create-contract", process.execPath, ["scripts/check-notes-create-contract.mjs"]],
+  ["notes-list-prefix", "python3", ["scripts/test_list_notes_prefix.py"]],
   ["sync-identity-repair-contract", process.execPath, ["scripts/check-identity-map-repair-contract.mjs"]],
   ["sync-note-reconcile-contract", process.execPath, ["scripts/check-vault-note-reconcile-contract.mjs"]],
   ["ai-send-guard-syntax", process.execPath, ["--check", "src/ai-send-guard.mjs"]],
@@ -71,6 +72,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name.startsWith("vault-organization-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "notes-list-prefix", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config"].includes(name))
       : checks;
 }

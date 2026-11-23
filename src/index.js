@@ -201,6 +201,7 @@ var MAX_BODY_BYTES = 1024 * 1024;
 var MAX_NOTES_PER_SYNC = 20;
 var MAX_NOTE_CHARS = 5e5;
 var MAX_SEARCH_RESULTS = 12;
+var MAX_LIST_PREFIX_LENGTH = 200;
 var worker_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -1282,7 +1283,13 @@ async function createNote(request, env) {
 __name(createNote, "createNote");
 async function listNotes(url, env) {
   const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 50)));
-  const { results } = await env.DB.prepare(`SELECT id, path, title, tags_json, '[]' AS ai_tags_json, related_json, summary, knowledge_type, knowledge_scope, source_modified_at, updated_at, ai_allowed, sensitivity, 'obsidian' AS source, review_state FROM notes WHERE deleted_at IS NULL UNION ALL SELECT id, NULL AS path, title, tags_json, ai_tags_json, related_json, summary, knowledge_type, knowledge_scope, NULL AS source_modified_at, updated_at, ai_allowed, sensitivity, 'telegram' AS source, review_state FROM telegram_notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`).bind(limit).all();
+  const prefix = (url.searchParams.get("prefix") || "").trim();
+  if (prefix.length > MAX_LIST_PREFIX_LENGTH) return json({ error: "prefix_too_long" }, 400);
+  // The prefix is a literal path prefix, never a LIKE pattern: escape the
+  // LIKE wildcards and the escape character itself before appending "%".
+  // Telegram notes have no path, so a prefix excludes them entirely.
+  const prefixPattern = prefix ? prefix.replace(/[\\%_]/g, (ch) => "\\" + ch) + "%" : null;
+  const { results } = await env.DB.prepare(`SELECT id, path, title, tags_json, '[]' AS ai_tags_json, related_json, summary, knowledge_type, knowledge_scope, source_modified_at, updated_at, ai_allowed, sensitivity, 'obsidian' AS source, review_state FROM notes WHERE deleted_at IS NULL AND (? IS NULL OR path LIKE ? ESCAPE '\\') UNION ALL SELECT id, NULL AS path, title, tags_json, ai_tags_json, related_json, summary, knowledge_type, knowledge_scope, NULL AS source_modified_at, updated_at, ai_allowed, sensitivity, 'telegram' AS source, review_state FROM telegram_notes WHERE deleted_at IS NULL AND ? IS NULL ORDER BY updated_at DESC LIMIT ?`).bind(prefixPattern, prefixPattern, prefixPattern, limit).all();
   return json({ notes: results.map(publicNote) });
 }
 __name(listNotes, "listNotes");
