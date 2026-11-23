@@ -14,14 +14,14 @@ import { readFile } from "node:fs/promises";
 // - 常時除外の名前が規則の中に在る。本文を開かずに判定できる形。
 // - 巡回は Inbox 配下だけを対象にし、pull 後の自動処理から走る。
 // - Workers AI へ渡すのは題と本文の冒頭だけ。本文の全文は渡さない。
-// - 記録の読み口は認証の内側に在り、記録テーブルは pending の
-//   マイグレーションとして置かれる (適用は人間の手順)。
+// - 記録の読み口は認証の内側に在り、記録テーブルは 0020 の
+//   マイグレーションで用意される (適用は人間の手順で完了済み)。
 
 const indexSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const storeSource = await readFile(new URL("../src/vault-organization-store.mjs", import.meta.url), "utf8");
 const rulesSource = await readFile(new URL("../src/vault-organization-rules.mjs", import.meta.url), "utf8");
 const migrationSource = await readFile(
-  new URL("../migrations/pending/0020_vault_organization_records.sql", import.meta.url),
+  new URL("../migrations/0020_vault_organization_records.sql", import.meta.url),
   "utf8",
 );
 
@@ -121,9 +121,9 @@ assert.ok(postPullSlice.includes("runVaultOrganizationScan(env)"), "the scan mus
 assert.ok(indexSource.includes('url.pathname === "/api/organization/records"'), "the records endpoint must exist");
 assert.ok(indexSource.includes("listVaultOrganizationRecords(env.DB"), "the records endpoint must read through the store");
 
-// --- 記録テーブルは pending のマイグレーション ---------------------------
+// --- 記録テーブルは 0020 のマイグレーション ---------------------------
 
-assert.ok(migrationSource.includes("CREATE TABLE vault_organization_records"), "the records table migration must be present in pending");
+assert.ok(migrationSource.includes("CREATE TABLE vault_organization_records"), "the records table migration must be present");
 assert.ok(migrationSource.includes("content_hash_before") && migrationSource.includes("content_hash_after"), "records must keep before/after hashes");
 
 console.log("Vault organization contract checks passed.");

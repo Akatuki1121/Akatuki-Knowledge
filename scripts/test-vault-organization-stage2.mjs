@@ -10,11 +10,11 @@ import {
 } from "../src/vault-organization-store.mjs";
 
 // 段階2の巡回を偽の D1 (node:sqlite) で確かめる。記録テーブルは
-// マイグレーションの実物 (migrations/pending/0020) を適用して用意する。
+// マイグレーションの実物 (migrations/0020) を適用して用意する。
 // 実行 (移動・整形) は注入関数で、呼び出しの引き数と回数を見る。
 
 const MIGRATION_SQL = await readFile(
-  new URL("../migrations/pending/0020_vault_organization_records.sql", import.meta.url),
+  new URL("../migrations/0020_vault_organization_records.sql", import.meta.url),
   "utf8",
 );
 
