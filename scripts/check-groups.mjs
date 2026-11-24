@@ -74,6 +74,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name.startsWith("vault-organization-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "notes-list-prefix", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "notes-list-prefix", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config", "circulation-audit", "circulation-audit-syntax"].includes(name))
       : checks;
 }
