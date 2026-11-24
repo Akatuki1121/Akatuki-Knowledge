@@ -115,8 +115,8 @@ assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledg
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
 assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
-const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall, responseAttempt = 0 })");
-const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
+const modelCallStart = workflowSource.indexOf("callModel: /* @__PURE__ */ __name(async ({ prompt, modelCall, responseAttempt = 0 })");
+const modelCallEnd = workflowSource.indexOf("executeTool: /* @__PURE__ */ __name(async", modelCallStart);
 assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('const adaptiveResponseMimeType = responseAttempt >= 2 ? null : "application/json"'), "Agent tool-loop calls must request JSON output");
 // A single model call was observed at 235,677 ms while the claim lease is
