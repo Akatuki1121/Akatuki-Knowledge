@@ -99,6 +99,7 @@ export function buildCirculationAuditPlan({ notes = [], telegramNotes = [], iden
   if (!Number.isFinite(nowMs)) throw new TypeError("now must be a valid timestamp");
   const nowIso = new Date(nowMs).toISOString();
   const cutoff = nowMs - CIRCULATION_AUDIT_RULES.stagnantDays * DAY_MS;
+  const pathlessCutoff = nowMs - CIRCULATION_AUDIT_RULES.pathlessAgedDays * DAY_MS;
   const cutoffIso = new Date(cutoff).toISOString();
   const set = enumerateCirculationSet({ notes, telegramNotes, identityReviews });
   const changes = detectCirculationChanges(set.all, previousState);
@@ -133,7 +134,7 @@ export function buildCirculationAuditPlan({ notes = [], telegramNotes = [], iden
         detail: { updated_at: row.updated_at, threshold_days: CIRCULATION_AUDIT_RULES.stagnantDays, content_hash: row.content_hash ?? null }
       });
     }
-    if (row.source === "telegram" && Number.isFinite(updatedAt) && updatedAt < cutoff) {
+    if (row.source === "telegram" && Number.isFinite(updatedAt) && updatedAt < pathlessCutoff) {
       findings.push({
         source: row.source,
         note_id: row.note_id,

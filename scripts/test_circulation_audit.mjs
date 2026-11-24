@@ -41,13 +41,14 @@ const previous = [
   { source: "obsidian", note_id: "inbox", last_seen_hash: "a", first_seen_in_set_at: "2026-10-01T00:00:00Z", last_seen_at: "2026-11-24T00:00:00Z", last_path: "Notes/Inbox/a.md" },
   { source: "obsidian", note_id: "task", last_seen_hash: "old-b", first_seen_in_set_at: "2026-10-01T00:00:00Z", last_seen_at: "2026-11-24T00:00:00Z", last_path: "Notes/タスク/task.md" },
   { source: "telegram", note_id: "tg-old", last_seen_hash: "t1", first_seen_in_set_at: "2026-10-01T00:00:00Z", last_seen_at: "2026-11-24T00:00:00Z", last_path: null },
+  { source: "obsidian", note_id: "improve", last_seen_hash: "c", first_seen_in_set_at: "2026-10-01T00:00:00Z", last_seen_at: "2026-11-24T00:00:00Z", last_path: "Notes/改善/improve.md" },
   { source: "obsidian", note_id: "removed", last_seen_hash: "gone", first_seen_in_set_at: "2026-10-01T00:00:00Z", last_seen_at: "2026-11-24T00:00:00Z", last_path: "Notes/改善/removed.md" }
 ];
 const changes = detectCirculationChanges(set.all, previous);
-assert.equal(changes.added.length, 4, "新規に集合へ入った行を検出する");
+assert.equal(changes.added.length, 3, "新規に集合へ入った行を検出する");
 assert.equal(changes.hashChanged.length, 1, "content_hash の変化を検出する");
 assert.equal(changes.setOut.length, 1, "集合から出た行を検出する");
-assert.equal(changes.changedCount, 6);
+assert.equal(changes.changedCount, 5);
 
 const plan = buildCirculationAuditPlan({
   notes, telegramNotes, identityReviews: reviews, previousState: previous, now
