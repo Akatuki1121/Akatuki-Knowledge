@@ -522,7 +522,10 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(inbox.includes('["queued", "running", "waiting"].includes(previous.status)'));
   assert.ok(!inbox.includes("await markImprovementSeen(env, note.sync_uuid, note.content_hash);\n      const task = admitted.task;"),
     "Queue admission must not mark an improvement request as seen");
-  assert.ok(inbox.includes("Leave the note un-seen. A later scheduled scan can try again."));
+  const admissionStart = inbox.indexOf("const admitted = await enqueueAgentTask");
+  const admissionEnd = inbox.indexOf("queued++;", admissionStart);
+  assert.ok(admissionStart >= 0 && admissionEnd > admissionStart);
+  assert.ok(!inbox.slice(admissionStart, admissionEnd).includes("markImprovementSeen"), "Queue admission must leave the source request eligible for a later scan");
 });
 
 
