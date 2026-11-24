@@ -109,7 +109,7 @@ for (const contract of [
   'summarizeVaultPull(result, error, "post_write")',
   "var POST_WRITE_DRAIN_BATCH_SIZE = 20;",
   "var POST_WRITE_DRAIN_MAX_BATCHES = 5;",
-  "var POST_WRITE_PULL_COOLDOWN_MS = 120000;",
+  "var POST_WRITE_PULL_COOLDOWN_MS = 12e4;",
   '"vault_pull_post_write_last"',
   "var SCHEDULED_PULL_COOLDOWN_MS = 45000;",
   '"vault_pull_scheduled_last"',
