@@ -142,7 +142,7 @@ for (const contract of [
   "await drainSyncOutbox(env, POST_WRITE_DRAIN_BATCH_SIZE)",
   "await pullAfterWrite(env, ctx, origin, sent)",
   "ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin))",
-  'const VAULT_FOSSIL_TARGETS = Object.freeze([',
+  'var VAULT_FOSSIL_TARGETS = Object.freeze([',
   "function validateVaultFossilRemoval(input)",
   "function getVaultFossilTarget(path)",
   "function stripVaultFrontmatterId(content, expectedId)",
