@@ -211,6 +211,8 @@ const deps = {
   __name: (fn) => fn,
   MAX_NOTES_PER_SYNC: 20,
   MAX_NOTE_CHARS: 500000,
+  __name: (fn) => fn,
+  __name6: (fn) => fn,
   RESERVED_ROOT: "__system",
   prepareSyncJob: createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid: async (id) => hash(id).slice(0, 8) + "-0000-4000-8000-000000000000" }).prepareSyncJob
 };
