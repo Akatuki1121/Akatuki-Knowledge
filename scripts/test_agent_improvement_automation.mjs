@@ -518,7 +518,7 @@ test("failed improvement tasks remain unchanged until edited; transient retries 
   assert.ok(inbox.includes("reserveQueuedAgentTaskBudget"));
   assert.ok(!inbox.includes('":retry:" + day'));
   assert.ok(inbox.includes("maxAttempts: 4"));
-  assert.ok(inbox.includes("maxTaskAgeMs: 8 * 60 * 60 * 1000"));
+  assert.ok(inbox.includes("maxTaskAgeMs: 8 * 60 * 60 * 1e3"));
   assert.ok(inbox.includes('["queued", "running", "waiting"].includes(previous.status)'));
   assert.ok(!inbox.includes("await markImprovementSeen(env, note.sync_uuid, note.content_hash);\n      const task = admitted.task;"),
     "Queue admission must not mark an improvement request as seen");

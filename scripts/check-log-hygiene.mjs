@@ -17,8 +17,8 @@ for (const [name, source] of [["src/index.js", workerSource], ["src/sync-outbox.
 }
 
 assert.ok(
-  workerSource.includes('from "./log-sanitize.mjs"'),
-  "the Worker entry point must use the shared log sanitizer"
+  workerSource.includes("describeSafeFailure") && workerSource.includes("safeErrorCode"),
+  "the bundled Worker entry point must retain the shared log-sanitizer functions"
 );
 
 // アプリ側の console.* は、固定のイベント名だけの出力 (分類 A のタイミングログ等) か、

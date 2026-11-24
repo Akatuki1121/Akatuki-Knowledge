@@ -10,7 +10,7 @@ import { createBotAlerts } from "../src/bot-alerts.mjs";
 // 移動した関数が Worker エントリポイントに実際に接続されていることを確認する。
 // enqueueBotAlert は各所の失敗通知で使うため、ファクトリで実体化されていることを見る。
 const workerSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-assert.ok(workerSource.includes('from "./bot-alerts.mjs"'), "the Worker entry point must import the bot alerts module");
+assert.ok(workerSource.includes("createBotAlerts()") && workerSource.includes("enqueueBotAlert"), "the bundled Worker entry point must wire the bot alerts factory");
 assert.ok(workerSource.includes("createBotAlerts()"), "the Worker entry point must build bot alerts through the factory without a Telegram sender");
 assert.ok(!workerSource.includes("createBotAlerts({ sendTelegramMessage })"), "the Worker entry point must not inject a Telegram sender into bot alerts");
 

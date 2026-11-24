@@ -8,7 +8,7 @@ const webResearch = await readFile(new URL("../src/agent-web-research.mjs", impo
 const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
 
 for (const required of [
-  "class AgentTaskWorkflow extends WorkflowEntrypoint",
+  "var AgentTaskWorkflow = class extends WorkflowEntrypoint",
   '!["knowledge_query", "github_query"].includes(task.task_type)',
   'task.task_type === "github_query"',
   "executeGitHubReadTool",
@@ -30,8 +30,8 @@ for (const required of [
   "inspectAndRedact(raw",
   "reserveAgentAiBudget(this.env.DB",
   "settleAgentAiBudget(this.env.DB",
-  "onUsage: async (usage)",
-  "onFailure: async ({ inputTokens })",
+  "onUsage:",
+  "onFailure:",
   'checkpoint.stage === "completed"',
   'taskType: "knowledge_query"',
   "assertAgentTaskRunning",
@@ -47,7 +47,7 @@ for (const required of [
   "const adaptiveResponseMimeType = responseAttempt >= 2",
   "retries: { limit: 0, delay: \"1 second\" }",
   "task.last_error?.includes(\"invalid_input:tool_argument_keys\")",
-  "parseGroundedWebResearch",
+  "callGeminiWebResearch",
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
   'url.pathname === "/api/agent-tasks"',
   'request.method === "POST"',
@@ -107,8 +107,8 @@ for (const field of ["ok:", "report:", "noteCreated:", "recorded:"]) {
 assert.ok(source.includes('taskRow.budget_reserved !== 1'), "Workflow dispatch must wait for a reserved step budget");
 assert.ok(source.includes("failure.workflowBudgetReleased === true"), "UTC day rollover must end the current Workflow run");
 assert.ok(source.includes("workers_ai_daily_quota_exhausted"), "Cloudflare Workers AI quota exhaustion must wait for the UTC reset");
-const workflowStart = source.indexOf("class AgentTaskWorkflow extends WorkflowEntrypoint");
-const workflowEnd = source.indexOf('__name(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
+const workflowStart = source.indexOf("var AgentTaskWorkflow = class extends WorkflowEntrypoint");
+const workflowEnd = source.indexOf('__name6(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
 const workflowSource = source.slice(workflowStart, workflowEnd);
 assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledge query must not mutate notes");
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
