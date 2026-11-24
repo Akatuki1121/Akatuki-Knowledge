@@ -46,7 +46,7 @@ for (const contract of [
   'expectedPreviousContent: previousRevision?.content ?? null',
   "AND NOT EXISTS (SELECT 1 FROM yaos_sync_jobs earlier",
   "earlier.status IN ('pending', 'processing')",
-  "const comparableContent = (value)",
+  "const comparableContent = /* @__PURE__ */ __name((value) =>",
   "let changedCount = 0, contentConflict = false",
   'error: "vault_content_conflict"',
   'const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload", "sync_identity_conflict", "sync_identity_mapping_conflict", "sync_identity_mapping_missing", "invalid_sync_uuid"]',
