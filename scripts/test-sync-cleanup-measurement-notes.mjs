@@ -2,14 +2,14 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const start = source.indexOf("const MEASUREMENT_UPDATE_ID_RANGES = [");
+const start = source.indexOf("var MEASUREMENT_UPDATE_ID_RANGES = [");
 const end = source.indexOf("\nasync function correctNote(", start);
 assert.ok(start >= 0 && end > start, "Could not extract the measurement cleanup block");
 const block = source.slice(start, end).trim();
 
 const __name = (fn) => fn;
 const { MEASUREMENT_UPDATE_ID_RANGES, measurementUpdateId, isMeasurementNoteId, cleanupMeasurementNotes } =
-  new Function("__name", block + "\nreturn { MEASUREMENT_UPDATE_ID_RANGES, measurementUpdateId, isMeasurementNoteId, cleanupMeasurementNotes };")(__name);
+  new Function("__name", "__name6", block + "\nreturn { MEASUREMENT_UPDATE_ID_RANGES, measurementUpdateId, isMeasurementNoteId, cleanupMeasurementNotes };")(__name, __name);
 
 assert.deepEqual(MEASUREMENT_UPDATE_ID_RANGES, [[9100001037, 9100001072], [9100002001, 9100002036]]);
 

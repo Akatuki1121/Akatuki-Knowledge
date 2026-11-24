@@ -85,7 +85,7 @@ for (const contract of [
   'const contentUuid = readUuid(desiredContent)',
   'uuid = isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : null;',
   'const legacyId = readUuid(content);',
-  'const verified = !verifiedItem || verifiedItem.deleted',
+  'const verified2 = !verifiedItem || verifiedItem.deleted',
   'const verified = Boolean(verifiedItem && !verifiedItem.deleted',
   'current.value.set("deletedAt", now)',
   'const desiredUuid = telegram ? readUuid(desiredContent) : uuid;',

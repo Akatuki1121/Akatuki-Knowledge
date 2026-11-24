@@ -28,7 +28,7 @@ for (const contract of [
   "directionByPath",
   "direction_mismatch",
   "verified: true",
-  "actualD1Hash: note ? await sha256(note.content) : \"\"",
+  "await sha256Hex3(note.content) !== expectedD1Hash",
   'direction === "vault_to_d1"',
   "textValue.delete(0, textValue.length)",
   "pathToId.set(path, current.fileId)",
