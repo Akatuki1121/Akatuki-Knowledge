@@ -50,7 +50,7 @@ for (const kept of [
   "pullFromVault",
   "drainSyncOutbox(env, 10)",
   "backfillSyncUuidIndex(env, 100)",
-  "class AgentTaskWorkflow extends WorkflowEntrypoint",
+  "var AgentTaskWorkflow = class extends WorkflowEntrypoint",
   "recoverAgentTaskWorkflows",
   "createTelegramNotes",
   "renameTelegramFiles"

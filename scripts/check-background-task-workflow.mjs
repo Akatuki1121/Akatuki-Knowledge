@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const taskPolicy = await readFile(new URL("../src/background-task-policy.mjs", import.meta.url), "utf8");
 const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
 const webResearch = await readFile(new URL("../src/agent-web-research.mjs", import.meta.url), "utf8");
 const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
 
 for (const required of [
-  "class AgentTaskWorkflow extends WorkflowEntrypoint",
+  "var AgentTaskWorkflow = class extends WorkflowEntrypoint",
   '!["knowledge_query", "github_query"].includes(task.task_type)',
   'task.task_type === "github_query"',
   "executeGitHubReadTool",
@@ -30,8 +31,8 @@ for (const required of [
   "inspectAndRedact(raw",
   "reserveAgentAiBudget(this.env.DB",
   "settleAgentAiBudget(this.env.DB",
-  "onUsage: async (usage)",
-  "onFailure: async ({ inputTokens })",
+  "onUsage:",
+  "onFailure:",
   'checkpoint.stage === "completed"',
   'taskType: "knowledge_query"',
   "assertAgentTaskRunning",
@@ -47,7 +48,7 @@ for (const required of [
   "const adaptiveResponseMimeType = responseAttempt >= 2",
   "retries: { limit: 0, delay: \"1 second\" }",
   "task.last_error?.includes(\"invalid_input:tool_argument_keys\")",
-  "parseGroundedWebResearch",
+  "callGeminiWebResearch",
   'url.pathname === "/api/agent-tasks" && request.method === "GET"',
   'url.pathname === "/api/agent-tasks"',
   'request.method === "POST"',
@@ -107,15 +108,15 @@ for (const field of ["ok:", "report:", "noteCreated:", "recorded:"]) {
 assert.ok(source.includes('taskRow.budget_reserved !== 1'), "Workflow dispatch must wait for a reserved step budget");
 assert.ok(source.includes("failure.workflowBudgetReleased === true"), "UTC day rollover must end the current Workflow run");
 assert.ok(source.includes("workers_ai_daily_quota_exhausted"), "Cloudflare Workers AI quota exhaustion must wait for the UTC reset");
-const workflowStart = source.indexOf("class AgentTaskWorkflow extends WorkflowEntrypoint");
-const workflowEnd = source.indexOf('__name(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
+const workflowStart = source.indexOf("var AgentTaskWorkflow = class extends WorkflowEntrypoint");
+const workflowEnd = source.indexOf('__name6(AgentTaskWorkflow, "AgentTaskWorkflow");', workflowStart);
 const workflowSource = source.slice(workflowStart, workflowEnd);
 assert.ok(!workflowSource.includes("applyTelegramCapture"), "Background knowledge query must not mutate notes");
 assert.ok(!workflowSource.includes("INSERT INTO telegram_notes"), "Background knowledge query must remain read-only");
 assert.ok(workflowSource.includes("saveAgentTaskCheckpoint"), "Each agent loop stage must be persisted in the task checkpoint");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-model-\""), "Every model call must be a durable Workflow step");
-const modelCallStart = workflowSource.indexOf("callModel: async ({ prompt, modelCall, responseAttempt = 0 })");
-const modelCallEnd = workflowSource.indexOf("executeTool: async", modelCallStart);
+const modelCallStart = workflowSource.indexOf("callModel: /* @__PURE__ */ __name(async ({ prompt, modelCall, responseAttempt = 0 })");
+const modelCallEnd = workflowSource.indexOf("executeTool: /* @__PURE__ */ __name(async", modelCallStart);
 assert.ok(modelCallStart >= 0 && modelCallEnd > modelCallStart, "Agent model call implementation must exist");
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes('const adaptiveResponseMimeType = responseAttempt >= 2 ? null : "application/json"'), "Agent tool-loop calls must request JSON output");
 // A single model call was observed at 235,677 ms while the claim lease is
@@ -125,7 +126,7 @@ assert.ok(source.includes("renewAgentTaskLease"), "The Workflow must import the 
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes("startAgentTaskLeaseRenewal(this.env.DB, taskId, leaseToken)"), "The model call must start lease renewal before the Workers AI call");
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes("stopLeaseRenewal();"), "The model call must stop lease renewal when the Workers AI call returns");
 assert.ok(workflowSource.includes("await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);"), "The Workflow must renew the lease after a model call and before completion checkpoints");
-assert.ok(source.includes('"executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted"'), "A lost lease must be retryable wherever transient failures are listed");
+assert.ok(["executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted"].every((value) => source.includes(JSON.stringify(value))), "A lost lease and Workers AI quota exhaustion must be retryable");
 assert.ok(taskPolicy.includes('"lease_lost"'), "The task policy must classify a lost lease as transient");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
@@ -138,7 +139,7 @@ assert.ok(webResearch.includes('step?.type === "google_search_call"'), "Web resu
 assert.ok(webResearch.includes('step?.type === "url_context_result"'), "Web results must have inspected page retrieval");
 assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only provider citations may become web sources");
 assert.ok(source.includes('throw new Error("web_research_disabled")'), "Web research must remain disabled");
-assert.ok(source.includes('body.allowWebResearch !== undefined && body.allowWebResearch !== false'), "API must reject web research requests");
+assert.ok(source.includes("body.allowWebResearch !== void 0 && body.allowWebResearch !== false"), "API must reject web research requests");
 assert.ok(config.includes('binding = "AI"'), "Workers AI binding must be configured");
 assert.ok(source.includes("runImprovementInbox(env)"), "Hourly pull must be followed by improvement inbox scanning");
 assert.ok(source.includes("executeApprovedImprovementPlan"), "Improvement plan execution must use the constrained executor");

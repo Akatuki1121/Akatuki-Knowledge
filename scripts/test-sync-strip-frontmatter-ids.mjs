@@ -30,7 +30,7 @@ const norm = (value) => String(value ?? "").normalize("NFC");
 const RESERVED_ROOT = "Akatuki Knowledge";
 const WORKER_DEVICE = "test-worker";
 const MAX_SMALL_LIST = 30;
-const deps = { YMap, YText, readUuid, sha256Hex, norm, RESERVED_ROOT, WORKER_DEVICE, MAX_SMALL_LIST, MIN_VAULT_FILES_FOR_WRITE: 1 };
+const deps = { YMap, YText, readUuid, sha256Hex, norm, RESERVED_ROOT, WORKER_DEVICE, MAX_SMALL_LIST, MIN_VAULT_FILES_FOR_WRITE: 1, sha256Hex3: sha256Hex, __name: (fn) => fn };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + method + " }")(...Object.values(deps));
 const guardDeps = { ...deps, MIN_VAULT_FILES_FOR_WRITE: 50 };
 const GuardTestDO = new Function(...Object.keys(guardDeps), "return class GuardTestDO { " + method + " }")(...Object.values(guardDeps));

@@ -6,7 +6,8 @@ import { readFile } from "node:fs/promises";
 // (the established pattern for this repository) and run against a fake
 // app_meta store plus stubbed pull collaborators.
 
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 
 function sliceFunction(name) {
   const asyncStart = source.indexOf(`async function ${name}(`);
@@ -19,7 +20,7 @@ function sliceFunction(name) {
 }
 
 function constantValue(name) {
-  const match = source.match(new RegExp(`var ${name} = (\\d+);`));
+  const match = source.match(new RegExp(`var ${name} = ([0-9.eE+-]+);`));
   assert.ok(match, `Could not find constant ${name}`);
   return Number(match[1]);
 }
@@ -64,7 +65,9 @@ function makeAppMetaDb() {
 const baseGlobals = {
   PULL_ACTIVITY_KEY: "vault_pull_activity",
   ACTIVE_EMPTY_PULL_LIMIT: constantValue("ACTIVE_EMPTY_PULL_LIMIT"),
-  READ_REFRESH_STALE_MS: constantValue("READ_REFRESH_STALE_MS")
+  READ_REFRESH_STALE_MS: constantValue("READ_REFRESH_STALE_MS"),
+  __name: (fn) => fn,
+  __name: (fn) => fn
 };
 
 // --- isOnTheHourTick -------------------------------------------------------
@@ -228,6 +231,7 @@ function buildShapeHelpers() {
   const globals = {
     UPDATE_SHAPE_ROOT_TYPES: rootTypeList(),
     UPDATE_SHAPE_MAX_CLIENTS: constantValue("UPDATE_SHAPE_MAX_CLIENTS"),
+    __name: (fn) => fn,
     createDecoder: (update) => update,
     UpdateDecoderV1: FakeUpdateDecoder,
     LazyStructReader: FakeStructReader

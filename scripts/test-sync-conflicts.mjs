@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
@@ -29,7 +30,8 @@ const deterministicUuid = async (seed) => seed === "unused" ? uuid : uuid;
 const norm = (value) => String(value ?? "").replaceAll("\\", "/").normalize("NFC");
 const RESERVED_ROOT = ".yaos";
 const WORKER_DEVICE = "test-worker";
-const deps = { YMap, YText, readUuid, isValidSyncUuid, deterministicUuid, norm, RESERVED_ROOT, WORKER_DEVICE };
+const sha256Hex3 = async (value) => createHash("sha256").update(value).digest("hex");
+const deps = { YMap, YText, readUuid, isValidSyncUuid, deterministicUuid, norm, RESERVED_ROOT, WORKER_DEVICE, sha256Hex3, __name: (fn) => fn };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + method + " }")(...Object.values(deps));
 
 function setup(content, path = "notes/example.md", deleted = false) {

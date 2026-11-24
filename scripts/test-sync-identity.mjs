@@ -208,6 +208,7 @@ const deps = {
   inspectWholeContent: () => ({ credentials: false }),
   readUuid,
   isValidSyncUuid,
+  __name: (fn) => fn,
   MAX_NOTES_PER_SYNC: 20,
   MAX_NOTE_CHARS: 500000,
   RESERVED_ROOT: "__system",

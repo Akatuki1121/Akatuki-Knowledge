@@ -4,16 +4,20 @@ import re
 import sqlite3
 from pathlib import Path
 
-SOURCES = [Path("src/index.js"), Path("src/agent-memory.mjs")]
+SOURCES = [Path("src/index.js"), Path("src/agent-memory.mjs"), Path("src/circulation-audit.mjs")]
 SCHEMA = Path("schema-snapshots/live-d1-schema-2026-10-19.sql")
 MIGRATIONS = [
     Path("migrations/0009_yaos_sync_jobs.sql"),
     Path("migrations/0010_bot_organization_candidates.sql"),
     Path("migrations/0011_agent_tasks.sql"),
+    Path("migrations/0016_workers_ai_daily_usage.sql"),
+    Path("migrations/0017_cloudflare_free_workflow_budget.sql"),
+    Path("migrations/0018_workers_ai_failed_calls.sql"),
     Path("migrations/0019_agent_task_attention_and_reassessment.sql"),
     Path("migrations/0012_bot_ai_permission_previews.sql"),
     Path("migrations/0013_agent_memory_metadata.sql"),
     Path("migrations/0015_yaos_file_identity_map.sql"),
+    Path("migrations/pending/0022_circulation_audit.sql"),
 ]
 CALL_RE = re.compile(
     r"\.(?:prepare|exec|batch)\s*\(\s*(?:"

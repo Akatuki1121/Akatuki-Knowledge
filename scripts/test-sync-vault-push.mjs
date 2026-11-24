@@ -210,7 +210,8 @@ const deps = {
   MAX_NOTES_PER_SYNC: 20,
   MAX_NOTE_CHARS: 500000,
   RESERVED_ROOT: "__system",
-  prepareSyncJob: createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid: async (id) => hash(id).slice(0, 8) + "-0000-4000-8000-000000000000" }).prepareSyncJob
+  prepareSyncJob: createSyncOutbox({ readUuid, isValidSyncUuid, deterministicUuid: async (id) => hash(id).slice(0, 8) + "-0000-4000-8000-000000000000" }).prepareSyncJob,
+  __name: (fn) => fn
 };
 const syncNotes = new Function(...Object.keys(deps), "return (" + syncNotesSource + ");")(...Object.values(deps));
 const pushDeps = { ...deps, syncNotes };

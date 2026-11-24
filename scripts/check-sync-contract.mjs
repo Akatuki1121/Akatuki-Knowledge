@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
-const source = (await readFile(new URL("../src/index.js", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../src/sync-outbox.mjs", import.meta.url), "utf8"));
+const rawSource = (await readFile(new URL("../src/index.js", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../src/sync-outbox.mjs", import.meta.url), "utf8"));
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const migration = await readFile(new URL("../migrations/0009_yaos_sync_jobs.sql", import.meta.url), "utf8");
 const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.url), "utf8");
 
@@ -25,7 +26,7 @@ for (const contract of [
   'error: "content_hash_precondition_failed"',
   'error: "live_note_not_found"',
   'error: "sync_identity_mapping_conflict"',
-  'body.expectedContentHash !== undefined',
+  'body.expectedContentHash !== void 0',
   'url.pathname.endsWith("/move")',
   'SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE path = ? AND deleted_at IS NULL',
   'SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?',
@@ -45,7 +46,7 @@ for (const contract of [
   'expectedPreviousContent: previousRevision?.content ?? null',
   "AND NOT EXISTS (SELECT 1 FROM yaos_sync_jobs earlier",
   "earlier.status IN ('pending', 'processing')",
-  "const comparableContent = (value)",
+  "const comparableContent = /* @__PURE__ */ __name((value) =>",
   "let changedCount = 0, contentConflict = false",
   'error: "vault_content_conflict"',
   'const permanent = ["vault_content_conflict", "ambiguous_sync_identity", "unsafe_path", "invalid_job", "invalid_payload", "sync_identity_conflict", "sync_identity_mapping_conflict", "sync_identity_mapping_missing", "invalid_sync_uuid"]',
@@ -84,14 +85,14 @@ for (const contract of [
   'const contentUuid = readUuid(desiredContent)',
   'uuid = isValidSyncUuid(payload.syncUuid) ? payload.syncUuid : null;',
   'const legacyId = readUuid(content);',
-  'const verified = !verifiedItem || verifiedItem.deleted',
+  'const verified2 = !verifiedItem || verifiedItem.deleted',
   'const verified = Boolean(verifiedItem && !verifiedItem.deleted',
   'current.value.set("deletedAt", now)',
   'const desiredUuid = telegram ? readUuid(desiredContent) : uuid;',
   'readUuid(textValue.toString()) === desiredUuid',
   'if (found.length > 1) throw new Error("ambiguous_sync_identity")',
   'const hasUuid = fm && /^id:\\s*',
-  'pathToId = doc.getMap("pathToId")',
+  'pathToId = doc2.getMap("pathToId")',
   'pathToId.set(desiredPath, fileId)',
   'pathToId.delete(current.path)',
   'current.deleted || pathChanged || indexChanged ? 1 : 0',
@@ -108,9 +109,9 @@ for (const contract of [
   'summarizeVaultPull(result, error, "post_write")',
   "var POST_WRITE_DRAIN_BATCH_SIZE = 20;",
   "var POST_WRITE_DRAIN_MAX_BATCHES = 5;",
-  "var POST_WRITE_PULL_COOLDOWN_MS = 120000;",
+  "var POST_WRITE_PULL_COOLDOWN_MS = 12e4;",
   '"vault_pull_post_write_last"',
-  "var SCHEDULED_PULL_COOLDOWN_MS = 45000;",
+  "var SCHEDULED_PULL_COOLDOWN_MS = 45e3;",
   '"vault_pull_scheduled_last"',
   "async function claimScheduledPull(env)",
   "function isOnTheHourTick(scheduledTime)",
@@ -119,7 +120,7 @@ for (const contract of [
   "var ACTIVE_EMPTY_PULL_LIMIT = 5;",
   "async function readVaultPullActivity(env)",
   "async function updateVaultPullActivity(env, route, result)",
-  "var READ_REFRESH_STALE_MS = 60000;",
+  "var READ_REFRESH_STALE_MS = 6e4;",
   "async function refreshVaultBeforeRead(env, ctx, origin)",
   'summarizeVaultPull(result, null, "read")',
   'route === "diff" ? "changes-diff" : "changes"',
@@ -141,7 +142,7 @@ for (const contract of [
   "await drainSyncOutbox(env, POST_WRITE_DRAIN_BATCH_SIZE)",
   "await pullAfterWrite(env, ctx, origin, sent)",
   "ctx.waitUntil(drainSyncOutboxAfterWrite(env, ctx, url.origin))",
-  'const VAULT_FOSSIL_TARGETS = Object.freeze([',
+  'var VAULT_FOSSIL_TARGETS = Object.freeze([',
   "function validateVaultFossilRemoval(input)",
   "function getVaultFossilTarget(path)",
   "function stripVaultFrontmatterId(content, expectedId)",
@@ -168,7 +169,7 @@ for (const contract of [
   'stableId(observation.path || "") !== stableId(review.path || "")',
   "SELECT id, sync_uuid, deleted_at FROM notes WHERE id = ? OR path = ?",
   'if (job.operation === "delete")',
-  "compatibleMappingPath = map.last_path === row.path || map.last_path === path",
+  "compatibleMappingPath = map2.last_path === row2.path || map2.last_path === path",
   "await sha256(candidateInput.content) !== observation.contentHash",
   "hasMatchingDeadDelivery",
   "preserveVaultRevision",
