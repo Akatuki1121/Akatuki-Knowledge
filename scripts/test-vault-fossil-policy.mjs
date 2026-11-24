@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const policyStart = source.indexOf("var VAULT_FOSSIL_TARGETS");
 const policyEnd = source.indexOf("function getVaultFossilTarget", policyStart);
 assert.ok(policyStart >= 0 && policyEnd > policyStart, "inline vault-fossil policy must exist in the recovered Worker bundle");
 const policySource = source.slice(policyStart, source.indexOf("\n}", policyEnd) + 2);
-const { VAULT_FOSSIL_TARGETS, validateVaultFossilRemoval, getVaultFossilTarget } = new Function(policySource + "\nreturn { VAULT_FOSSIL_TARGETS, validateVaultFossilRemoval, getVaultFossilTarget };")();
+const { VAULT_FOSSIL_TARGETS, validateVaultFossilRemoval, getVaultFossilTarget } = new Function("__name", policySource + "\nreturn { VAULT_FOSSIL_TARGETS, validateVaultFossilRemoval, getVaultFossilTarget };")((fn) => fn);
 
 assert.equal(VAULT_FOSSIL_TARGETS.length, 2, "only the two explicitly frozen fossil targets are allowlisted");
 const target = VAULT_FOSSIL_TARGETS[0];

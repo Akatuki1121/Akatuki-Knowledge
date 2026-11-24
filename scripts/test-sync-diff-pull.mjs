@@ -65,7 +65,8 @@ function makeAppMetaDb() {
 const baseGlobals = {
   PULL_ACTIVITY_KEY: "vault_pull_activity",
   ACTIVE_EMPTY_PULL_LIMIT: constantValue("ACTIVE_EMPTY_PULL_LIMIT"),
-  READ_REFRESH_STALE_MS: constantValue("READ_REFRESH_STALE_MS")
+  READ_REFRESH_STALE_MS: constantValue("READ_REFRESH_STALE_MS"),
+  __name: (fn) => fn
 };
 
 // --- isOnTheHourTick -------------------------------------------------------

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const policyStart = source.indexOf("var ARCHIVED_REBIND_TARGETS");
 const policyEnd = source.indexOf("function getArchivedRebindTarget", policyStart);
 assert.ok(policyStart >= 0 && policyEnd > policyStart, "inline archived-rebind policy must exist in the recovered Worker bundle");
 const policySource = source.slice(policyStart, source.indexOf("\n}", policyEnd) + 2);
-const { ARCHIVED_REBIND_TARGETS, validateArchivedRebind } = new Function(policySource + "\nreturn { ARCHIVED_REBIND_TARGETS, validateArchivedRebind };")();
+const { ARCHIVED_REBIND_TARGETS, validateArchivedRebind } = new Function("__name", policySource + "\nreturn { ARCHIVED_REBIND_TARGETS, validateArchivedRebind };")((fn) => fn);
 
 const expectedD1Hash = "a".repeat(64);
 const expectedVaultHash = "b".repeat(64);

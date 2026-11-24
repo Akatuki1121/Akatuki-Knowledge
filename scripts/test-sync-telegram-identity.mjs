@@ -47,7 +47,7 @@ const __name = (fn) => fn;
 const RESERVED_ROOT = "Akatuki Knowledge";
 const WORKER_DEVICE = "test-worker";
 const MIN_VAULT_FILES_FOR_WRITE = 50;
-const deps = { YMap, YText, readUuid, isValidSyncUuid, deterministicUuid, sha256Hex, sha256Hex3: sha256Hex, norm, __name, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE };
+const deps = { YMap, YText, readUuid, isValidSyncUuid, deterministicUuid, sha256Hex, sha256Hex3: sha256Hex, norm, __name, __name6: __name, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + methods + " }")(...Object.values(deps));
 
 const TG_DIR = RESERVED_ROOT + "/Telegram/";
