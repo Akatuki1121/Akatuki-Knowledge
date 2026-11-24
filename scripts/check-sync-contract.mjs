@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
-const source = (await readFile(new URL("../src/index.js", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../src/sync-outbox.mjs", import.meta.url), "utf8"));
+const rawSource = (await readFile(new URL("../src/index.js", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../src/sync-outbox.mjs", import.meta.url), "utf8"));
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const migration = await readFile(new URL("../migrations/0009_yaos_sync_jobs.sql", import.meta.url), "utf8");
 const docs = await readFile(new URL("../docs/YAOS_EVENT_SYNC.md", import.meta.url), "utf8");
 
@@ -25,7 +26,7 @@ for (const contract of [
   'error: "content_hash_precondition_failed"',
   'error: "live_note_not_found"',
   'error: "sync_identity_mapping_conflict"',
-  'body.expectedContentHash !== undefined',
+  'body.expectedContentHash !== void 0',
   'url.pathname.endsWith("/move")',
   'SELECT id, path, title, content, content_hash, sync_uuid, deleted_at FROM notes WHERE path = ? AND deleted_at IS NULL',
   'SELECT file_id, sync_uuid, note_id, last_path FROM yaos_file_identity_map WHERE note_id = ? OR sync_uuid = ?',

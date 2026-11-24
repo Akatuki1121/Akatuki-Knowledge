@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-const policyStart = source.indexOf("const VAULT_FOSSIL_TARGETS");
+const policyStart = source.indexOf("var VAULT_FOSSIL_TARGETS");
 const policyEnd = source.indexOf("function getVaultFossilTarget", policyStart);
 assert.ok(policyStart >= 0 && policyEnd > policyStart, "inline vault-fossil policy must exist in the recovered Worker bundle");
 const policySource = source.slice(policyStart, source.indexOf("\n}", policyEnd) + 2);
