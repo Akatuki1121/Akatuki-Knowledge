@@ -44,3 +44,7 @@ Apply in numeric order. The deploy workflow intentionally skips production deplo
 2026-10-30の読み取り確認では、production D1 ledgerの最新は0015（id 15）。同日のmain commit `cd4a9f5` のWorker deploy workflowは成功しているが、D1 schemaはまだ旧状態（60 tasks / 2,000 Workflow steps）で、`workers_ai_daily_usage` も存在しない。つまりWorkerコードとD1 schemaが不一致になっている。
 
 PR #175では0016・0017・0018を `migrations/pending/` に配置し、次回以降のproduction deployを停止する。オーナー承認のあるD1 rolloutで0016→0017→0018を適用し、`d1_migrations` ledgerとschemaを確認するまで、pendingからroot `migrations/` へ移動しない。Worker再デプロイもD1適用・検証後に別途承認を得て実施する。
+
+## Pending migration 0021: pull execution history
+
+`pending/0021_vault_pull_runs.sql` adds per-run pull diagnostics and per-note applied-change timestamps. It is intentionally kept under `pending/` so the production deploy workflow remains blocked until an owner-approved D1 rollout has applied the migration and verified the ledger. The change table has a longer retention window than the run table and therefore does not cascade from run deletion. This migration has not been applied to production.

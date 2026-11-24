@@ -10,14 +10,15 @@ const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8")
 
 function handlerSlice(name) {
   const start = source.indexOf(`async function ${name}(`);
-  const end = source.indexOf(`__name(${name}, "${name}");`, start);
+  const end = [`__name(${name}, "${name}");`, `__name6(${name}, "${name}");`].map((marker) => source.indexOf(marker, start)).filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? -1;
   if (start === -1 || end === -1) throw new Error(`handler not found: ${name}`);
   return source.slice(start, end);
 }
 
 function buildHandler(name, globals) {
-  const names = Object.keys(globals);
-  const values = names.map((key) => globals[key]);
+  const deps = { __name: (fn) => fn, __name6: (fn) => fn, ...globals };
+  const names = Object.keys(deps);
+  const values = names.map((key) => deps[key]);
   const factory = new Function(...names, `${handlerSlice(name)}\nreturn ${name};`);
   return factory(...values);
 }

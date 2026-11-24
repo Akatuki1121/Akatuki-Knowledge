@@ -16,6 +16,7 @@ export const checks = [
   ["log-hygiene", process.execPath, ["scripts/check-log-hygiene.mjs"]],
   ["sync-contract", process.execPath, ["scripts/check-sync-contract.mjs"]],
   ["sync-diff-pull", process.execPath, ["scripts/test-sync-diff-pull.mjs"]],
+  ["vault-pull-history", process.execPath, ["scripts/test-vault-pull-history.mjs"]],
   ["yaos-integration-classifier", process.execPath, ["scripts/test_classify_yaos_integration.mjs"]],
   ["sync-identity", process.execPath, ["scripts/test-sync-identity.mjs"]],
   ["sync-archived-rebind-policy", process.execPath, ["scripts/test-archived-rebind-policy.mjs"]],
@@ -74,6 +75,6 @@ export function selectChecks(args = []) {
   : args.includes("--agent-only")
     ? checks.filter(([name]) => name.startsWith("agent-") || name.startsWith("background-task-") || name.startsWith("workers-ai-") || name.startsWith("vault-organization-") || name === "budget-self-audit" || name === "budget-self-audit-syntax")
     : args.includes("--core-only")
-      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "notes-list-prefix", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config", "circulation-audit", "circulation-audit-syntax"].includes(name))
+      ? checks.filter(([name]) => ["source-syntax", "check-group-coverage", "notes-create-contract", "notes-list-prefix", "ai-send-guard-syntax", "node-tests", "log-sanitize-syntax", "reply-text-syntax", "note-search-text-syntax", "bot-alerts-syntax", "telegram-removal", "log-hygiene", "notion-inbox-transfer", "wrangler-config", "circulation-audit", "circulation-audit-syntax", "vault-pull-history"].includes(name))
       : checks;
 }

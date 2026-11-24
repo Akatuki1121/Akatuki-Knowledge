@@ -4,6 +4,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 // src/index.js
 import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
 import { runCirculationAudit } from "./circulation-audit.mjs";
+import { buildVaultPullRunRecord, buildVaultPullChangeRows, getVaultPullRetentionCutoffs } from "./vault-pull-history.mjs";
 
 // src/background-task-policy.mjs
 var TASK_BUDGET_CEILINGS = Object.freeze({
@@ -4557,6 +4558,7 @@ async function pullAfterWrite(env, ctx, origin, sent) {
     return { triggered: false, reason: "cooldown", lastPullAt: new Date(lastAt).toISOString(), cooldownMs: POST_WRITE_PULL_COOLDOWN_MS };
   }
   await claimPullSlot(env, POST_WRITE_PULL_LAST_KEY, new Date(now).toISOString());
+  const run = await beginVaultPullRun(env, "post_write");
   let result = null;
   let error = null;
   try {
@@ -4565,6 +4567,7 @@ async function pullAfterWrite(env, ctx, origin, sent) {
     error = caught;
   }
   const summary = summarizeVaultPull(result, error, "post_write");
+  await finishVaultPullRun(env, run, result, error);
   await persistVaultPullDiagnostics(env, summary);
   if (error) {
     console.log(JSON.stringify({ postWritePull: { ok: false, source: "post_write" }, failure: describeSafeFailure("vault_pull_failed", error) }));
@@ -4812,6 +4815,14 @@ async function syncNotes(request, env) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   let created = 0, updated = 0, unchanged = 0, archivedSkipped = 0, deferred = 0, needsReview = 0, identityConflicts = 0, resolvedReviews = 0;
   let reconciledRenames = 0, reconciledConflicts = 0;
+  const appliedChanges = [];
+  const recordAppliedChange = (input) => {
+    appliedChanges.push({
+      path: stableId(input.path),
+      sourceModifiedAt: typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null,
+      appliedAt: now
+    });
+  };
   const reconciledConflictFileIds = /* @__PURE__ */ new Set();
   const noteInputByFileId = new Map(body.notes.filter((input) => input && typeof input.fileId === "string").map((input) => [input.fileId, input]));
   const observedByFileId = new Map(observations.filter((o) => o && typeof o.fileId === "string").map((o) => [o.fileId, o]));
@@ -5146,14 +5157,17 @@ async function syncNotes(request, env) {
           continue;
         }
         updated++;
+        recordAppliedChange(input);
       } else if (previous && !contentDiffers && previous.title === title) {
         await env.DB.batch([
           env.DB.prepare("UPDATE notes SET path = ?, sync_uuid = ?, source_modified_at = ?, imported_at = ? WHERE id = ? AND deleted_at IS NULL").bind(path, syncUuid, typeof input.modifiedAt === "string" ? input.modifiedAt.slice(0, 64) : null, now, previous.id),
           env.DB.prepare("INSERT INTO yaos_file_identity_map (file_id, sync_uuid, note_id, last_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET last_path = excluded.last_path, updated_at = excluded.updated_at WHERE yaos_file_identity_map.note_id = excluded.note_id AND yaos_file_identity_map.sync_uuid = excluded.sync_uuid").bind(fileId, syncUuid, previous.id, path, now, now),
           env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId)
         ]);
-        if (moved) updated++;
-        else unchanged++;
+        if (moved) {
+          updated++;
+          recordAppliedChange(input);
+        } else unchanged++;
       } else if (previous) {
         await env.DB.batch([
           env.DB.prepare("INSERT INTO note_revisions (note_id, path, title, content, content_hash, saved_at) VALUES (?, ?, ?, ?, ?, ?)").bind(previous.id, previous.path, previous.title, previous.content, previous.content_hash, now),
@@ -5163,6 +5177,7 @@ async function syncNotes(request, env) {
           ...previous.content_hash !== contentHash ? [env.DB.prepare("UPDATE agent_memory_metadata SET status = 'superseded', updated_at = ? WHERE source = 'obsidian' AND note_id = ? AND status IN ('active', 'unverified', 'conflicted')").bind(now, previous.id)] : []
         ]);
         updated++;
+        recordAppliedChange(input);
       } else {
         if (!observationComplete) {
           await recordReview(fileId, path, contentHash, "deferred", "incomplete_vault_observation");
@@ -5174,6 +5189,7 @@ async function syncNotes(request, env) {
           env.DB.prepare("DELETE FROM yaos_sync_identity_review WHERE file_id = ?").bind(fileId)
         ]);
         created++;
+        recordAppliedChange(input);
       }
     } catch (error) {
       await recordReview(fileId, path, contentHash, "needs_review", String(error).includes("UNIQUE") ? "sync_identity_mapping_conflict" : "identity_persistence_conflict");
@@ -5224,7 +5240,7 @@ async function syncNotes(request, env) {
       resolvedReviews += Number(results[0]?.meta?.changes || 0);
     }
   }
-  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
+  return json({ ok: true, received: body.notes.length, created, updated, unchanged, reconciledRenames, reconciledConflicts, archivedSkipped, deferred, needsReview, identityConflicts, resolvedReviews, observationComplete, ...(body.vaultPull === true ? { appliedChanges } : {}), note: "D1 notes.sync_uuid is authoritative; identity mappings are persisted in Akatuki Knowledge and note bodies are not used as the identity source." });
 }
 __name(syncNotes, "syncNotes");
 __name6(syncNotes, "syncNotes");
@@ -15004,17 +15020,19 @@ var YjsClientDO = class extends DurableObject {
       const path = isMap ? value.get("path") : value?.path;
       if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
       const deleted = isMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-      entries.push({ path: norm(path), fileId, deleted });
+      const mtime = isMap ? value.get("mtime") : value?.mtime;
+      const modifiedAt = Number.isFinite(mtime) ? new Date(mtime).toISOString() : typeof mtime === "string" ? mtime.slice(0, 64) : null;
+      entries.push({ path: norm(path), fileId, deleted, modifiedAt });
     });
     let queuedCandidates = 0;
     const candidateD1State = /* @__PURE__ */ new Map();
     const queuedFileIds = /* @__PURE__ */ new Set();
-    const queue = /* @__PURE__ */ __name((path, fileId, content, contentHash) => {
+    const queue = /* @__PURE__ */ __name((path, fileId, content, contentHash, modifiedAt) => {
       queuedCandidates++;
       const contentBytes = new TextEncoder().encode(content).byteLength;
       if (!collect || result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + contentBytes > MAX_PULL_BYTES) return;
       const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
-      result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
+      result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content), ...(typeof modifiedAt === "string" ? { modifiedAt } : {}) });
       queuedFileIds.add(fileId);
       result.collectedBytes += contentBytes;
     }, "queue");
@@ -15050,13 +15068,13 @@ var YjsClientDO = class extends DurableObject {
       const known = mapping ? mappedRow : pathRow;
       candidateD1State.set(fileId, known && !known.deleted_at ? { path: norm(known.path), hash: known.content_hash } : null);
       if (!known || known.deleted_at) {
-        queue(path, fileId, content, hash);
+        queue(path, fileId, content, hash, entry.modifiedAt);
         result.newCount++;
         if (result.newInVault.length < MAX_SMALL_LIST) result.newInVault.push(path);
         continue;
       }
       if (mapping && (mapping.sync_uuid !== known.sync_uuid || !isValidSyncUuid(known.sync_uuid))) {
-        queue(path, fileId, content, hash);
+        queue(path, fileId, content, hash, entry.modifiedAt);
         result.differCount++;
         if (result.differ.length < MAX_SMALL_LIST) result.differ.push(path);
         continue;
@@ -15066,7 +15084,7 @@ var YjsClientDO = class extends DurableObject {
         result.same++;
         continue;
       }
-      queue(path, fileId, content, hash);
+      queue(path, fileId, content, hash, entry.modifiedAt);
       result.differCount++;
       if (result.differ.length < MAX_SMALL_LIST) result.differ.push(path);
     }
@@ -15243,12 +15261,12 @@ var YjsClientDO = class extends DurableObject {
       transfer: { updates: this.lastPullStats.updates, bytes: this.lastPullStats.bytes, updateShape: materializeUpdateShape(this.lastPullShape) }
     };
     let queuedCandidates = 0;
-    const queue = /* @__PURE__ */ __name((path, fileId, content, contentHash) => {
+    const queue = /* @__PURE__ */ __name((path, fileId, content, contentHash, modifiedAt) => {
       queuedCandidates++;
       const contentBytes = new TextEncoder().encode(content).byteLength;
       if (result.notes.length >= MAX_PULL_NOTES || result.collectedBytes + contentBytes > MAX_PULL_BYTES) return false;
       const title = content.match(/^\s*#\s+(.+)$/m)?.[1]?.trim() || (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[_-]+/g, " ");
-      result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content) });
+      result.notes.push({ fileId, path, title, content, contentHash, legacyId: readUuid(content), ...(typeof modifiedAt === "string" ? { modifiedAt } : {}) });
       result.collectedBytes += contentBytes;
       return true;
     }, "queue");
@@ -15258,7 +15276,9 @@ var YjsClientDO = class extends DurableObject {
       const path = isMap ? value.get("path") : value?.path;
       if (typeof path !== "string" || !path.toLowerCase().endsWith(".md")) return;
       const deleted = isMap ? value.get("deletedAt") !== void 0 || value.get("deleted") === true : value?.deletedAt !== void 0 || value?.deleted === true;
-      current.set(fileId, { path: norm(path), deleted });
+      const mtime = isMap ? value.get("mtime") : value?.mtime;
+      const modifiedAt = Number.isFinite(mtime) ? new Date(mtime).toISOString() : typeof mtime === "string" ? mtime.slice(0, 64) : null;
+      current.set(fileId, { path: norm(path), deleted, modifiedAt });
     });
     const nextIndex = {};
     const nextPending = /* @__PURE__ */ new Set();
@@ -15299,7 +15319,7 @@ var YjsClientDO = class extends DurableObject {
         nextIndex[fileId] = previous;
         continue;
       }
-      const included = queue(entry.path, fileId, content, hash);
+      const included = queue(entry.path, fileId, content, hash, entry.modifiedAt);
       if (!previous) {
         result.newCount++;
         if (result.newInVault.length < MAX_SMALL_LIST) result.newInVault.push(entry.path);
@@ -17736,6 +17756,72 @@ function sanitizeUpdateShape(shape) {
 }
 __name(sanitizeUpdateShape, "sanitizeUpdateShape");
 __name6(sanitizeUpdateShape, "sanitizeUpdateShape");
+async function beginVaultPullRun(env, trigger) {
+  if (!env.DB) return null;
+  const startedMs = Date.now();
+  const startedAt = new Date(startedMs).toISOString();
+  try {
+    const inserted = await env.DB.prepare("INSERT INTO vault_pull_runs (trigger, started_at, ok) VALUES (?, ?, 0)").bind(trigger, startedAt).run();
+    const id = Number(inserted.meta?.last_row_id);
+    return Number.isFinite(id) && id > 0 ? { id, trigger, startedAt, startedMs } : null;
+  } catch (error) {
+    console.error(JSON.stringify({ vaultPullRunRecord: { ok: false, stage: "start" }, failure: describeSafeFailure("vault_pull_record_failed", error) }));
+    return null;
+  }
+}
+__name(beginVaultPullRun, "beginVaultPullRun");
+async function finishVaultPullRun(env, run, result, error) {
+  if (!run || !env.DB) return;
+  const finishedMs = Date.now();
+  const finishedAt = new Date(finishedMs).toISOString();
+  const errorCode = error ? safeErrorCode(error?.code || error?.message) || "vault_pull_failed" : result?.error ? safeErrorCode(result.error) : null;
+  const record = buildVaultPullRunRecord({ id: run.id, startedMs: run.startedMs, finishedMs, finishedAt, result, error, errorCode });
+  try {
+    await env.DB.prepare("UPDATE vault_pull_runs SET finished_at = ?, duration_ms = ?, ok = ?, stage = ?, error_code = ?, queued = ?, created = ?, updated = ?, vault_files = ? WHERE id = ?").bind(record.finishedAt, record.durationMs, record.ok, record.stage, record.errorCode, record.queued, record.created, record.updated, record.vaultFiles, run.id).run();
+  } catch (writeError) {
+    console.error(JSON.stringify({ vaultPullRunRecord: { ok: false, stage: "finish" }, failure: describeSafeFailure("vault_pull_record_failed", writeError) }));
+  }
+  const changes = buildVaultPullChangeRows(run.id, result?.appliedChanges);
+  if (changes.length) {
+    try {
+      for (let offset = 0; offset < changes.length; offset += 50) {
+        const batch = changes.slice(offset, offset + 50).map((change) => env.DB.prepare("INSERT INTO vault_pull_changes (run_id, path, source_modified_at, applied_at) VALUES (?, ?, ?, ?) ON CONFLICT(run_id, path) DO UPDATE SET source_modified_at = excluded.source_modified_at, applied_at = excluded.applied_at").bind(change.runId, change.path, change.sourceModifiedAt, change.appliedAt));
+        await env.DB.batch(batch);
+      }
+    } catch (writeError) {
+      console.error(JSON.stringify({ vaultPullRunRecord: { ok: false, stage: "changes" }, failure: describeSafeFailure("vault_pull_record_failed", writeError) }));
+    }
+  }
+}
+__name(finishVaultPullRun, "finishVaultPullRun");
+async function updateVaultPullRunReconcile(env, runId, reconcile) {
+  if (!env.DB || !Number.isFinite(runId) || !reconcile || typeof reconcile !== "object") return;
+  try {
+    await env.DB.prepare("UPDATE vault_pull_runs SET reconcile_scanned = ?, reconcile_matched = ?, reconcile_missing_in_vault = ?, reconcile_content_conflicts = ?, reconcile_duplicate_paths = ?, reconcile_uuid_conflicts = ? WHERE id = ?").bind(
+      Number.isFinite(reconcile.scanned) ? reconcile.scanned : null,
+      Number.isFinite(reconcile.matched) ? reconcile.matched : null,
+      Number.isFinite(reconcile.missingInVault) ? reconcile.missingInVault : null,
+      Number.isFinite(reconcile.contentConflicts) ? reconcile.contentConflicts : null,
+      Number.isFinite(reconcile.duplicatePaths) ? reconcile.duplicatePaths : null,
+      Number.isFinite(reconcile.uuidConflicts) ? reconcile.uuidConflicts : null,
+      runId
+    ).run();
+  } catch (error) {
+    console.error(JSON.stringify({ vaultPullRunRecord: { ok: false, stage: "reconcile" }, failure: describeSafeFailure("vault_pull_record_failed", error) }));
+  }
+}
+__name(updateVaultPullRunReconcile, "updateVaultPullRunReconcile");
+async function cleanupVaultPullHistory(env) {
+  if (!env.DB) return;
+  const cutoffs = getVaultPullRetentionCutoffs(Date.now());
+  try {
+    await env.DB.prepare("DELETE FROM vault_pull_changes WHERE rowid IN (SELECT rowid FROM vault_pull_changes WHERE applied_at < ? ORDER BY applied_at ASC LIMIT 500)").bind(cutoffs.changesBefore).run();
+    await env.DB.prepare("DELETE FROM vault_pull_runs WHERE id IN (SELECT id FROM vault_pull_runs WHERE started_at < ? ORDER BY started_at ASC LIMIT 100)").bind(cutoffs.runsBefore).run();
+  } catch (error) {
+    console.error(JSON.stringify({ vaultPullHistoryCleanup: { ok: false }, failure: describeSafeFailure("vault_pull_cleanup_failed", error) }));
+  }
+}
+__name(cleanupVaultPullHistory, "cleanupVaultPullHistory");
 function summarizeVaultPull(result, error, source) {
   const summary = { recordedAt: (/* @__PURE__ */ new Date()).toISOString(), ok: false, source: ["scheduled", "post_write", "manual", "read"].includes(source) ? source : "unknown" };
   if (error) {
@@ -17808,7 +17894,7 @@ async function pullFromVault(env, ctx, origin, apply, route = "full") {
     }
   }
   const conflictDelivery = sync.ok && body.reconciledConflicts > 0 ? await drainSyncOutbox(env, Math.min(20, body.reconciledConflicts)) : null;
-  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, reconciledRenames: body.reconciledRenames || 0, reconciledConflicts: body.reconciledConflicts || 0, conflictDelivery: conflictDelivery ? { sent: conflictDelivery.sent, failed: conflictDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error };
+  return { ...summary, applied: sync.ok, created: body.created, updated: body.updated, unchanged: body.unchanged, appliedChanges: sync.ok && Array.isArray(body.appliedChanges) ? body.appliedChanges : [], reconciledRenames: body.reconciledRenames || 0, reconciledConflicts: body.reconciledConflicts || 0, conflictDelivery: conflictDelivery ? { sent: conflictDelivery.sent, failed: conflictDelivery.failed } : void 0, deferred: body.deferred, needsReview: body.needsReview, identityConflicts: body.identityConflicts, resolvedReviews: body.resolvedReviews, observationComplete: body.observationComplete, error: sync.ok ? void 0 : body.error || "sync_failed", stage: sync.ok ? void 0 : "apply_sync" };
 }
 __name(pullFromVault, "pullFromVault");
 __name6(pullFromVault, "pullFromVault");
@@ -18386,11 +18472,15 @@ var wrapper_default = {
       }
       if (url.pathname === "/sync/pull" && request.method === "POST") {
         let result;
+        let pullRun = null;
         try {
           const apply = url.searchParams.get("apply") === "1";
           if (apply) await drainSyncOutbox(env, 10);
+          pullRun = await beginVaultPullRun(env, "manual");
           result = await pullFromVault(env, ctx, url.origin, apply);
+          await finishVaultPullRun(env, pullRun, result, null);
         } catch (error) {
+          await finishVaultPullRun(env, pullRun, null, error);
           await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "manual"));
           throw error;
         }
@@ -18453,7 +18543,9 @@ var wrapper_default = {
           await persistVaultPullDiagnostics(env, summarizeVaultPull({ ok: true, skipped: "cooldown" }, null, "scheduled"));
         } else {
           const route = onTheHour ? "full" : "diff";
+          var pullRun = await beginVaultPullRun(env, "scheduled");
           const result = await pullFromVault(env, ctx, "https://akatuki-knowledge.sousou-e1121.workers.dev", true, route);
+          await finishVaultPullRun(env, pullRun, result, null);
           improvementPullReady = result.ok === true;
           await updateVaultPullActivity(env, route, result);
           await persistVaultPullDiagnostics(env, summarizeVaultPull(result, null, "scheduled"));
@@ -18461,10 +18553,15 @@ var wrapper_default = {
           if (!result.ok) console.error(JSON.stringify({ pullFailure: { ok: false, stage: result.stage, errorCode: safeErrorCode(result.error) } }));
         }
       } catch (error) {
+        if (typeof pullRun !== "undefined") await finishVaultPullRun(env, pullRun, null, error);
         await persistVaultPullDiagnostics(env, summarizeVaultPull(null, error, "scheduled"));
         console.log(JSON.stringify({ pull: { ok: false, failure: describeSafeFailure("vault_pull_failed", error) } }));
       }
-      await runPostPullAutomation(env, improvementPullReady);
+      const postPull = await runPostPullAutomation(env, improvementPullReady);
+      if (typeof pullRun !== "undefined" && pullRun) {
+        await updateVaultPullRunReconcile(env, pullRun.id, postPull.reconciliation);
+        await cleanupVaultPullHistory(env);
+      }
       return worker_default.scheduled(event, env, ctx);
     }
     return worker_default.scheduled(event, env, ctx);
