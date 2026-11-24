@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const taskPolicy = await readFile(new URL("../src/background-task-policy.mjs", import.meta.url), "utf8");
 const toolLoop = await readFile(new URL("../src/agent-tool-loop.mjs", import.meta.url), "utf8");
 const webResearch = await readFile(new URL("../src/agent-web-research.mjs", import.meta.url), "utf8");
@@ -125,7 +126,7 @@ assert.ok(source.includes("renewAgentTaskLease"), "The Workflow must import the 
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes("startAgentTaskLeaseRenewal(this.env.DB, taskId, leaseToken)"), "The model call must start lease renewal before the Workers AI call");
 assert.ok(workflowSource.slice(modelCallStart, modelCallEnd).includes("stopLeaseRenewal();"), "The model call must stop lease renewal when the Workers AI call returns");
 assert.ok(workflowSource.includes("await tryRenewAgentTaskLease(this.env.DB, taskId, leaseToken);"), "The Workflow must renew the lease after a model call and before completion checkpoints");
-assert.ok(source.includes('"executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted"'), "A lost lease must be retryable wherever transient failures are listed");
+assert.ok(["executor_interrupted", "lease_lost", "workers_ai_daily_quota_exhausted"].every((value) => source.includes(JSON.stringify(value))), "A lost lease and Workers AI quota exhaustion must be retryable");
 assert.ok(taskPolicy.includes('"lease_lost"'), "The task policy must classify a lost lease as transient");
 assert.ok(workflowSource.includes("step.do(\n            \"agent-tool-\""), "Every read-only tool execution must be a durable Workflow step");
 assert.ok(workflowSource.includes('if (tool === "get_note")'), "The note detail tool must be restricted to prior search results");
@@ -138,7 +139,7 @@ assert.ok(webResearch.includes('step?.type === "google_search_call"'), "Web resu
 assert.ok(webResearch.includes('step?.type === "url_context_result"'), "Web results must have inspected page retrieval");
 assert.ok(webResearch.includes('annotation?.type !== "url_citation"'), "Only provider citations may become web sources");
 assert.ok(source.includes('throw new Error("web_research_disabled")'), "Web research must remain disabled");
-assert.ok(source.includes('body.allowWebResearch !== undefined && body.allowWebResearch !== false'), "API must reject web research requests");
+assert.ok(source.includes("body.allowWebResearch !== void 0 && body.allowWebResearch !== false"), "API must reject web research requests");
 assert.ok(config.includes('binding = "AI"'), "Workers AI binding must be configured");
 assert.ok(source.includes("runImprovementInbox(env)"), "Hourly pull must be followed by improvement inbox scanning");
 assert.ok(source.includes("executeApprovedImprovementPlan"), "Improvement plan execution must use the constrained executor");
