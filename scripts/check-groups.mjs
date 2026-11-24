@@ -31,6 +31,8 @@ export const checks = [
   ["sync-strip-frontmatter-ids", process.execPath, ["scripts/test-sync-strip-frontmatter-ids.mjs"]],
   ["sync-cleanup-measurement-notes", process.execPath, ["scripts/test-sync-cleanup-measurement-notes.mjs"]],
   ["budget-self-audit-syntax", process.execPath, ["--check", "src/budget-self-audit.mjs"]],
+  ["circulation-audit-syntax", process.execPath, ["--check", "src/circulation-audit.mjs"]],
+  ["circulation-audit", process.execPath, ["scripts/test_circulation_audit.mjs"]],
   ["budget-self-audit", process.execPath, ["scripts/test_budget_self_audit.mjs"]],
   ["workers-ai-client-syntax", process.execPath, ["--check", "src/workers-ai-client.mjs"]],
   ["workers-ai-budget-syntax", process.execPath, ["--check", "src/workers-ai-budget.mjs"]],

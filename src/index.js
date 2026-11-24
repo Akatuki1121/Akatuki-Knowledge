@@ -3,6 +3,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 
 // src/index.js
 import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
+import { runCirculationAudit } from "./circulation-audit.mjs";
 
 // src/background-task-policy.mjs
 var TASK_BUDGET_CEILINGS = Object.freeze({
@@ -16638,6 +16639,7 @@ var JSON_HEADERS2 = { "content-type": "application/json", "cache-control": "no-s
 var PULL_CRON = "* * * * *";
 var TASK_RECOVERY_CRON = "*/15 * * * *";
 var BUDGET_AUDIT_CRON = "55 23 * * *";
+var CIRCULATION_AUDIT_CRON = "30 22 * * *";
 function isOnTheHourTick(scheduledTime) {
   const at = new Date(scheduledTime);
   return Number.isFinite(at.getTime()) && at.getUTCMinutes() === 0;
@@ -18400,6 +18402,10 @@ var wrapper_default = {
     return originalFetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
+    if (event.cron === CIRCULATION_AUDIT_CRON) {
+      ctx.waitUntil(runCirculationAudit(env));
+      return;
+    }
     if (event.cron === BUDGET_AUDIT_CRON) {
       try {
         const audit = await runBudgetSelfAudit(env, Date.now(), {
