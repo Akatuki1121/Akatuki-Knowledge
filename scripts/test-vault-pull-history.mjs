@@ -8,7 +8,7 @@ import {
   getVaultPullRetentionCutoffs
 } from "../src/vault-pull-history.mjs";
 
-const migration = await readFile(new URL("../migrations/pending/0021_vault_pull_runs.sql", import.meta.url), "utf8");
+const migration = await readFile(new URL("../migrations/0021_vault_pull_runs.sql", import.meta.url), "utf8");
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 const db = new DatabaseSync(":memory:");
 

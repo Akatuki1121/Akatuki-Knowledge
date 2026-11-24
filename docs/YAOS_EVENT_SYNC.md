@@ -177,9 +177,9 @@ API 移動では、既存の一意なマップの `last_path` をノートのパ
 
 完全な pull で、`sync_identity_mapping_conflict` または `vault_pull_live_content_conflict` の対応先 D1 ノートが論理削除済みと確認できた場合は、そのレビューと当該ノートの同一性マップを退役させる。マップが既に手作業で消えている場合も、レビューのパスが一意な削除済み D1 ノートに一致すればレビューを掃除する。レビュー行が既に無い場合も、完全観測で当該 fileId の Vault tombstone が確認できた削除済み D1 ノートのマップは退役させる。Vault ファイルが live のままなら既存の復元判定に使えるようマップを保持する。 レビュー行が存在しない場合も、完全観測で同一 fileId の明示 tombstone が確認できれば、アーカイブ済みノートのマッピングだけを退役させる。完全でない観測、現在の pull で再記録されたレビュー、対応先が一意に特定できないケースは変更しない。本文・revision・correction の意味づけは変更しない。
 
-## Pull execution history (repository change, not yet deployed)
+## Pull execution history (deployed 2026-11-25)
 
-Each executed scheduled, post-write, and manual pull is recorded in D1 tables created by the pending migration `migrations/pending/0021_vault_pull_runs.sql`. The run row stores the trigger, start/end timestamps, duration, success state, safe failure stage/code, queued/created/updated counts, and the Vault file count. Scheduled runs also receive the existing reconciliation summary (`scanned`, `matched`, `missingInVault`, `contentConflicts`, `duplicatePaths`, and `uuidConflicts`). The existing `app_meta` latest-pull keys remain unchanged for current readers.
+Each executed scheduled, post-write, and manual pull is recorded in D1 tables created by migration `migrations/0021_vault_pull_runs.sql` (applied to production D1 on 2026-11-25). The run row stores the trigger, start/end timestamps, duration, success state, safe failure stage/code, queued/created/updated counts, and the Vault file count. Scheduled runs also receive the existing reconciliation summary (`scanned`, `matched`, `missingInVault`, `contentConflicts`, `duplicatePaths`, and `uuidConflicts`). The existing `app_meta` latest-pull keys remain unchanged for current readers.
 
 For notes actually imported or restored by a pull, `vault_pull_changes` stores the path, YAOS metadata `mtime` as `source_modified_at`, and the D1 import timestamp as `applied_at`. Notes only observed as unchanged, deferred, or held for review are not counted as applied changes. If YAOS does not provide a usable `mtime`, the source timestamp remains null; the applied timestamp is still recorded. The history write is best-effort: failures are logged with sanitized diagnostics and do not fail the pull.
 

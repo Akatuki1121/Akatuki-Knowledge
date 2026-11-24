@@ -18,7 +18,7 @@ MIGRATIONS = [
     Path("migrations/0018_workers_ai_failed_calls.sql"),
     Path("migrations/0019_agent_task_attention_and_reassessment.sql"),
     Path("migrations/0020_vault_organization_records.sql"),
-    Path("migrations/pending/0021_vault_pull_runs.sql"),
+    Path("migrations/0021_vault_pull_runs.sql"),
     Path("migrations/0022_circulation_audit.sql"),
 ]
 CALL_RE = re.compile(
