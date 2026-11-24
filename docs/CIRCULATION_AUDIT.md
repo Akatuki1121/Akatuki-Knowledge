@@ -38,4 +38,4 @@ Workers AI、Telegram送信、YAOSの書き込みAPIは使用しない。監査�
 - `audit_findings`: 監査ごとの4種類の検出結果。
 - `audit_note_state`: 集合内ノートの前回ハッシュと集合入り・最終観測時刻。
 
-マイグレーションは `migrations/pending/0022_circulation_audit.sql` に置く。これは未適用候補であり、本番 D1 への適用や Worker のデプロイはこの変更に含まれない。適用とデプロイは、所有者が migration ledger・schema・PR を確認した後に別途行う。
+マイグレーションは `migrations/0022_circulation_audit.sql`。2026-11-25に所有者承認のロールアウトで本番 D1 へ適用し、`d1_migrations` に記録済み（id 22）。
