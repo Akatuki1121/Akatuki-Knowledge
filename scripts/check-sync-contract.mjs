@@ -92,7 +92,7 @@ for (const contract of [
   'readUuid(textValue.toString()) === desiredUuid',
   'if (found.length > 1) throw new Error("ambiguous_sync_identity")',
   'const hasUuid = fm && /^id:\\s*',
-  'pathToId = doc.getMap("pathToId")',
+  'pathToId = doc2.getMap("pathToId")',
   'pathToId.set(desiredPath, fileId)',
   'pathToId.delete(current.path)',
   'current.deleted || pathChanged || indexChanged ? 1 : 0',
