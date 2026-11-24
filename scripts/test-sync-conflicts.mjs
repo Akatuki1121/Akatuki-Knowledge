@@ -29,7 +29,7 @@ const deterministicUuid = async (seed) => seed === "unused" ? uuid : uuid;
 const norm = (value) => String(value ?? "").replaceAll("\\", "/").normalize("NFC");
 const RESERVED_ROOT = ".yaos";
 const WORKER_DEVICE = "test-worker";
-const deps = { YMap, YText, readUuid, isValidSyncUuid, deterministicUuid, norm, RESERVED_ROOT, WORKER_DEVICE };
+const deps = { YMap, YText, readUuid, isValidSyncUuid, deterministicUuid, norm, RESERVED_ROOT, WORKER_DEVICE, __name: (fn) => fn };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + method + " }")(...Object.values(deps));
 
 function setup(content, path = "notes/example.md", deleted = false) {

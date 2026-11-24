@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+const source = rawSource.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(Number.parseInt(code, 16)));
 const route = 'if (url.pathname === "/sync/vault-note" && request.method === "GET")';
 const reconcileRoute = 'if (url.pathname === "/sync/reconcile-note" && request.method === "POST")';
 assert.ok(source.includes(route), "vault body read route must exist");
