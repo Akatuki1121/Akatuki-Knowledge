@@ -60,6 +60,7 @@ const globals = {
   prepareSyncJob,
   RESERVED_ROOT,
   MAX_NOTE_CHARS,
+  __name: (fn) => fn,
 };
 
 const createNote = buildHandler("createNote", globals);

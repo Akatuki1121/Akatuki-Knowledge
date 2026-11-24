@@ -34,7 +34,7 @@ const norm = (value) => String(value ?? "").replaceAll("\\", "/").normalize("NFC
 const RESERVED_ROOT = ".yaos";
 const WORKER_DEVICE = "test-worker";
 const MIN_VAULT_FILES_FOR_WRITE = 1;
-const deps = { YMap, YText, Doc, readUuid, isValidSyncUuid, deterministicUuid, sha256Hex, norm, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE, MAX_NOTE_CHARS };
+const deps = { YMap, YText, Doc, readUuid, isValidSyncUuid, deterministicUuid, sha256Hex, norm, RESERVED_ROOT, WORKER_DEVICE, MIN_VAULT_FILES_FOR_WRITE, MAX_NOTE_CHARS, __name: (fn) => fn };
 const TestDO = new Function(...Object.keys(deps), "return class TestDO { " + method + " }")(...Object.values(deps));
 const guardDeps = { ...deps, MIN_VAULT_FILES_FOR_WRITE: 50 };
 const GuardTestDO = new Function(...Object.keys(guardDeps), "return class GuardTestDO { " + method + " }")(...Object.values(guardDeps));
